@@ -1,5 +1,6 @@
-import { useState, useCallback } from 'react'
+import { useState, useCallback, useEffect } from 'react'
 import './App.css'
+import { supabase } from './supabase'
 
 const GENETICAS = ['OG24K', 'Choco OG', 'Z-Kiem', 'Fancy', 'Gorilla Rainbow']
 const MIEMBROS = ['Bruno', 'Checho', 'Nacho', 'Nico']
@@ -14,9 +15,11 @@ function hoyDDMM() {
   return `${d.getDate()}/${d.getMonth() + 1}`
 }
 
+const filaVacia = () => ({ id: Date.now() + Math.random(), nombre: '', cantidad: '' })
+
 const formInicial = {
   socio: '',
-  geneticas: [],
+  filas: [filaVacia()],
   precio: PRECIO_DEFAULT,
   propio: false,
   pagado: false,
@@ -25,28 +28,94 @@ const formInicial = {
   entregado: false,
 }
 
-// ─── Formulario ───────────────────────────────────────────────
+// ─── Modal de edición ─────────────────────────────────────────
+function ModalEditar({ pedido, onGuardar, onCerrar }) {
+  const [form, setForm] = useState({
+    pagado: pedido.pagado,
+    metodoPago: pedido.metodoPago || 'Transferencia',
+    fechaCobro: pedido.fechaCobro || '',
+    entregado: pedido.entregado,
+  })
+
+  const set = (key, val) => setForm(f => ({ ...f, [key]: val }))
+
+  function handlePagado(val) {
+    setForm(f => ({ ...f, pagado: val, fechaCobro: val ? (pedido.fechaCobro || hoyDDMM()) : '' }))
+  }
+
+  return (
+    <div className="modal-overlay" onClick={onCerrar}>
+      <div className="modal-card" onClick={e => e.stopPropagation()}>
+        <div className="modal-header">
+          <div>
+            <div className="modal-titulo">{pedido.socio}</div>
+            <div className="modal-sub">{pedido.geneticas.map(g => `${g.nombre} ${g.cantidad}g`).join(' · ')}</div>
+          </div>
+          <button className="modal-cerrar" onClick={onCerrar}>✕</button>
+        </div>
+
+        <div className="toggle-group">
+          <div className="toggle-row">
+            <span className="toggle-label">Pago recibido</span>
+            <label className="toggle-switch">
+              <input type="checkbox" checked={form.pagado} onChange={e => handlePagado(e.target.checked)} />
+              <span className="toggle-slider" />
+            </label>
+          </div>
+          {form.pagado && (
+            <div className="pago-extra">
+              <div className="form-group">
+                <label className="form-label">Método</label>
+                <select className="form-control" value={form.metodoPago} onChange={e => set('metodoPago', e.target.value)}>
+                  <option>Transferencia</option>
+                  <option>Efectivo</option>
+                </select>
+              </div>
+              <div className="form-group">
+                <label className="form-label">Fecha cobro</label>
+                <input className="form-control" type="text" placeholder="dd/mm" value={form.fechaCobro} onChange={e => set('fechaCobro', e.target.value)} />
+              </div>
+            </div>
+          )}
+          <div className="toggle-row">
+            <span className="toggle-label">Pedido entregado</span>
+            <label className="toggle-switch">
+              <input type="checkbox" checked={form.entregado} onChange={e => set('entregado', e.target.checked)} />
+              <span className="toggle-slider" />
+            </label>
+          </div>
+        </div>
+
+        <button className="btn-submit" style={{ marginTop: 16 }} onClick={() => onGuardar({ ...pedido, ...form })}>
+          Guardar cambios
+        </button>
+      </div>
+    </div>
+  )
+}
+
+// ─── Formulario nuevo pedido ──────────────────────────────────
 function FormNuevo({ onGuardar }) {
   const [miembro, setMiembro] = useState('Bruno')
-  const [form, setForm] = useState(formInicial)
+  const [form, setForm] = useState({ ...formInicial, filas: [filaVacia()] })
   const [toast, setToast] = useState({ show: false, msg: '' })
 
   const set = (key, val) => setForm(f => ({ ...f, [key]: val }))
 
   const precio = parseFloat(form.precio) || 0
-  const total = form.propio ? 0 : form.geneticas.reduce((s, g) => s + (parseFloat(g.cantidad) || 0) * precio, 0)
-  const cantidadTotal = form.geneticas.reduce((s, g) => s + (parseFloat(g.cantidad) || 0), 0)
+  const total = form.propio ? 0 : form.filas.reduce((s, f) => s + (parseFloat(f.cantidad) || 0) * precio, 0)
 
-  function toggleGenetica(nombre) {
-    const existe = form.geneticas.find(g => g.nombre === nombre)
-    const next = existe
-      ? form.geneticas.filter(g => g.nombre !== nombre)
-      : [...form.geneticas, { nombre, cantidad: '' }]
-    set('geneticas', next)
+  function setFila(id, key, val) {
+    set('filas', form.filas.map(f => f.id === id ? { ...f, [key]: val } : f))
   }
 
-  function setCantidadGenetica(nombre, cantidad) {
-    set('geneticas', form.geneticas.map(g => g.nombre === nombre ? { ...g, cantidad } : g))
+  function agregarFila() {
+    set('filas', [...form.filas, filaVacia()])
+  }
+
+  function eliminarFila(id) {
+    if (form.filas.length === 1) return
+    set('filas', form.filas.filter(f => f.id !== id))
   }
 
   function handlePropio(val) {
@@ -63,18 +132,19 @@ function FormNuevo({ onGuardar }) {
   }
 
   function guardar() {
-    const sinCantidad = form.geneticas.some(g => !parseFloat(g.cantidad))
-    if (!form.socio.trim() || form.geneticas.length === 0 || sinCantidad) {
-      showToast('Completá socio, genéticas y cantidades')
+    const filasValidas = form.filas.filter(f => f.nombre)
+    const sinCantidad = filasValidas.some(f => !parseFloat(f.cantidad))
+    if (!form.socio.trim() || filasValidas.length === 0 || sinCantidad) {
+      showToast('Completá socio, genética y cantidad')
       return
     }
+    const geneticas = filasValidas.map(f => ({ nombre: f.nombre, cantidad: f.cantidad }))
     const pedido = {
       id: Date.now(),
       fecha: hoyDDMM(),
       miembro,
       socio: form.socio.trim(),
-      geneticas: form.geneticas,
-      cantidadTotal,
+      geneticas,
       precio,
       total,
       propio: form.propio,
@@ -84,55 +154,57 @@ function FormNuevo({ onGuardar }) {
       entregado: form.entregado,
     }
     onGuardar(pedido)
-    setForm(formInicial)
+    setForm({ ...formInicial, filas: [filaVacia()] })
     showToast('Pedido guardado ✓')
   }
 
   return (
     <div className="content">
-      {/* Miembro */}
       <div className="miembro-row">
         {MIEMBROS.map(m => (
           <button key={m} className={`miembro-btn${miembro === m ? ' active' : ''}`} onClick={() => setMiembro(m)}>{m}</button>
         ))}
       </div>
 
-      {/* Datos del pedido */}
       <div className="card">
         <div className="form-grid">
           <div className="form-group full">
             <label className="form-label">Socio</label>
             <input className="form-control" type="text" placeholder="Nombre del socio..." value={form.socio} onChange={e => set('socio', e.target.value)} />
           </div>
+
           <div className="form-group full">
             <label className="form-label">Genética</label>
-            <div className="genetica-grid">
-              {GENETICAS.map(g => {
-                const sel = form.geneticas.find(x => x.nombre === g)
-                return (
-                  <div key={g} className="genetica-item">
-                    <button
-                      type="button"
-                      className={`genetica-btn${sel ? ' active' : ''}`}
-                      onClick={() => toggleGenetica(g)}
-                    >
-                      {g}
-                    </button>
-                    {sel && (
-                      <input
-                        className="form-control genetica-cantidad"
-                        type="number"
-                        placeholder="g"
-                        min="0"
-                        value={sel.cantidad}
-                        onChange={e => setCantidadGenetica(g, e.target.value)}
-                      />
-                    )}
-                  </div>
-                )
-              })}
+            <div className="filas-genetica">
+              {form.filas.map((fila, idx) => (
+                <div key={fila.id} className="fila-genetica">
+                  <select
+                    className="form-control"
+                    value={fila.nombre}
+                    onChange={e => setFila(fila.id, 'nombre', e.target.value)}
+                  >
+                    <option value="">Seleccionar...</option>
+                    {GENETICAS.map(g => <option key={g} value={g}>{g}</option>)}
+                  </select>
+                  <input
+                    className="form-control fila-cantidad"
+                    type="number"
+                    placeholder="g"
+                    min="0"
+                    value={fila.cantidad}
+                    onChange={e => setFila(fila.id, 'cantidad', e.target.value)}
+                  />
+                  {form.filas.length > 1 && (
+                    <button className="btn-eliminar-fila" onClick={() => eliminarFila(fila.id)}>✕</button>
+                  )}
+                </div>
+              ))}
             </div>
+            <button className="btn-agregar-fila" onClick={agregarFila}>
+              + Agregar genética al pedido
+            </button>
           </div>
+
           <div className="form-group">
             <label className="form-label">Precio por g ($)</label>
             <input className="form-control" type="number" placeholder="0" min="0" value={form.precio} onChange={e => set('precio', e.target.value)} disabled={form.propio} />
@@ -146,7 +218,6 @@ function FormNuevo({ onGuardar }) {
         </div>
       </div>
 
-      {/* Toggles */}
       <div className="card">
         <div className="toggle-group">
           <div className="toggle-row">
@@ -156,7 +227,6 @@ function FormNuevo({ onGuardar }) {
               <span className="toggle-slider" />
             </label>
           </div>
-
           {!form.propio && (
             <>
               <div className="toggle-row">
@@ -183,7 +253,6 @@ function FormNuevo({ onGuardar }) {
               )}
             </>
           )}
-
           <div className="toggle-row">
             <span className="toggle-label">Pedido entregado</span>
             <label className="toggle-switch">
@@ -195,15 +264,580 @@ function FormNuevo({ onGuardar }) {
       </div>
 
       <button className="btn-submit" onClick={guardar}>Guardar pedido</button>
+      <div className={`toast${toast.show ? ' show' : ''}`}>{toast.msg}</div>
+    </div>
+  )
+}
+
+const STOCK_INICIAL = Object.fromEntries(GENETICAS.map(g => [g, 400]))
+
+const CATEGORIAS_GASTOS = [
+  'Servicios',
+  'Alquiler',
+  'Insumos cultivo',
+  'Marketing',
+  'Bonos comisión directiva',
+  'Gastos estructurales',
+  'Inversiones',
+]
+
+const mesActual = () => {
+  const d = new Date()
+  return `${d.getMonth() + 1}/${d.getFullYear()}`
+}
+
+// ─── Tab Gastos ───────────────────────────────────────────────
+function TabGastos() {
+  const [gastos, setGastos] = useState([])
+  const [mostrarForm, setMostrarForm] = useState(false)
+  const [form, setForm] = useState({ descripcion: '', categoria: '', monto: '', fecha: hoyDDMM() })
+  const [toast, setToast] = useState({ show: false, msg: '' })
+  const [filtroMes, setFiltroMes] = useState('todos')
+  const [filtrocat, setFiltrocat] = useState('todas')
+
+  useEffect(() => {
+    supabase.from('gastos').select('*').order('created_at', { ascending: false })
+      .then(({ data }) => { if (data) setGastos(data) })
+  }, [])
+
+  const set = (k, v) => setForm(f => ({ ...f, [k]: v }))
+
+  function showToast(msg) {
+    setToast({ show: true, msg })
+    setTimeout(() => setToast({ show: false, msg: '' }), 2500)
+  }
+
+  async function guardarGasto() {
+    if (!form.descripcion.trim() || !form.categoria || !parseFloat(form.monto)) {
+      showToast('Completá descripción, categoría y monto')
+      return
+    }
+    const nuevoGasto = {
+      descripcion: form.descripcion.trim(),
+      categoria: form.categoria,
+      monto: parseFloat(form.monto),
+      fecha: form.fecha,
+      mes: mesActual(),
+    }
+    const { data, error } = await supabase.from('gastos').insert(nuevoGasto).select().single()
+    if (!error && data) {
+      setGastos(prev => [data, ...prev])
+      setForm({ descripcion: '', categoria: '', monto: '', fecha: hoyDDMM() })
+      setMostrarForm(false)
+      showToast('Gasto registrado ✓')
+    } else {
+      showToast('Error al guardar')
+    }
+  }
+
+  const filtrados = gastos.filter(g => {
+    const mesOk = filtroMes === 'todos' || g.mes === filtroMes
+    const catOk = filtrocat === 'todas' || g.categoria === filtrocat
+    return mesOk && catOk
+  })
+
+  const totalFiltrado = filtrados.reduce((s, g) => s + g.monto, 0)
+
+  const meses = [...new Set(gastos.map(g => g.mes))]
+
+  const porCategoria = CATEGORIAS_GASTOS.map(cat => ({
+    cat,
+    total: filtrados.filter(g => g.categoria === cat).reduce((s, g) => s + g.monto, 0)
+  })).filter(x => x.total > 0)
+
+  return (
+    <div className="content">
+      {/* Resumen por categoría */}
+      {porCategoria.length > 0 && (
+        <div className="card">
+          <div style={{ marginBottom: 10 }}>
+            <span className="form-label">Resumen</span>
+          </div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+            {porCategoria.map(({ cat, total }) => (
+              <div key={cat} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <span style={{ fontSize: 13, color: 'var(--text-secondary)' }}>{cat}</span>
+                <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--text-primary)' }}>{formatPesos(total)}</span>
+              </div>
+            ))}
+            <div style={{ borderTop: '0.5px solid var(--border)', paddingTop: 10, marginTop: 2, display: 'flex', justifyContent: 'space-between' }}>
+              <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--text-primary)' }}>Total</span>
+              <span style={{ fontSize: 15, fontWeight: 700, color: 'var(--text-primary)' }}>{formatPesos(totalFiltrado)}</span>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Filtros */}
+      {gastos.length > 0 && (
+        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+          <select className="form-control" style={{ flex: 1, height: 34, fontSize: 12 }} value={filtroMes} onChange={e => setFiltroMes(e.target.value)}>
+            <option value="todos">Todos los meses</option>
+            {meses.map(m => <option key={m} value={m}>{m}</option>)}
+          </select>
+          <select className="form-control" style={{ flex: 1, height: 34, fontSize: 12 }} value={filtrocat} onChange={e => setFiltrocat(e.target.value)}>
+            <option value="todas">Todas las categorías</option>
+            {CATEGORIAS_GASTOS.map(c => <option key={c} value={c}>{c}</option>)}
+          </select>
+        </div>
+      )}
+
+      {/* Formulario */}
+      {mostrarForm && (
+        <div className="card">
+          <div className="form-grid">
+            <div className="form-group full">
+              <label className="form-label">Descripción</label>
+              <input className="form-control" type="text" placeholder="Ej: Factura de luz mayo" value={form.descripcion} onChange={e => set('descripcion', e.target.value)} />
+            </div>
+            <div className="form-group full">
+              <label className="form-label">Categoría</label>
+              <select className="form-control" value={form.categoria} onChange={e => set('categoria', e.target.value)}>
+                <option value="">Seleccionar...</option>
+                {CATEGORIAS_GASTOS.map(c => <option key={c} value={c}>{c}</option>)}
+              </select>
+            </div>
+            <div className="form-group">
+              <label className="form-label">Monto ($)</label>
+              <input className="form-control" type="number" placeholder="0" min="0" value={form.monto} onChange={e => set('monto', e.target.value)} />
+            </div>
+            <div className="form-group">
+              <label className="form-label">Fecha</label>
+              <input className="form-control" type="text" placeholder="dd/mm" value={form.fecha} onChange={e => set('fecha', e.target.value)} />
+            </div>
+          </div>
+          <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
+            <button className="btn-submit" onClick={guardarGasto} style={{ flex: 1 }}>Guardar gasto</button>
+            <button onClick={() => setMostrarForm(false)} style={{ padding: '0 16px', border: '0.5px solid var(--border-mid)', borderRadius: 'var(--radius-md)', background: 'transparent', cursor: 'pointer', fontSize: 13, color: 'var(--text-secondary)' }}>Cancelar</button>
+          </div>
+        </div>
+      )}
+
+      {!mostrarForm && (
+        <button className="btn-agregar-fila" onClick={() => setMostrarForm(true)}>
+          + Registrar gasto
+        </button>
+      )}
+
+      {/* Lista de gastos */}
+      <div className="pedidos-list">
+        {filtrados.length === 0
+          ? <div className="empty-state">No hay gastos registrados aún.</div>
+          : filtrados.map(g => (
+            <div className="pedido-card" key={g.id} style={{ cursor: 'default' }}>
+              <div>
+                <div className="pedido-nombre">{g.descripcion}</div>
+                <div className="pedido-sub">{g.fecha} · {g.categoria}</div>
+              </div>
+              <div className="pedido-right">
+                <span className="pedido-total" style={{ color: '#791F1F' }}>{formatPesos(g.monto)}</span>
+              </div>
+            </div>
+          ))
+        }
+      </div>
 
       <div className={`toast${toast.show ? ' show' : ''}`}>{toast.msg}</div>
     </div>
   )
 }
 
-// ─── Lista de pedidos ─────────────────────────────────────────
-function ListaPedidos({ pedidos }) {
+// ─── Tab Stock Producción ─────────────────────────────────────
+function TabStock({ stock }) {
+  const total = Object.values(stock).reduce((s, v) => s + v, 0)
+
+  return (
+    <div className="content">
+      <div className="card" style={{ marginBottom: 0 }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 }}>
+          <span className="form-label">Genética</span>
+          <span className="form-label">Stock disponible</span>
+        </div>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+          {GENETICAS.map(g => {
+            const gramos = stock[g] ?? 0
+            const pct = Math.max(0, Math.min(100, (gramos / 400) * 100))
+            const color = gramos === 0 ? '#791F1F' : gramos < 50 ? '#854F0B' : 'var(--green-dark)'
+            return (
+              <div key={g}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 5 }}>
+                  <span style={{ fontSize: 14, color: 'var(--text-primary)', fontWeight: 500 }}>{g}</span>
+                  <span style={{ fontSize: 14, fontWeight: 600, color }}>{gramos}g</span>
+                </div>
+                <div style={{ height: 6, borderRadius: 99, background: 'var(--bg-secondary)', overflow: 'hidden' }}>
+                  <div style={{ height: '100%', width: `${pct}%`, borderRadius: 99, background: color, transition: 'width 0.3s' }} />
+                </div>
+              </div>
+            )
+          })}
+        </div>
+        <div style={{ marginTop: 16, paddingTop: 14, borderTop: '0.5px solid var(--border)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <span className="form-label">Total en stock</span>
+          <span style={{ fontSize: 16, fontWeight: 600, color: 'var(--text-primary)' }}>{total}g</span>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// ─── Tab Calendario de Cultivo ────────────────────────────────
+const paramsCultivo = [
+  { key: 'fertilizante', label: 'Fertilizante', placeholder: 'Ej: Calcium + Grow + PH-' },
+  { key: 'ec', label: 'EC', placeholder: 'Ej: 1.4' },
+  { key: 'ph', label: 'pH', placeholder: 'Ej: 6.0' },
+  { key: 'maceta', label: 'Maceta', placeholder: 'Ej: 1L' },
+  { key: 'luz', label: 'Intensidad lumínica', placeholder: 'Ej: 300 ppfd' },
+  { key: 'temperatura', label: 'Temperatura promedio', placeholder: 'Ej: 24°C' },
+  { key: 'humedad', label: 'Humedad promedio', placeholder: 'Ej: 60%' },
+  { key: 'tareas', label: 'Tareas / Notas', placeholder: 'Ej: Insecticida aplicado' },
+]
+
+const cicloVacio = (tipo) => ({ nombre: '', tipo, semanaActual: 1, semanas: {} })
+
+function SeccionCiclo({ ciclo, onChange, riegoPromedios = {} }) {
+  const semana = ciclo.semanaActual
+  const datos = ciclo.semanas[semana] || {}
+  const [editandoNombre, setEditandoNombre] = useState(false)
+  const [toast, setToast] = useState({ show: false, msg: '' })
+
+  function setParam(key, val) {
+    onChange({ ...ciclo, semanas: { ...ciclo.semanas, [semana]: { ...datos, [key]: val } } })
+  }
+
+  function showToast(msg) {
+    setToast({ show: true, msg })
+    setTimeout(() => setToast({ show: false, msg: '' }), 2000)
+  }
+
+  const color = ciclo.tipo === 'vegetativo' ? 'var(--green-dark)' : '#7B4F9E'
+  const colorLight = ciclo.tipo === 'vegetativo' ? 'var(--green-light)' : '#F3EAF9'
+  const colorBorder = ciclo.tipo === 'vegetativo' ? 'var(--green-border)' : '#D4B8E8'
+  const tieneDatos = ciclo.semanas[semana] && Object.values(ciclo.semanas[semana]).some(v => v)
+
+  return (
+    <div className="card">
+      <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', marginBottom: 14 }}>
+        <div style={{ flex: 1 }}>
+          <span style={{ fontSize: 11, fontWeight: 500, color, textTransform: 'uppercase', letterSpacing: '0.04em' }}>
+            {ciclo.tipo === 'vegetativo' ? 'Vegetativo' : 'Floración'}
+          </span>
+          {editandoNombre ? (
+            <input
+              className="form-control"
+              style={{ marginTop: 4, height: 32, fontSize: 14, fontWeight: 600 }}
+              value={ciclo.nombre}
+              placeholder="Nombre del ciclo..."
+              onChange={e => onChange({ ...ciclo, nombre: e.target.value })}
+              onBlur={() => setEditandoNombre(false)}
+              autoFocus
+            />
+          ) : (
+            <div
+              style={{ fontSize: 15, fontWeight: 600, color: 'var(--text-primary)', marginTop: 2, cursor: 'pointer' }}
+              onClick={() => setEditandoNombre(true)}
+            >
+              {ciclo.nombre || <span style={{ color: 'var(--text-secondary)', fontWeight: 400, fontSize: 13 }}>Tocá para nombrar el ciclo...</span>}
+            </div>
+          )}
+        </div>
+      </div>
+
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 14, background: colorLight, borderRadius: 8, padding: '8px 12px', border: `0.5px solid ${colorBorder}` }}>
+        <button
+          onClick={() => onChange({ ...ciclo, semanaActual: Math.max(1, semana - 1) })}
+          disabled={semana === 1}
+          style={{ background: 'none', border: 'none', fontSize: 22, cursor: semana === 1 ? 'not-allowed' : 'pointer', color: semana === 1 ? 'var(--text-secondary)' : color, opacity: semana === 1 ? 0.4 : 1, padding: '0 8px', lineHeight: 1 }}
+        >‹</button>
+        <div style={{ textAlign: 'center' }}>
+          <div style={{ fontSize: 16, fontWeight: 700, color }}>{`Semana ${semana}`}</div>
+          {tieneDatos && <div style={{ fontSize: 10, color, opacity: 0.7, marginTop: 1 }}>● datos cargados</div>}
+        </div>
+        <button
+          onClick={() => onChange({ ...ciclo, semanaActual: semana + 1 })}
+          style={{ background: 'none', border: 'none', fontSize: 22, cursor: 'pointer', color, padding: '0 8px', lineHeight: 1 }}
+        >›</button>
+      </div>
+
+      {riegoPromedios[semana] && Object.keys(riegoPromedios[semana]).length > 0 && (() => {
+        const prom = riegoPromedios[semana]
+        return (
+          <div style={{ background: colorLight, border: `0.5px solid ${colorBorder}`, borderRadius: 8, padding: '10px 12px', marginBottom: 10 }}>
+            <div style={{ fontSize: 11, fontWeight: 500, color, textTransform: 'uppercase', letterSpacing: '0.04em', marginBottom: 8 }}>
+              Promedio riegos · Semana {semana}
+            </div>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '5px 12px' }}>
+              {[['EC', prom.ec], ['pH', prom.ph], ['PPFD', prom.ppfd], ['Pulsos', prom.pulsos], ['ML', prom.ml], ['VPD', prom.vpd], ['HR', prom.hr ? prom.hr + '%' : null], ['Temp', prom.temp ? prom.temp + '°C' : null]].map(([label, val]) => val ? (
+                <div key={label} style={{ display: 'flex', justifyContent: 'space-between' }}>
+                  <span style={{ fontSize: 12, color: 'var(--text-secondary)' }}>{label}</span>
+                  <span style={{ fontSize: 12, fontWeight: 600, color }}>{val}</span>
+                </div>
+              ) : null)}
+            </div>
+          </div>
+        )
+      })()}
+
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+        {paramsCultivo.map(p => (
+          <div key={p.key} className="form-group">
+            <label className="form-label">{p.label}</label>
+            <input
+              className="form-control"
+              type="text"
+              placeholder={p.placeholder}
+              value={datos[p.key] || ''}
+              onChange={e => setParam(p.key, e.target.value)}
+            />
+          </div>
+        ))}
+      </div>
+
+      <button className="btn-submit" style={{ marginTop: 14, background: color }} onClick={() => showToast(`Semana ${semana} guardada ✓`)}>
+        Guardar semana {semana}
+      </button>
+
+      <div className={`toast${toast.show ? ' show' : ''}`}>{toast.msg}</div>
+    </div>
+  )
+}
+
+function TabCalendario({ riegoPromediosVege, riegoPromediosFlora }) {
+  const [vege, setVege] = useState(cicloVacio('vegetativo'))
+  const [flora, setFlora] = useState(cicloVacio('floracion'))
+  return (
+    <div className="content">
+      <SeccionCiclo ciclo={vege} onChange={setVege} riegoPromedios={riegoPromediosVege} />
+      <SeccionCiclo ciclo={flora} onChange={setFlora} riegoPromedios={riegoPromediosFlora} />
+    </div>
+  )
+}
+
+// ─── Tab Riegos ───────────────────────────────────────────────
+const paramsRiego = [
+  { key: 'ec', label: 'EC', placeholder: 'Ej: 1.4' },
+  { key: 'ph', label: 'pH', placeholder: 'Ej: 6.0' },
+  { key: 'ppfd', label: 'PPFD', placeholder: 'Ej: 300' },
+  { key: 'pulsos', label: 'Pulsos (cantidad)', placeholder: 'Ej: 3' },
+  { key: 'tiempoPulso', label: 'Tiempo pulso', placeholder: 'Ej: 30min' },
+  { key: 'ml', label: 'ML por disparo', placeholder: 'Ej: 150' },
+  { key: 'vpd', label: 'VPD', placeholder: 'Ej: 1.2' },
+  { key: 'hr', label: 'HR (%)', placeholder: 'Ej: 60' },
+  { key: 'temp', label: 'Temperatura (°C)', placeholder: 'Ej: 24' },
+  { key: 'fertilizantes', label: 'Fertilizantes', placeholder: 'Ej: Calcium + Grow' },
+]
+
+const riegoVacio = () => ({
+  ec: '', ph: '', ppfd: '', pulsos: '', tiempoPulso: '',
+  ml: '', vpd: '', hr: '', temp: '', fertilizantes: '',
+})
+
+function promediarRiegos(riegos) {
+  if (!riegos || riegos.length === 0) return {}
+  const keys = ['ec', 'ph', 'ppfd', 'pulsos', 'ml', 'vpd', 'hr', 'temp']
+  const resultado = {}
+  keys.forEach(k => {
+    const vals = riegos.map(r => parseFloat(r[k])).filter(v => !isNaN(v))
+    if (vals.length > 0) {
+      resultado[k] = (vals.reduce((a, b) => a + b, 0) / vals.length).toFixed(1)
+    }
+  })
+  // No numéricos: tomar el último valor
+  ;['tiempoPulso', 'fertilizantes'].forEach(k => {
+    const last = [...riegos].reverse().find(r => r[k])
+    if (last) resultado[k] = last[k]
+  })
+  return resultado
+}
+
+function hoyCompleto() {
+  const d = new Date()
+  return `${d.getDate()}/${d.getMonth() + 1}/${d.getFullYear()}`
+}
+
+function getSemanaKey(riegos, semana) {
+  return riegos.filter(r => r.semana === semana)
+}
+
+function TabRiegos({ onRiegosChange }) {
+  const [etapa, setEtapa] = useState('vegetativo')
+  const [riegosVege, setRiegosVege] = useState([])
+  const [riegosFlora, setRiegosFlora] = useState([])
+  const [semanaFiltro, setSemanaFiltro] = useState(1)
+  const [mostrarForm, setMostrarForm] = useState(false)
+  const [form, setForm] = useState({ ...riegoVacio(), fecha: hoyCompleto(), semana: 1 })
+  const [toast, setToast] = useState({ show: false, msg: '' })
+
+  useEffect(() => {
+    supabase.from('riegos').select('*').order('created_at', { ascending: false })
+      .then(({ data }) => {
+        if (data) {
+          const vege = data.filter(r => r.etapa === 'vegetativo')
+          const flora = data.filter(r => r.etapa === 'floracion')
+          setRiegosVege(vege)
+          setRiegosFlora(flora)
+          // Recalcular promedios
+          ;['vegetativo', 'floracion'].forEach(et => {
+            const riegos = et === 'vegetativo' ? vege : flora
+            const semanas = [...new Set(riegos.map(r => r.semana))]
+            const promedios = {}
+            semanas.forEach(s => { promedios[s] = promediarRiegos(riegos.filter(r => r.semana === s)) })
+            onRiegosChange(et, promedios)
+          })
+        }
+      })
+  }, [])
+
+  const riegos = etapa === 'vegetativo' ? riegosVege : riegosFlora
+  const setRiegos = etapa === 'vegetativo' ? setRiegosVege : setRiegosFlora
+
+  const color = etapa === 'vegetativo' ? 'var(--green-dark)' : '#7B4F9E'
+  const colorLight = etapa === 'vegetativo' ? 'var(--green-light)' : '#F3EAF9'
+  const colorBorder = etapa === 'vegetativo' ? 'var(--green-border)' : '#D4B8E8'
+
+  const set = (k, v) => setForm(f => ({ ...f, [k]: v }))
+
+  function showToast(msg) {
+    setToast({ show: true, msg })
+    setTimeout(() => setToast({ show: false, msg: '' }), 2500)
+  }
+
+  async function guardarRiego() {
+    if (!form.fecha) { showToast('Completá la fecha'); return }
+    const { data, error } = await supabase.from('riegos').insert({
+      etapa,
+      semana: form.semana,
+      fecha: form.fecha,
+      ec: form.ec, ph: form.ph, ppfd: form.ppfd,
+      pulsos: form.pulsos, tiempo_pulso: form.tiempoPulso,
+      ml: form.ml, vpd: form.vpd, hr: form.hr,
+      temp: form.temp, fertilizantes: form.fertilizantes,
+    }).select().single()
+
+    if (!error && data) {
+      const nuevo = { ...data, tiempoPulso: data.tiempo_pulso }
+      const nuevosRiegos = [nuevo, ...(etapa === 'vegetativo' ? riegosVege : riegosFlora)]
+      if (etapa === 'vegetativo') setRiegosVege(nuevosRiegos)
+      else setRiegosFlora(nuevosRiegos)
+
+      const semanas = [...new Set(nuevosRiegos.map(r => r.semana))]
+      const promedios = {}
+      semanas.forEach(s => { promedios[s] = promediarRiegos(nuevosRiegos.filter(r => r.semana === s)) })
+      onRiegosChange(etapa, promedios)
+
+      setForm({ ...riegoVacio(), fecha: hoyCompleto(), semana: form.semana })
+      setMostrarForm(false)
+      showToast('Riego registrado ✓')
+    } else {
+      showToast('Error al guardar')
+    }
+  }
+
+  const semanas = [...new Set(riegos.map(r => r.semana))].sort((a, b) => a - b)
+  const riegosFiltrados = riegos.filter(r => r.semana === semanaFiltro)
+
+  return (
+    <div className="content">
+      {/* Selector etapa */}
+      <div className="miembro-row">
+        <button className={`miembro-btn${etapa === 'vegetativo' ? ' active' : ''}`} onClick={() => setEtapa('vegetativo')}>Vegetativo</button>
+        <button className={`miembro-btn${etapa === 'floracion' ? ' active' : ''}`} style={etapa === 'floracion' ? { background: '#F3EAF9', borderColor: '#D4B8E8', color: '#7B4F9E' } : {}} onClick={() => setEtapa('floracion')}>Floración</button>
+      </div>
+
+      {/* Selector semana */}
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', background: colorLight, borderRadius: 8, padding: '8px 12px', border: `0.5px solid ${colorBorder}` }}>
+        <button onClick={() => setSemanaFiltro(s => Math.max(1, s - 1))} disabled={semanaFiltro === 1}
+          style={{ background: 'none', border: 'none', fontSize: 22, cursor: semanaFiltro === 1 ? 'not-allowed' : 'pointer', color: semanaFiltro === 1 ? 'var(--text-secondary)' : color, opacity: semanaFiltro === 1 ? 0.4 : 1, padding: '0 8px', lineHeight: 1 }}>‹</button>
+        <div style={{ textAlign: 'center' }}>
+          <div style={{ fontSize: 16, fontWeight: 700, color }}>Semana {semanaFiltro}</div>
+          <div style={{ fontSize: 11, color: 'var(--text-secondary)' }}>{riegosFiltrados.length} riego{riegosFiltrados.length !== 1 ? 's' : ''} registrado{riegosFiltrados.length !== 1 ? 's' : ''}</div>
+        </div>
+        <button onClick={() => setSemanaFiltro(s => s + 1)}
+          style={{ background: 'none', border: 'none', fontSize: 22, cursor: 'pointer', color, padding: '0 8px', lineHeight: 1 }}>›</button>
+      </div>
+
+      {/* Formulario */}
+      {mostrarForm && (
+        <div className="card">
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+            <span className="form-label">Nuevo riego — Semana {form.semana}</span>
+            <button onClick={() => setMostrarForm(false)} style={{ background: 'none', border: 'none', color: 'var(--text-secondary)', cursor: 'pointer', fontSize: 18 }}>✕</button>
+          </div>
+          <div className="form-grid">
+            <div className="form-group">
+              <label className="form-label">Semana</label>
+              <input className="form-control" type="number" min="1" value={form.semana} onChange={e => set('semana', parseInt(e.target.value) || 1)} />
+            </div>
+            <div className="form-group">
+              <label className="form-label">Fecha</label>
+              <input className="form-control" type="text" placeholder="dd/mm/aaaa" value={form.fecha} onChange={e => set('fecha', e.target.value)} />
+            </div>
+            {paramsRiego.map(p => (
+              <div key={p.key} className="form-group">
+                <label className="form-label">{p.label}</label>
+                <input className="form-control" type="text" placeholder={p.placeholder} value={form[p.key]} onChange={e => set(p.key, e.target.value)} />
+              </div>
+            ))}
+          </div>
+          <button className="btn-submit" style={{ marginTop: 14, background: color }} onClick={guardarRiego}>
+            Guardar riego
+          </button>
+        </div>
+      )}
+
+      {!mostrarForm && (
+        <button className="btn-agregar-fila" onClick={() => { setForm(f => ({ ...f, semana: semanaFiltro })); setMostrarForm(true) }}>
+          + Registrar riego semana {semanaFiltro}
+        </button>
+      )}
+
+      {/* Lista riegos de la semana */}
+      <div className="pedidos-list">
+        {riegosFiltrados.length === 0
+          ? <div className="empty-state">No hay riegos registrados para la semana {semanaFiltro}.</div>
+          : riegosFiltrados.map(r => (
+            <div className="pedido-card" key={r.id} style={{ cursor: 'default' }}>
+              <div>
+                <div className="pedido-nombre">{r.fecha}</div>
+                <div className="pedido-sub">
+                  EC {r.ec || '—'} · pH {r.ph || '—'} · {r.pulsos || '—'} pulsos · {r.ml || '—'}ml
+                </div>
+                {r.fertilizantes && <div className="pedido-sub" style={{ marginTop: 3 }}>{r.fertilizantes}</div>}
+              </div>
+              <div className="pedido-right">
+                <span style={{ fontSize: 11, color: 'var(--text-secondary)' }}>VPD {r.vpd || '—'}</span>
+                <span style={{ fontSize: 11, color: 'var(--text-secondary)' }}>{r.temp || '—'}°C · {r.hr || '—'}%HR</span>
+              </div>
+            </div>
+          ))
+        }
+      </div>
+
+      {/* Promedio de la semana */}
+      {riegosFiltrados.length > 0 && (() => {
+        const prom = promediarRiegos(riegosFiltrados)
+        return (
+          <div className="card" style={{ borderColor: colorBorder, background: colorLight }}>
+            <div className="form-label" style={{ marginBottom: 10 }}>Promedio semana {semanaFiltro}</div>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '6px 12px' }}>
+              {[['EC', prom.ec], ['pH', prom.ph], ['PPFD', prom.ppfd], ['Pulsos', prom.pulsos], ['ML', prom.ml], ['VPD', prom.vpd], ['HR', prom.hr ? prom.hr + '%' : null], ['Temp', prom.temp ? prom.temp + '°C' : null]].map(([label, val]) => val ? (
+                <div key={label} style={{ display: 'flex', justifyContent: 'space-between' }}>
+                  <span style={{ fontSize: 12, color: 'var(--text-secondary)' }}>{label}</span>
+                  <span style={{ fontSize: 12, fontWeight: 600, color }}>{val}</span>
+                </div>
+              ) : null)}
+            </div>
+          </div>
+        )
+      })()}
+
+      <div className={`toast${toast.show ? ' show' : ''}`}>{toast.msg}</div>
+    </div>
+  )
+}
+
+function ListaPedidos({ pedidos, onActualizar }) {
   const [filtro, setFiltro] = useState('todos')
+  const [editando, setEditando] = useState(null)
 
   const filtrados = pedidos.filter(p => {
     if (filtro === 'sin-entregar') return !p.entregado
@@ -241,7 +875,7 @@ function ListaPedidos({ pedidos }) {
         {filtrados.length === 0 ? (
           <div className="empty-state">No hay pedidos aún.<br />Cargá el primero desde "Nuevo pedido".</div>
         ) : filtrados.map(p => (
-          <div className="pedido-card" key={p.id}>
+          <div className="pedido-card" key={p.id} onClick={() => setEditando(p)}>
             <div>
               <div className="pedido-nombre">{p.socio}</div>
               <div className="pedido-sub">{p.geneticas.map(g => `${g.nombre} ${g.cantidad}g`).join(' · ')} · {p.fecha} · {p.miembro}</div>
@@ -258,10 +892,22 @@ function ListaPedidos({ pedidos }) {
             <div className="pedido-right">
               <span className="pedido-total">{p.propio ? '—' : formatPesos(p.total)}</span>
               {p.pagado && <span className="pedido-metodo">{p.metodoPago}</span>}
+              <span className="pedido-editar-hint">Tocar para editar</span>
             </div>
           </div>
         ))}
       </div>
+
+      {editando && (
+        <ModalEditar
+          pedido={editando}
+          onGuardar={actualizado => {
+            onActualizar(actualizado, editando)
+            setEditando(null)
+          }}
+          onCerrar={() => setEditando(null)}
+        />
+      )}
     </div>
   )
 }
@@ -270,11 +916,131 @@ function ListaPedidos({ pedidos }) {
 export default function App() {
   const [tab, setTab] = useState('nuevo')
   const [pedidos, setPedidos] = useState([])
+  const [stock, setStock] = useState(STOCK_INICIAL)
+  const [riegoPromediosVege, setRiegoPromediosVege] = useState({})
+  const [riegoPromediosFlora, setRiegoPromediosFlora] = useState({})
+  const [cargando, setCargando] = useState(true)
 
-  const guardarPedido = useCallback(p => {
-    setPedidos(prev => [p, ...prev])
-    setTab('pedidos')
+  // ── Carga inicial desde Supabase ──
+  useEffect(() => {
+    async function cargarDatos() {
+      // Pedidos
+      const { data: pedidosData } = await supabase
+        .from('pedidos')
+        .select('*')
+        .order('created_at', { ascending: false })
+      if (pedidosData) setPedidos(pedidosData.map(p => ({
+        ...p,
+        metodoPago: p.metodo_pago,
+        fechaCobro: p.fecha_cobro,
+      })))
+
+      // Stock
+      const { data: stockData } = await supabase.from('stock').select('*')
+      if (stockData) {
+        const stockObj = {}
+        stockData.forEach(s => { stockObj[s.genetica] = s.gramos })
+        setStock(stockObj)
+      }
+
+      setCargando(false)
+    }
+    cargarDatos()
   }, [])
+
+  // ── Stock helpers ──
+  async function descontarStock(pedido) {
+    setStock(prev => {
+      const next = { ...prev }
+      pedido.geneticas.forEach(g => { next[g.nombre] = (next[g.nombre] ?? 0) - parseFloat(g.cantidad) })
+      return next
+    })
+    for (const g of pedido.geneticas) {
+      await supabase.rpc('decrementar_stock', { p_genetica: g.nombre, p_cantidad: parseFloat(g.cantidad) })
+        .catch(() => supabase.from('stock').update({ gramos: supabase.raw(`gramos - ${parseFloat(g.cantidad)}`) }).eq('genetica', g.nombre))
+    }
+  }
+
+  async function reponerStock(pedido) {
+    setStock(prev => {
+      const next = { ...prev }
+      pedido.geneticas.forEach(g => { next[g.nombre] = (next[g.nombre] ?? 0) + parseFloat(g.cantidad) })
+      return next
+    })
+    for (const g of pedido.geneticas) {
+      const gramos = stock[g.nombre] + parseFloat(g.cantidad)
+      await supabase.from('stock').update({ gramos }).eq('genetica', g.nombre)
+    }
+  }
+
+  // ── Guardar pedido ──
+  const guardarPedido = useCallback(async p => {
+    const { data, error } = await supabase.from('pedidos').insert({
+      fecha: p.fecha,
+      miembro: p.miembro,
+      socio: p.socio,
+      geneticas: p.geneticas,
+      precio: p.precio,
+      total: p.total,
+      propio: p.propio,
+      pagado: p.pagado,
+      metodo_pago: p.metodoPago,
+      fecha_cobro: p.fechaCobro,
+      entregado: p.entregado,
+    }).select().single()
+
+    if (!error && data) {
+      const pedidoGuardado = { ...data, metodoPago: data.metodo_pago, fechaCobro: data.fecha_cobro }
+      setPedidos(prev => [pedidoGuardado, ...prev])
+      if (p.entregado) {
+        for (const g of p.geneticas) {
+          const nuevoStock = (stock[g.nombre] ?? 0) - parseFloat(g.cantidad)
+          await supabase.from('stock').update({ gramos: nuevoStock }).eq('genetica', g.nombre)
+          setStock(prev => ({ ...prev, [g.nombre]: nuevoStock }))
+        }
+      }
+    }
+    setTab('pedidos')
+  }, [stock])
+
+  // ── Actualizar pedido ──
+  const actualizarPedido = useCallback(async (actualizado, anterior) => {
+    const { error } = await supabase.from('pedidos').update({
+      pagado: actualizado.pagado,
+      metodo_pago: actualizado.metodoPago,
+      fecha_cobro: actualizado.fechaCobro,
+      entregado: actualizado.entregado,
+    }).eq('id', actualizado.id)
+
+    if (!error) {
+      setPedidos(prev => prev.map(p => p.id === actualizado.id ? actualizado : p))
+      if (!anterior.entregado && actualizado.entregado) {
+        for (const g of actualizado.geneticas) {
+          const nuevoStock = (stock[g.nombre] ?? 0) - parseFloat(g.cantidad)
+          await supabase.from('stock').update({ gramos: nuevoStock }).eq('genetica', g.nombre)
+          setStock(prev => ({ ...prev, [g.nombre]: nuevoStock }))
+        }
+      }
+      if (anterior.entregado && !actualizado.entregado) {
+        for (const g of actualizado.geneticas) {
+          const nuevoStock = (stock[g.nombre] ?? 0) + parseFloat(g.cantidad)
+          await supabase.from('stock').update({ gramos: nuevoStock }).eq('genetica', g.nombre)
+          setStock(prev => ({ ...prev, [g.nombre]: nuevoStock }))
+        }
+      }
+    }
+  }, [stock])
+
+  function handleRiegosChange(etapa, promedios) {
+    if (etapa === 'vegetativo') setRiegoPromediosVege(promedios)
+    else setRiegoPromediosFlora(promedios)
+  }
+
+  if (cargando) return (
+    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100vh', color: 'var(--text-secondary)', fontSize: 14 }}>
+      Cargando...
+    </div>
+  )
 
   return (
     <div className="app">
@@ -286,14 +1052,23 @@ export default function App() {
           </div>
         </div>
         <div className="tab-bar">
-          <button className={`tab${tab === 'nuevo' ? ' active' : ''}`} onClick={() => setTab('nuevo')}>Nuevo pedido</button>
+          <button className={`tab${tab === 'nuevo' ? ' active' : ''}`} onClick={() => setTab('nuevo')}>Pedidos</button>
           <button className={`tab${tab === 'pedidos' ? ' active' : ''}`} onClick={() => setTab('pedidos')}>
-            Pedidos {pedidos.length > 0 && `(${pedidos.length})`}
+            Lista {pedidos.length > 0 && `(${pedidos.length})`}
           </button>
+          <button className={`tab${tab === 'stock' ? ' active' : ''}`} onClick={() => setTab('stock')}>Stock</button>
+          <button className={`tab${tab === 'gastos' ? ' active' : ''}`} onClick={() => setTab('gastos')}>Gastos</button>
+          <button className={`tab${tab === 'riegos' ? ' active' : ''}`} onClick={() => setTab('riegos')}>Riegos</button>
+          <button className={`tab${tab === 'calendario' ? ' active' : ''}`} onClick={() => setTab('calendario')}>Cultivo</button>
         </div>
       </div>
 
-      {tab === 'nuevo' ? <FormNuevo onGuardar={guardarPedido} /> : <ListaPedidos pedidos={pedidos} />}
+      {tab === 'nuevo' && <FormNuevo onGuardar={guardarPedido} />}
+      {tab === 'pedidos' && <ListaPedidos pedidos={pedidos} onActualizar={actualizarPedido} />}
+      {tab === 'stock' && <TabStock stock={stock} />}
+      {tab === 'gastos' && <TabGastos />}
+      {tab === 'riegos' && <TabRiegos onRiegosChange={handleRiegosChange} />}
+      {tab === 'calendario' && <TabCalendario riegoPromediosVege={riegoPromediosVege} riegoPromediosFlora={riegoPromediosFlora} />}
     </div>
   )
 }

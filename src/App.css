@@ -17,7 +17,7 @@
 /* Tabs */
 .tab-bar { display: flex; gap: 0; }
 .tab {
-  flex: 1; padding: 10px 0; font-size: 14px; font-weight: 500;
+  flex: 1; padding: 10px 0; font-size: 12px; font-weight: 500;
   color: var(--text-secondary); border: none; background: transparent;
   border-bottom: 2px solid transparent; cursor: pointer; transition: color 0.15s;
 }
@@ -97,27 +97,55 @@ select.form-control { cursor: pointer; }
   padding: 12px 0 4px;
 }
 
-.genetica-grid {
-  display: flex; flex-direction: column; gap: 8px;
-}
-.genetica-item {
-  display: flex; align-items: center; gap: 8px;
-}
-.genetica-btn {
-  padding: 7px 14px; border-radius: 99px;
+.filas-genetica { display: flex; flex-direction: column; gap: 8px; margin-bottom: 10px; }
+.fila-genetica { display: flex; align-items: center; gap: 8px; }
+.fila-cantidad { width: 80px !important; height: 40px !important; text-align: center; flex-shrink: 0; }
+.btn-eliminar-fila {
+  width: 30px; height: 30px; border-radius: 50%;
   border: 0.5px solid var(--border-mid);
+  background: transparent; color: var(--text-secondary);
+  cursor: pointer; font-size: 12px; flex-shrink: 0;
+  display: flex; align-items: center; justify-content: center;
+  transition: all 0.15s;
+}
+.btn-eliminar-fila:hover { background: #FCEBEB; color: #791F1F; border-color: #791F1F; }
+.btn-agregar-fila {
+  width: 100%; padding: 9px;
+  border: 0.5px dashed var(--border-mid);
+  border-radius: var(--radius-md);
   background: transparent; font-size: 13px;
-  color: var(--text-secondary); cursor: pointer; transition: all 0.15s;
-  white-space: nowrap;
-}
-.genetica-btn.active {
-  background: var(--green-light); border-color: var(--green-border);
   color: var(--green-dark); font-weight: 500;
+  cursor: pointer; transition: all 0.15s;
 }
-.genetica-cantidad {
-  width: 80px !important; height: 34px !important;
-  font-size: 13px !important; text-align: center;
+.btn-agregar-fila:hover { background: var(--green-light); border-color: var(--green-border); }
+
+/* Modal */
+.modal-overlay {
+  position: fixed; inset: 0;
+  background: rgba(0,0,0,0.4);
+  display: flex; align-items: flex-end;
+  z-index: 200; padding: 0;
 }
+.modal-card {
+  background: var(--bg-card);
+  border-radius: var(--radius-lg) var(--radius-lg) 0 0;
+  padding: 20px 16px 32px;
+  width: 100%; max-width: 480px; margin: 0 auto;
+  display: flex; flex-direction: column; gap: 14px;
+}
+.modal-header { display: flex; justify-content: space-between; align-items: flex-start; }
+.modal-titulo { font-size: 16px; font-weight: 600; color: var(--text-primary); }
+.modal-sub { font-size: 12px; color: var(--text-secondary); margin-top: 2px; }
+.modal-cerrar {
+  background: var(--bg-secondary); border: none;
+  width: 28px; height: 28px; border-radius: 50%;
+  cursor: pointer; font-size: 13px; color: var(--text-secondary);
+  display: flex; align-items: center; justify-content: center;
+}
+
+.pedido-editar-hint { font-size: 10px; color: var(--text-secondary); opacity: 0.6; margin-top: 2px; }
+.pedido-card { cursor: pointer; transition: box-shadow 0.15s; }
+.pedido-card:hover { box-shadow: 0 2px 8px rgba(0,0,0,0.08); }
 
 /* Submit */
 .btn-submit {
