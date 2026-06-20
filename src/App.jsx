@@ -33,7 +33,7 @@ function ModalEditar({ pedido, onGuardar, onEliminar, onCerrar }) {
   const [form, setForm] = useState({
     socio: pedido.socio,
     miembro: pedido.miembro,
-    fecha: pedido.fecha,
+    fecha: pedido.fecha && pedido.mes ? `${pedido.fecha}/${pedido.mes.split('/')[1]}` : (pedido.fecha || ''),
     mes: pedido.mes || '',
     filas: pedido.geneticas.map(g => ({ id: Math.random(), nombre: g.nombre, cantidad: g.cantidad })),
     precio: pedido.precio,
@@ -61,7 +61,11 @@ function ModalEditar({ pedido, onGuardar, onEliminar, onCerrar }) {
     const filasValidas = form.filas.filter(f => f.nombre)
     if (!form.socio.trim() || filasValidas.length === 0) return
     const geneticas = filasValidas.map(f => ({ nombre: f.nombre, cantidad: f.cantidad }))
-    onGuardar({ ...pedido, ...form, geneticas, total, metodo_pago: form.metodoPago, fecha_cobro: form.fechaCobro })
+    // Inferir mes desde fecha completa dd/mm/aaaa
+    let mes = form.mes
+    const partes = form.fecha.split('/')
+    if (partes.length === 3) mes = `${parseInt(partes[1])}/${partes[2]}`
+    onGuardar({ ...pedido, ...form, mes, geneticas, total, metodo_pago: form.metodoPago, fecha_cobro: form.fechaCobro })
   }
 
   return (
@@ -85,13 +89,9 @@ function ModalEditar({ pedido, onGuardar, onEliminar, onCerrar }) {
             <label className="form-label">Socio</label>
             <input className="form-control" type="text" value={form.socio} onChange={e => set('socio', e.target.value)} />
           </div>
-          <div className="form-group">
+          <div className="form-group full">
             <label className="form-label">Fecha</label>
-            <input className="form-control" type="text" placeholder="dd/mm" value={form.fecha} onChange={e => set('fecha', e.target.value)} />
-          </div>
-          <div className="form-group">
-            <label className="form-label">Mes/Año</label>
-            <input className="form-control" type="text" placeholder="mm/aaaa" value={form.mes} onChange={e => set('mes', e.target.value)} />
+            <input className="form-control" type="text" placeholder="dd/mm/aaaa" value={form.fecha} onChange={e => set('fecha', e.target.value)} />
           </div>
         </div>
 
@@ -392,12 +392,86 @@ const CATEGORIAS_GASTOS_MAP = {
   'Hormi 2.0': ['Servicios', 'Alquiler', 'Insumos cultivo', 'Marketing', 'Bonos comisión directiva', 'Gastos estructurales', 'Inversiones', 'Insumos varios'],
 }
 
-function PanelGastos({ locacion, gastos, onNuevoGasto }) {
+function ModalEditarGasto({ gasto, categorias, onGuardar, onEliminar, onCerrar }) {
+  const [form, setForm] = useState({
+    descripcion: gasto.descripcion,
+    categoria: gasto.categoria,
+    monto: gasto.monto,
+    fecha: gasto.fecha || '',
+  })
+  const [confirmando, setConfirmando] = useState(false)
+  const set = (k, v) => setForm(f => ({ ...f, [k]: v }))
+
+  function guardar() {
+    if (!form.descripcion.trim() || !form.categoria || !parseFloat(form.monto)) return
+    const partes = form.fecha.split('/')
+    const mes = partes.length === 3 ? `${parseInt(partes[1])}/${partes[2]}` : gasto.mes
+    onGuardar({ ...gasto, ...form, monto: parseFloat(form.monto), mes })
+  }
+
+  return (
+    <div className="modal-overlay" onClick={onCerrar}>
+      <div className="modal-card" onClick={e => e.stopPropagation()} style={{ maxHeight: '90vh', overflowY: 'auto' }}>
+        <div className="modal-header">
+          <div className="modal-titulo">Editar gasto</div>
+          <button className="modal-cerrar" onClick={onCerrar}>✕</button>
+        </div>
+
+        <div className="form-grid">
+          <div className="form-group full">
+            <label className="form-label">Descripción</label>
+            <input className="form-control" type="text" value={form.descripcion} onChange={e => set('descripcion', e.target.value)} />
+          </div>
+          <div className="form-group full">
+            <label className="form-label">Categoría</label>
+            <select className="form-control" value={form.categoria} onChange={e => set('categoria', e.target.value)}>
+              <option value="">Seleccionar...</option>
+              {categorias.map(c => <option key={c} value={c}>{c}</option>)}
+            </select>
+          </div>
+          <div className="form-group">
+            <label className="form-label">Monto ($)</label>
+            <input className="form-control" type="number" min="0" value={form.monto} onChange={e => set('monto', e.target.value)} />
+          </div>
+          <div className="form-group">
+            <label className="form-label">Fecha</label>
+            <input className="form-control" type="text" placeholder="dd/mm/aaaa" value={form.fecha} onChange={e => set('fecha', e.target.value)} />
+          </div>
+        </div>
+
+        <button className="btn-submit" style={{ marginTop: 16 }} onClick={guardar}>
+          Guardar cambios
+        </button>
+
+        {!confirmando ? (
+          <button onClick={() => setConfirmando(true)} style={{ width: '100%', marginTop: 8, padding: '10px', border: '0.5px solid #791F1F', borderRadius: 'var(--radius-md)', background: 'transparent', color: '#791F1F', fontSize: 14, fontWeight: 500, cursor: 'pointer' }}>
+            Eliminar gasto
+          </button>
+        ) : (
+          <div style={{ marginTop: 8, background: '#FCEBEB', border: '0.5px solid #791F1F', borderRadius: 'var(--radius-md)', padding: 12 }}>
+            <div style={{ fontSize: 13, color: '#791F1F', fontWeight: 500, marginBottom: 10, textAlign: 'center' }}>¿Confirmás la eliminación?</div>
+            <div style={{ display: 'flex', gap: 8 }}>
+              <button onClick={() => onEliminar(gasto)} style={{ flex: 1, padding: '9px', background: '#791F1F', color: 'white', border: 'none', borderRadius: 'var(--radius-md)', fontSize: 13, fontWeight: 600, cursor: 'pointer' }}>
+                Sí, eliminar
+              </button>
+              <button onClick={() => setConfirmando(false)} style={{ flex: 1, padding: '9px', background: 'transparent', border: '0.5px solid var(--border-mid)', borderRadius: 'var(--radius-md)', fontSize: 13, cursor: 'pointer' }}>
+                Cancelar
+              </button>
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
+function PanelGastos({ locacion, gastos, onNuevoGasto, onActualizarGasto, onEliminarGasto }) {
   const [mostrarForm, setMostrarForm] = useState(false)
   const [form, setForm] = useState({ descripcion: '', categoria: '', monto: '', fecha: '' })
   const [toast, setToast] = useState({ show: false, msg: '' })
   const [filtroMes, setFiltroMes] = useState('todos')
   const [filtrocat, setFiltrocat] = useState('todas')
+  const [editando, setEditando] = useState(null)
 
   const set = (k, v) => setForm(f => ({ ...f, [k]: v }))
   const categorias = CATEGORIAS_GASTOS_MAP[locacion] || CATEGORIAS_GASTOS
@@ -522,18 +596,46 @@ function PanelGastos({ locacion, gastos, onNuevoGasto }) {
         {filtrados.length === 0
           ? <div className="empty-state">No hay gastos registrados en {locacion}.</div>
           : filtrados.map(g => (
-            <div className="pedido-card" key={g.id} style={{ cursor: 'default' }}>
+            <div className="pedido-card" key={g.id} onClick={() => setEditando(g)} style={{ cursor: 'pointer' }}>
               <div>
                 <div className="pedido-nombre">{g.descripcion}</div>
                 <div className="pedido-sub">{g.fecha} · {g.categoria}</div>
               </div>
               <div className="pedido-right">
                 <span className="pedido-total" style={{ color: '#791F1F' }}>{formatPesos(g.monto)}</span>
+                <span className="pedido-editar-hint">Tocar para editar</span>
               </div>
             </div>
           ))
         }
       </div>
+
+      {editando && (
+        <ModalEditarGasto
+          gasto={editando}
+          categorias={categorias}
+          onGuardar={async actualizado => {
+            const { error } = await supabase.from('gastos').update({
+              descripcion: actualizado.descripcion,
+              categoria: actualizado.categoria,
+              monto: actualizado.monto,
+              fecha: actualizado.fecha,
+              mes: actualizado.mes,
+            }).eq('id', actualizado.id)
+            if (!error) {
+              onActualizarGasto(actualizado)
+              showToast('Gasto actualizado ✓')
+            }
+            setEditando(null)
+          }}
+          onEliminar={async g => {
+            const { error } = await supabase.from('gastos').delete().eq('id', g.id)
+            if (!error) onEliminarGasto(g)
+            setEditando(null)
+          }}
+          onCerrar={() => setEditando(null)}
+        />
+      )}
 
       <div className={`toast${toast.show ? ' show' : ''}`}>{toast.msg}</div>
     </div>
@@ -568,6 +670,8 @@ function TabGastos() {
         locacion={locacion}
         gastos={gastosFiltrados}
         onNuevoGasto={g => setGastos(prev => [g, ...prev])}
+        onActualizarGasto={actualizado => setGastos(prev => prev.map(g => g.id === actualizado.id ? actualizado : g))}
+        onEliminarGasto={g => setGastos(prev => prev.filter(x => x.id !== g.id))}
       />
     </div>
   )
