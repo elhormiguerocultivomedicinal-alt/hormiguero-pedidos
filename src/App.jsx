@@ -28,54 +28,139 @@ const formInicial = {
   entregado: false,
 }
 
-// ─── Modal de edición ─────────────────────────────────────────
-function ModalEditar({ pedido, onGuardar, onCerrar }) {
+// ─── Modal edición completa ───────────────────────────────────
+function ModalEditar({ pedido, onGuardar, onEliminar, onCerrar }) {
   const [form, setForm] = useState({
+    socio: pedido.socio,
+    miembro: pedido.miembro,
+    fecha: pedido.fecha,
+    mes: pedido.mes || '',
+    filas: pedido.geneticas.map(g => ({ id: Math.random(), nombre: g.nombre, cantidad: g.cantidad })),
+    precio: pedido.precio,
+    propio: pedido.propio,
     pagado: pedido.pagado,
-    metodoPago: pedido.metodoPago || 'Transferencia',
-    fechaCobro: pedido.fechaCobro || '',
+    metodoPago: pedido.metodoPago || pedido.metodo_pago || 'Transferencia',
+    fechaCobro: pedido.fechaCobro || pedido.fecha_cobro || '',
     entregado: pedido.entregado,
   })
+  const [confirmando, setConfirmando] = useState(false)
 
-  const set = (key, val) => setForm(f => ({ ...f, [key]: val }))
+  const set = (k, v) => setForm(f => ({ ...f, [k]: v }))
 
-  function handlePagado(val) {
-    setForm(f => ({ ...f, pagado: val, fechaCobro: val ? (pedido.fechaCobro || hoyDDMM()) : '' }))
+  const precio = parseFloat(form.precio) || 0
+  const total = form.propio ? 0 : form.filas.reduce((s, f) => s + (parseFloat(f.cantidad) || 0) * precio, 0)
+
+  function setFila(id, key, val) { set('filas', form.filas.map(f => f.id === id ? { ...f, [key]: val } : f)) }
+  function agregarFila() { set('filas', [...form.filas, { id: Math.random(), nombre: '', cantidad: '' }]) }
+  function eliminarFila(id) { if (form.filas.length > 1) set('filas', form.filas.filter(f => f.id !== id)) }
+
+  function handlePropio(val) { setForm(f => ({ ...f, propio: val, precio: val ? 0 : PRECIO_DEFAULT, pagado: false, fechaCobro: '' })) }
+  function handlePagado(val) { setForm(f => ({ ...f, pagado: val, fechaCobro: val ? (form.fechaCobro || hoyDDMM()) : '' })) }
+
+  function guardar() {
+    const filasValidas = form.filas.filter(f => f.nombre)
+    if (!form.socio.trim() || filasValidas.length === 0) return
+    const geneticas = filasValidas.map(f => ({ nombre: f.nombre, cantidad: f.cantidad }))
+    onGuardar({ ...pedido, ...form, geneticas, total, metodo_pago: form.metodoPago, fecha_cobro: form.fechaCobro })
   }
 
   return (
     <div className="modal-overlay" onClick={onCerrar}>
-      <div className="modal-card" onClick={e => e.stopPropagation()}>
+      <div className="modal-card" onClick={e => e.stopPropagation()} style={{ maxHeight: '90vh', overflowY: 'auto' }}>
         <div className="modal-header">
-          <div>
-            <div className="modal-titulo">{pedido.socio}</div>
-            <div className="modal-sub">{pedido.geneticas.map(g => `${g.nombre} ${g.cantidad}g`).join(' · ')}</div>
-          </div>
+          <div className="modal-titulo">Editar pedido</div>
           <button className="modal-cerrar" onClick={onCerrar}>✕</button>
         </div>
 
+        {/* Miembro */}
+        <div className="miembro-row" style={{ marginBottom: 0 }}>
+          {MIEMBROS.map(m => (
+            <button key={m} className={`miembro-btn${form.miembro === m ? ' active' : ''}`} onClick={() => set('miembro', m)}>{m}</button>
+          ))}
+        </div>
+
+        {/* Socio y fecha */}
+        <div className="form-grid">
+          <div className="form-group full">
+            <label className="form-label">Socio</label>
+            <input className="form-control" type="text" value={form.socio} onChange={e => set('socio', e.target.value)} />
+          </div>
+          <div className="form-group">
+            <label className="form-label">Fecha</label>
+            <input className="form-control" type="text" placeholder="dd/mm" value={form.fecha} onChange={e => set('fecha', e.target.value)} />
+          </div>
+          <div className="form-group">
+            <label className="form-label">Mes/Año</label>
+            <input className="form-control" type="text" placeholder="mm/aaaa" value={form.mes} onChange={e => set('mes', e.target.value)} />
+          </div>
+        </div>
+
+        {/* Genéticas */}
+        <div className="form-group full">
+          <label className="form-label">Genética</label>
+          <div className="filas-genetica">
+            {form.filas.map(fila => (
+              <div key={fila.id} className="fila-genetica">
+                <select className="form-control" value={fila.nombre} onChange={e => setFila(fila.id, 'nombre', e.target.value)}>
+                  <option value="">Seleccionar...</option>
+                  {GENETICAS.map(g => <option key={g} value={g}>{g}</option>)}
+                </select>
+                <input className="form-control fila-cantidad" type="number" placeholder="g" min="0" value={fila.cantidad} onChange={e => setFila(fila.id, 'cantidad', e.target.value)} />
+                {form.filas.length > 1 && <button className="btn-eliminar-fila" onClick={() => eliminarFila(fila.id)}>✕</button>}
+              </div>
+            ))}
+          </div>
+          <button className="btn-agregar-fila" onClick={agregarFila}>+ Agregar genética</button>
+        </div>
+
+        {/* Precio y total */}
+        <div className="form-grid">
+          <div className="form-group">
+            <label className="form-label">Precio por g ($)</label>
+            <input className="form-control" type="number" value={form.precio} onChange={e => set('precio', e.target.value)} disabled={form.propio} />
+          </div>
+          <div className="form-group">
+            <div className="total-row">
+              <span className="total-label">Total</span>
+              <span className="total-value">{formatPesos(total)}</span>
+            </div>
+          </div>
+        </div>
+
+        {/* Toggles */}
         <div className="toggle-group">
           <div className="toggle-row">
-            <span className="toggle-label">Pago recibido</span>
+            <span className="toggle-label">Consumo propio</span>
             <label className="toggle-switch">
-              <input type="checkbox" checked={form.pagado} onChange={e => handlePagado(e.target.checked)} />
+              <input type="checkbox" checked={form.propio} onChange={e => handlePropio(e.target.checked)} />
               <span className="toggle-slider" />
             </label>
           </div>
-          {form.pagado && (
-            <div className="pago-extra">
-              <div className="form-group">
-                <label className="form-label">Método</label>
-                <select className="form-control" value={form.metodoPago} onChange={e => set('metodoPago', e.target.value)}>
-                  <option>Transferencia</option>
-                  <option>Efectivo</option>
-                </select>
+          {!form.propio && (
+            <>
+              <div className="toggle-row">
+                <span className="toggle-label">Pago recibido</span>
+                <label className="toggle-switch">
+                  <input type="checkbox" checked={form.pagado} onChange={e => handlePagado(e.target.checked)} />
+                  <span className="toggle-slider" />
+                </label>
               </div>
-              <div className="form-group">
-                <label className="form-label">Fecha cobro</label>
-                <input className="form-control" type="text" placeholder="dd/mm" value={form.fechaCobro} onChange={e => set('fechaCobro', e.target.value)} />
-              </div>
-            </div>
+              {form.pagado && (
+                <div className="pago-extra">
+                  <div className="form-group">
+                    <label className="form-label">Método</label>
+                    <select className="form-control" value={form.metodoPago} onChange={e => set('metodoPago', e.target.value)}>
+                      <option>Transferencia</option>
+                      <option>Efectivo</option>
+                    </select>
+                  </div>
+                  <div className="form-group">
+                    <label className="form-label">Fecha cobro</label>
+                    <input className="form-control" type="text" placeholder="dd/mm" value={form.fechaCobro} onChange={e => set('fechaCobro', e.target.value)} />
+                  </div>
+                </div>
+              )}
+            </>
           )}
           <div className="toggle-row">
             <span className="toggle-label">Pedido entregado</span>
@@ -86,9 +171,27 @@ function ModalEditar({ pedido, onGuardar, onCerrar }) {
           </div>
         </div>
 
-        <button className="btn-submit" style={{ marginTop: 16 }} onClick={() => onGuardar({ ...pedido, ...form })}>
+        <button className="btn-submit" style={{ marginTop: 16 }} onClick={guardar}>
           Guardar cambios
         </button>
+
+        {!confirmando ? (
+          <button onClick={() => setConfirmando(true)} style={{ width: '100%', marginTop: 8, padding: '10px', border: '0.5px solid #791F1F', borderRadius: 'var(--radius-md)', background: 'transparent', color: '#791F1F', fontSize: 14, fontWeight: 500, cursor: 'pointer' }}>
+            Eliminar pedido
+          </button>
+        ) : (
+          <div style={{ marginTop: 8, background: '#FCEBEB', border: '0.5px solid #791F1F', borderRadius: 'var(--radius-md)', padding: 12 }}>
+            <div style={{ fontSize: 13, color: '#791F1F', fontWeight: 500, marginBottom: 10, textAlign: 'center' }}>¿Confirmás la eliminación?</div>
+            <div style={{ display: 'flex', gap: 8 }}>
+              <button onClick={() => onEliminar(pedido)} style={{ flex: 1, padding: '9px', background: '#791F1F', color: 'white', border: 'none', borderRadius: 'var(--radius-md)', fontSize: 13, fontWeight: 600, cursor: 'pointer' }}>
+                Sí, eliminar
+              </button>
+              <button onClick={() => setConfirmando(false)} style={{ flex: 1, padding: '9px', background: 'transparent', border: '0.5px solid var(--border-mid)', borderRadius: 'var(--radius-md)', fontSize: 13, cursor: 'pointer' }}>
+                Cancelar
+              </button>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   )
@@ -269,7 +372,13 @@ function FormNuevo({ onGuardar }) {
   )
 }
 
-const STOCK_INICIAL = Object.fromEntries(GENETICAS.map(g => [g, 400]))
+const STOCK_INICIAL = {
+  'OG24K': 286,
+  'Choco OG': 384,
+  'Z-Kiem': 546,
+  'Fancy': 172,
+  'Gorilla Rainbow': 557,
+}
 
 const CATEGORIAS_GASTOS = [
   'Servicios',
@@ -444,24 +553,28 @@ function TabGastos() {
 
 // ─── Tab Stock Producción ─────────────────────────────────────
 function TabStock({ stock }) {
-  const total = Object.values(stock).reduce((s, v) => s + v, 0)
+  const totalActual = Object.values(stock).reduce((s, v) => s + v, 0)
+  const totalInicial = Object.values(STOCK_INICIAL).reduce((s, v) => s + v, 0)
 
   return (
     <div className="content">
       <div className="card" style={{ marginBottom: 0 }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 }}>
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr auto auto', gap: '0 16px', alignItems: 'center', marginBottom: 14 }}>
           <span className="form-label">Genética</span>
-          <span className="form-label">Stock disponible</span>
+          <span className="form-label">Inicial</span>
+          <span className="form-label">Actual</span>
         </div>
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
           {GENETICAS.map(g => {
             const gramos = stock[g] ?? 0
-            const pct = Math.max(0, Math.min(100, (gramos / 400) * 100))
+            const inicial = STOCK_INICIAL[g] ?? 0
+            const pct = Math.max(0, Math.min(100, (gramos / inicial) * 100))
             const color = gramos === 0 ? '#791F1F' : gramos < 50 ? '#854F0B' : 'var(--green-dark)'
             return (
               <div key={g}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 5 }}>
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr auto auto', gap: '0 16px', alignItems: 'center', marginBottom: 5 }}>
                   <span style={{ fontSize: 14, color: 'var(--text-primary)', fontWeight: 500 }}>{g}</span>
+                  <span style={{ fontSize: 13, color: 'var(--text-secondary)' }}>{inicial}g</span>
                   <span style={{ fontSize: 14, fontWeight: 600, color }}>{gramos}g</span>
                 </div>
                 <div style={{ height: 6, borderRadius: 99, background: 'var(--bg-secondary)', overflow: 'hidden' }}>
@@ -471,9 +584,10 @@ function TabStock({ stock }) {
             )
           })}
         </div>
-        <div style={{ marginTop: 16, paddingTop: 14, borderTop: '0.5px solid var(--border)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-          <span className="form-label">Total en stock</span>
-          <span style={{ fontSize: 16, fontWeight: 600, color: 'var(--text-primary)' }}>{total}g</span>
+        <div style={{ marginTop: 16, paddingTop: 14, borderTop: '0.5px solid var(--border)', display: 'grid', gridTemplateColumns: '1fr auto auto', gap: '0 16px', alignItems: 'center' }}>
+          <span className="form-label">Total</span>
+          <span style={{ fontSize: 13, color: 'var(--text-secondary)' }}>{totalInicial}g</span>
+          <span style={{ fontSize: 16, fontWeight: 600, color: 'var(--text-primary)' }}>{totalActual}g</span>
         </div>
       </div>
     </div>
@@ -835,24 +949,40 @@ function TabRiegos({ onRiegosChange }) {
   )
 }
 
-function ListaPedidos({ pedidos, onActualizar }) {
+function ListaPedidos({ pedidos, onActualizar, onEliminar }) {
   const [filtro, setFiltro] = useState('todos')
+  const [mesActivo, setMesActivo] = useState('todos')
   const [editando, setEditando] = useState(null)
 
-  const filtrados = pedidos.filter(p => {
-    if (filtro === 'sin-entregar') return !p.entregado
-    if (filtro === 'sin-cobrar') return !p.pagado && !p.propio
-    return true
+  // Extraer meses únicos de los pedidos
+  const meses = [...new Set(pedidos.map(p => p.mes).filter(Boolean))].sort((a, b) => {
+    const [ma, ya] = a.split('/').map(Number)
+    const [mb, yb] = b.split('/').map(Number)
+    return yb !== ya ? yb - ya : mb - ma
   })
 
-  const totalVendido = pedidos.filter(p => !p.propio).reduce((s, p) => s + p.total, 0)
-  const sinEntregar = pedidos.filter(p => !p.entregado).length
+  const filtrados = pedidos.filter(p => {
+    const mesOk = mesActivo === 'todos' || p.mes === mesActivo
+    if (filtro === 'sin-entregar') return mesOk && !p.entregado
+    if (filtro === 'sin-cobrar') return mesOk && !p.pagado && !p.propio
+    return mesOk
+  })
+
+  const totalVendido = filtrados.filter(p => !p.propio).reduce((s, p) => s + p.total, 0)
+  const sinEntregar = filtrados.filter(p => !p.entregado).length
+
+  const NOMBRES_MESES = ['', 'Ene', 'Feb', 'Mar', 'Abr', 'May', 'Jun', 'Jul', 'Ago', 'Sep', 'Oct', 'Nov', 'Dic']
+  function formatMes(mes) {
+    if (!mes) return mes
+    const [m, y] = mes.split('/')
+    return `${NOMBRES_MESES[parseInt(m)]} ${y}`
+  }
 
   return (
     <div className="content">
       <div className="stats-row">
         <div className="stat-card">
-          <div className="stat-num">{pedidos.length}</div>
+          <div className="stat-num">{filtrados.length}</div>
           <div className="stat-lbl">Pedidos</div>
         </div>
         <div className="stat-card">
@@ -865,6 +995,17 @@ function ListaPedidos({ pedidos, onActualizar }) {
         </div>
       </div>
 
+      {/* Filtro por mes */}
+      {meses.length > 0 && (
+        <div className="filtros-row">
+          <button className={`filtro-btn${mesActivo === 'todos' ? ' active' : ''}`} onClick={() => setMesActivo('todos')}>Todos</button>
+          {meses.map(m => (
+            <button key={m} className={`filtro-btn${mesActivo === m ? ' active' : ''}`} onClick={() => setMesActivo(m)}>{formatMes(m)}</button>
+          ))}
+        </div>
+      )}
+
+      {/* Filtro por estado */}
       <div className="filtros-row">
         {[['todos', 'Todos'], ['sin-entregar', 'Sin entregar'], ['sin-cobrar', 'Sin cobrar']].map(([key, label]) => (
           <button key={key} className={`filtro-btn${filtro === key ? ' active' : ''}`} onClick={() => setFiltro(key)}>{label}</button>
@@ -873,12 +1014,13 @@ function ListaPedidos({ pedidos, onActualizar }) {
 
       <div className="pedidos-list">
         {filtrados.length === 0 ? (
-          <div className="empty-state">No hay pedidos aún.<br />Cargá el primero desde "Nuevo pedido".</div>
+          <div className="empty-state">No hay pedidos para mostrar.</div>
         ) : filtrados.map(p => (
           <div className="pedido-card" key={p.id} onClick={() => setEditando(p)}>
             <div>
               <div className="pedido-nombre">{p.socio}</div>
               <div className="pedido-sub">{p.geneticas.map(g => `${g.nombre} ${g.cantidad}g`).join(' · ')} · {p.fecha} · {p.miembro}</div>
+              {p.mes && <div className="pedido-sub" style={{ marginTop: 2 }}>{formatMes(p.mes)}</div>}
               <div className="pedido-badges">
                 <span className={`badge ${p.entregado ? 'badge-entregado' : 'badge-no-entregado'}`}>
                   {p.entregado ? 'Entregado' : 'No entregado'}
@@ -891,7 +1033,7 @@ function ListaPedidos({ pedidos, onActualizar }) {
             </div>
             <div className="pedido-right">
               <span className="pedido-total">{p.propio ? '—' : formatPesos(p.total)}</span>
-              {p.pagado && <span className="pedido-metodo">{p.metodoPago}</span>}
+              {p.pagado && <span className="pedido-metodo">{p.metodoPago || p.metodo_pago}</span>}
               <span className="pedido-editar-hint">Tocar para editar</span>
             </div>
           </div>
@@ -903,6 +1045,10 @@ function ListaPedidos({ pedidos, onActualizar }) {
           pedido={editando}
           onGuardar={actualizado => {
             onActualizar(actualizado, editando)
+            setEditando(null)
+          }}
+          onEliminar={p => {
+            onEliminar(p, editando)
             setEditando(null)
           }}
           onCerrar={() => setEditando(null)}
@@ -977,6 +1123,7 @@ export default function App() {
   const guardarPedido = useCallback(async p => {
     const { data, error } = await supabase.from('pedidos').insert({
       fecha: p.fecha,
+      mes: mesActual(),
       miembro: p.miembro,
       socio: p.socio,
       geneticas: p.geneticas,
@@ -1006,23 +1153,57 @@ export default function App() {
   // ── Actualizar pedido ──
   const actualizarPedido = useCallback(async (actualizado, anterior) => {
     const { error } = await supabase.from('pedidos').update({
+      socio: actualizado.socio,
+      miembro: actualizado.miembro,
+      fecha: actualizado.fecha,
+      mes: actualizado.mes,
+      geneticas: actualizado.geneticas,
+      precio: actualizado.precio,
+      total: actualizado.total,
+      propio: actualizado.propio,
       pagado: actualizado.pagado,
-      metodo_pago: actualizado.metodoPago,
-      fecha_cobro: actualizado.fechaCobro,
+      metodo_pago: actualizado.metodo_pago || actualizado.metodoPago,
+      fecha_cobro: actualizado.fecha_cobro || actualizado.fechaCobro,
       entregado: actualizado.entregado,
     }).eq('id', actualizado.id)
 
     if (!error) {
-      setPedidos(prev => prev.map(p => p.id === actualizado.id ? actualizado : p))
-      if (!anterior.entregado && actualizado.entregado) {
+      setPedidos(prev => prev.map(p => p.id === actualizado.id ? {
+        ...actualizado,
+        metodoPago: actualizado.metodo_pago || actualizado.metodoPago,
+        fechaCobro: actualizado.fecha_cobro || actualizado.fechaCobro,
+      } : p))
+
+      // Recalcular stock si cambió entregado o genéticas/cantidades
+      const eraEntregado = anterior.entregado
+      const esEntregado = actualizado.entregado
+
+      if (eraEntregado) {
+        // Reponer stock anterior
+        for (const g of anterior.geneticas) {
+          const nuevoStock = (stock[g.nombre] ?? 0) + parseFloat(g.cantidad)
+          await supabase.from('stock').update({ gramos: nuevoStock }).eq('genetica', g.nombre)
+          setStock(prev => ({ ...prev, [g.nombre]: nuevoStock }))
+        }
+      }
+      if (esEntregado) {
+        // Descontar stock nuevo
         for (const g of actualizado.geneticas) {
           const nuevoStock = (stock[g.nombre] ?? 0) - parseFloat(g.cantidad)
           await supabase.from('stock').update({ gramos: nuevoStock }).eq('genetica', g.nombre)
           setStock(prev => ({ ...prev, [g.nombre]: nuevoStock }))
         }
       }
-      if (anterior.entregado && !actualizado.entregado) {
-        for (const g of actualizado.geneticas) {
+    }
+  }, [stock])
+
+  const eliminarPedido = useCallback(async (pedido) => {
+    const { error } = await supabase.from('pedidos').delete().eq('id', pedido.id)
+    if (!error) {
+      setPedidos(prev => prev.filter(p => p.id !== pedido.id))
+      // Si estaba entregado, reponer stock
+      if (pedido.entregado) {
+        for (const g of pedido.geneticas) {
           const nuevoStock = (stock[g.nombre] ?? 0) + parseFloat(g.cantidad)
           await supabase.from('stock').update({ gramos: nuevoStock }).eq('genetica', g.nombre)
           setStock(prev => ({ ...prev, [g.nombre]: nuevoStock }))
@@ -1064,7 +1245,7 @@ export default function App() {
       </div>
 
       {tab === 'nuevo' && <FormNuevo onGuardar={guardarPedido} />}
-      {tab === 'pedidos' && <ListaPedidos pedidos={pedidos} onActualizar={actualizarPedido} />}
+      {tab === 'pedidos' && <ListaPedidos pedidos={pedidos} onActualizar={actualizarPedido} onEliminar={eliminarPedido} />}
       {tab === 'stock' && <TabStock stock={stock} />}
       {tab === 'gastos' && <TabGastos />}
       {tab === 'riegos' && <TabRiegos onRiegosChange={handleRiegosChange} />}
