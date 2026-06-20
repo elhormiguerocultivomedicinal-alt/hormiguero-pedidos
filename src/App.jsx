@@ -380,36 +380,27 @@ const STOCK_INICIAL = {
   'Gorilla Rainbow': 557,
 }
 
-const CATEGORIAS_GASTOS = [
-  'Servicios',
-  'Alquiler',
-  'Insumos cultivo',
-  'Marketing',
-  'Bonos comisión directiva',
-  'Gastos estructurales',
-  'Inversiones',
-]
-
 const mesActual = () => {
   const d = new Date()
   return `${d.getMonth() + 1}/${d.getFullYear()}`
 }
 
 // ─── Tab Gastos ───────────────────────────────────────────────
-function TabGastos() {
-  const [gastos, setGastos] = useState([])
+const CATEGORIAS_GASTOS = ['Servicios', 'Alquiler', 'Insumos cultivo', 'Marketing', 'Bonos comisión directiva', 'Gastos estructurales', 'Inversiones', 'Insumos varios']
+const CATEGORIAS_GASTOS_MAP = {
+  'Hormi 1.0': ['Servicios', 'Alquiler', 'Insumos cultivo', 'Marketing', 'Bonos comisión directiva', 'Gastos estructurales', 'Inversiones', 'Insumos varios'],
+  'Hormi 2.0': ['Servicios', 'Alquiler', 'Insumos cultivo', 'Marketing', 'Bonos comisión directiva', 'Gastos estructurales', 'Inversiones', 'Insumos varios'],
+}
+
+function PanelGastos({ locacion, gastos, onNuevoGasto }) {
   const [mostrarForm, setMostrarForm] = useState(false)
-  const [form, setForm] = useState({ descripcion: '', categoria: '', monto: '', fecha: hoyDDMM() })
+  const [form, setForm] = useState({ descripcion: '', categoria: '', monto: '', fecha: '' })
   const [toast, setToast] = useState({ show: false, msg: '' })
   const [filtroMes, setFiltroMes] = useState('todos')
   const [filtrocat, setFiltrocat] = useState('todas')
 
-  useEffect(() => {
-    supabase.from('gastos').select('*').order('created_at', { ascending: false })
-      .then(({ data }) => { if (data) setGastos(data) })
-  }, [])
-
   const set = (k, v) => setForm(f => ({ ...f, [k]: v }))
+  const categorias = CATEGORIAS_GASTOS_MAP[locacion] || CATEGORIAS_GASTOS
 
   function showToast(msg) {
     setToast({ show: true, msg })
@@ -427,11 +418,12 @@ function TabGastos() {
       monto: parseFloat(form.monto),
       fecha: form.fecha,
       mes: mesActual(),
+      locacion,
     }
     const { data, error } = await supabase.from('gastos').insert(nuevoGasto).select().single()
     if (!error && data) {
-      setGastos(prev => [data, ...prev])
-      setForm({ descripcion: '', categoria: '', monto: '', fecha: hoyDDMM() })
+      onNuevoGasto(data)
+      setForm({ descripcion: '', categoria: '', monto: '', fecha: '' })
       setMostrarForm(false)
       showToast('Gasto registrado ✓')
     } else {
@@ -446,22 +438,22 @@ function TabGastos() {
   })
 
   const totalFiltrado = filtrados.reduce((s, g) => s + g.monto, 0)
+  const meses = [...new Set(gastos.map(g => g.mes).filter(Boolean))].sort((a, b) => {
+    const [ma, ya] = a.split('/').map(Number)
+    const [mb, yb] = b.split('/').map(Number)
+    return ya !== yb ? yb - ya : mb - ma
+  })
 
-  const meses = [...new Set(gastos.map(g => g.mes))]
-
-  const porCategoria = CATEGORIAS_GASTOS.map(cat => ({
+  const porCategoria = categorias.map(cat => ({
     cat,
     total: filtrados.filter(g => g.categoria === cat).reduce((s, g) => s + g.monto, 0)
   })).filter(x => x.total > 0)
 
   return (
-    <div className="content">
-      {/* Resumen por categoría */}
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
       {porCategoria.length > 0 && (
         <div className="card">
-          <div style={{ marginBottom: 10 }}>
-            <span className="form-label">Resumen</span>
-          </div>
+          <div style={{ marginBottom: 10 }}><span className="form-label">Resumen</span></div>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
             {porCategoria.map(({ cat, total }) => (
               <div key={cat} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
@@ -470,14 +462,13 @@ function TabGastos() {
               </div>
             ))}
             <div style={{ borderTop: '0.5px solid var(--border)', paddingTop: 10, marginTop: 2, display: 'flex', justifyContent: 'space-between' }}>
-              <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--text-primary)' }}>Total</span>
+              <span style={{ fontSize: 13, fontWeight: 600 }}>Total</span>
               <span style={{ fontSize: 15, fontWeight: 700, color: 'var(--text-primary)' }}>{formatPesos(totalFiltrado)}</span>
             </div>
           </div>
         </div>
       )}
 
-      {/* Filtros */}
       {gastos.length > 0 && (
         <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
           <select className="form-control" style={{ flex: 1, height: 34, fontSize: 12 }} value={filtroMes} onChange={e => setFiltroMes(e.target.value)}>
@@ -486,12 +477,11 @@ function TabGastos() {
           </select>
           <select className="form-control" style={{ flex: 1, height: 34, fontSize: 12 }} value={filtrocat} onChange={e => setFiltrocat(e.target.value)}>
             <option value="todas">Todas las categorías</option>
-            {CATEGORIAS_GASTOS.map(c => <option key={c} value={c}>{c}</option>)}
+            {categorias.map(c => <option key={c} value={c}>{c}</option>)}
           </select>
         </div>
       )}
 
-      {/* Formulario */}
       {mostrarForm && (
         <div className="card">
           <div className="form-grid">
@@ -503,7 +493,7 @@ function TabGastos() {
               <label className="form-label">Categoría</label>
               <select className="form-control" value={form.categoria} onChange={e => set('categoria', e.target.value)}>
                 <option value="">Seleccionar...</option>
-                {CATEGORIAS_GASTOS.map(c => <option key={c} value={c}>{c}</option>)}
+                {categorias.map(c => <option key={c} value={c}>{c}</option>)}
               </select>
             </div>
             <div className="form-group">
@@ -512,7 +502,7 @@ function TabGastos() {
             </div>
             <div className="form-group">
               <label className="form-label">Fecha</label>
-              <input className="form-control" type="text" placeholder="dd/mm" value={form.fecha} onChange={e => set('fecha', e.target.value)} />
+              <input className="form-control" type="text" placeholder="dd/mm/aaaa" value={form.fecha} onChange={e => set('fecha', e.target.value)} />
             </div>
           </div>
           <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
@@ -524,14 +514,13 @@ function TabGastos() {
 
       {!mostrarForm && (
         <button className="btn-agregar-fila" onClick={() => setMostrarForm(true)}>
-          + Registrar gasto
+          + Registrar gasto en {locacion}
         </button>
       )}
 
-      {/* Lista de gastos */}
       <div className="pedidos-list">
         {filtrados.length === 0
-          ? <div className="empty-state">No hay gastos registrados aún.</div>
+          ? <div className="empty-state">No hay gastos registrados en {locacion}.</div>
           : filtrados.map(g => (
             <div className="pedido-card" key={g.id} style={{ cursor: 'default' }}>
               <div>
@@ -547,6 +536,39 @@ function TabGastos() {
       </div>
 
       <div className={`toast${toast.show ? ' show' : ''}`}>{toast.msg}</div>
+    </div>
+  )
+}
+
+function TabGastos() {
+  const [gastos, setGastos] = useState([])
+  const [locacion, setLocacion] = useState('Hormi 1.0')
+
+  useEffect(() => {
+    supabase.from('gastos').select('*').order('created_at', { ascending: false })
+      .then(({ data }) => { if (data) setGastos(data) })
+  }, [])
+
+  const gastosFiltrados = gastos.filter(g => g.locacion === locacion)
+
+  return (
+    <div className="content">
+      <div className="miembro-row">
+        {['Hormi 1.0', 'Hormi 2.0'].map(loc => (
+          <button
+            key={loc}
+            className={`miembro-btn${locacion === loc ? ' active' : ''}`}
+            onClick={() => setLocacion(loc)}
+          >
+            {loc}
+          </button>
+        ))}
+      </div>
+      <PanelGastos
+        locacion={locacion}
+        gastos={gastosFiltrados}
+        onNuevoGasto={g => setGastos(prev => [g, ...prev])}
+      />
     </div>
   )
 }
@@ -1019,8 +1041,7 @@ function ListaPedidos({ pedidos, onActualizar, onEliminar }) {
           <div className="pedido-card" key={p.id} onClick={() => setEditando(p)}>
             <div>
               <div className="pedido-nombre">{p.socio}</div>
-              <div className="pedido-sub">{p.geneticas.map(g => `${g.nombre} ${g.cantidad}g`).join(' · ')} · {p.fecha} · {p.miembro}</div>
-              {p.mes && <div className="pedido-sub" style={{ marginTop: 2 }}>{formatMes(p.mes)}</div>}
+              <div className="pedido-sub">{p.geneticas.map(g => `${g.nombre} ${g.cantidad}g`).join(' · ')} · {p.fecha}{p.mes ? `/${p.mes.split('/')[1]}` : ''} · {p.miembro}</div>
               <div className="pedido-badges">
                 <span className={`badge ${p.entregado ? 'badge-entregado' : 'badge-no-entregado'}`}>
                   {p.entregado ? 'Entregado' : 'No entregado'}
