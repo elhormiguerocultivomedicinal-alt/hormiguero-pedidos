@@ -521,7 +521,7 @@ function FormNuevo({ onGuardar }) {
 // ─── Lista de pedidos ─────────────────────────────────────────
 function ListaPedidos({ pedidos, onActualizar, onEliminar }) {
   const [filtro, setFiltro] = useState('todos')
-  const [mesActivo, setMesActivo] = useState('todos')
+  const [mesActivo, setMesActivo] = useState(mesActual())
   const [editando, setEditando] = useState(null)
 
   const meses = [...new Set(pedidos.map(p => p.mes).filter(Boolean))].sort((a, b) => {
@@ -555,14 +555,14 @@ function ListaPedidos({ pedidos, onActualizar, onEliminar }) {
       </div>
       {meses.length > 0 && (
         <div className="filtros-row">
-          <button className={`filtro-btn${mesActivo === 'todos' ? ' active' : ''}`} onClick={() => setMesActivo('todos')}>Todos</button>
           {meses.map(m => (
             <button key={m} className={`filtro-btn${mesActivo === m ? ' active' : ''}`} onClick={() => setMesActivo(m)}>{formatMes(m)}</button>
           ))}
+          <button className={`filtro-btn${mesActivo === 'todos' ? ' active' : ''}`} onClick={() => setMesActivo('todos')}>Todos</button>
         </div>
       )}
       <div className="filtros-row">
-        {[['todos', 'Todos'], ['sin-entregar', 'Sin entregar'], ['sin-cobrar', 'Sin cobrar']].map(([key, label]) => (
+        {[['sin-entregar', 'Sin entregar'], ['sin-cobrar', 'Sin cobrar'], ['todos', 'Todos']].map(([key, label]) => (
           <button key={key} className={`filtro-btn${filtro === key ? ' active' : ''}`} onClick={() => setFiltro(key)}>{label}</button>
         ))}
       </div>
@@ -1196,7 +1196,7 @@ export default function App() {
         </div>
         <div className="tab-bar">
           <button className={`tab${tab === 'nuevo' ? ' active' : ''}`} onClick={() => setTab('nuevo')}>Pedidos</button>
-          <button className={`tab${tab === 'pedidos' ? ' active' : ''}`} onClick={() => setTab('pedidos')}>Lista {pedidos.length > 0 && `(${pedidos.length})`}</button>
+          <button className={`tab${tab === 'pedidos' ? ' active' : ''}`} onClick={() => setTab('pedidos')}>Lista</button>
           <button className={`tab${tab === 'stock' ? ' active' : ''}`} onClick={() => setTab('stock')}>Stock</button>
           <button className={`tab${tab === 'gastos' ? ' active' : ''}`} onClick={() => setTab('gastos')}>Gastos</button>
           <button className={`tab${tab === 'riegos' ? ' active' : ''}`} onClick={() => setTab('riegos')}>Riegos</button>
