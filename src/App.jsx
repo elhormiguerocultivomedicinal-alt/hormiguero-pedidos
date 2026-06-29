@@ -321,6 +321,7 @@ function ModalEditarGasto({ gasto, categorias, onGuardar, onEliminar, onCerrar }
     categoria: gasto.categoria,
     monto: gasto.monto,
     fecha: gasto.fecha || '',
+    miembro: gasto.miembro || '',
   })
   const [confirmando, setConfirmando] = useState(false)
   const set = (k, v) => setForm(f => ({ ...f, [k]: v }))
@@ -338,6 +339,11 @@ function ModalEditarGasto({ gasto, categorias, onGuardar, onEliminar, onCerrar }
         <div className="modal-header">
           <div className="modal-titulo">Editar gasto</div>
           <button className="modal-cerrar" onClick={onCerrar}>✕</button>
+        </div>
+        <div className="miembro-row" style={{ marginBottom: 0 }}>
+          {MIEMBROS.map(m => (
+            <button key={m} className={`miembro-btn${form.miembro === m ? ' active' : ''}`} onClick={() => set('miembro', m)}>{m}</button>
+          ))}
         </div>
         <div className="form-grid">
           <div className="form-group full">
@@ -573,7 +579,7 @@ function ListaPedidos({ pedidos, onActualizar, onEliminar }) {
             <div className="pedido-card" key={p.id} onClick={() => setEditando(p)}>
               <div>
                 <div className="pedido-nombre">{p.socio}</div>
-                <div className="pedido-sub">{p.geneticas.map(g => `${g.nombre} ${g.cantidad}g`).join(' · ')} · {p.fecha}{p.mes ? `/${p.mes.split('/')[1]}` : ''} · {p.miembro}</div>
+                <div className="pedido-sub">{p.geneticas.map(g => `${g.nombre} ${g.cantidad}g`).join(' · ')} · {p.fecha} · {p.miembro}</div>
                 <div className="pedido-badges">
                   <span className={`badge ${p.entregado ? 'badge-entregado' : 'badge-no-entregado'}`}>{p.entregado ? 'Entregado' : 'No entregado'}</span>
                   {p.propio
@@ -648,7 +654,7 @@ function TabStock({ stock }) {
 // ─── Tab Gastos ───────────────────────────────────────────────
 function PanelGastos({ locacion, gastos, onNuevoGasto, onActualizarGasto, onEliminarGasto }) {
   const [mostrarForm, setMostrarForm] = useState(false)
-  const [form, setForm] = useState({ descripcion: '', categoria: '', monto: '', fecha: '' })
+  const [form, setForm] = useState({ descripcion: '', categoria: '', monto: '', fecha: '', miembro: '' })
   const [toast, setToast] = useState({ show: false, msg: '' })
   const [filtroMes, setFiltroMes] = useState('todos')
   const [filtrocat, setFiltrocat] = useState('todas')
@@ -668,11 +674,11 @@ function PanelGastos({ locacion, gastos, onNuevoGasto, onActualizarGasto, onElim
     }
     const partes = (form.fecha || '').split('/')
     const mes = partes.length === 3 ? `${parseInt(partes[1])}/${partes[2]}` : mesActual()
-    const nuevoGasto = { descripcion: form.descripcion.trim(), categoria: form.categoria, monto: parseFloat(form.monto), fecha: form.fecha, mes, locacion }
+    const nuevoGasto = { descripcion: form.descripcion.trim(), categoria: form.categoria, monto: parseFloat(form.monto), fecha: form.fecha, mes, locacion, miembro: form.miembro || null }
     const { data, error } = await supabase.from('gastos').insert(nuevoGasto).select().single()
     if (!error && data) {
       onNuevoGasto(data)
-      setForm({ descripcion: '', categoria: '', monto: '', fecha: '' })
+      setForm({ descripcion: '', categoria: '', monto: '', fecha: '', miembro: '' })
       setMostrarForm(false)
       showToast('Gasto registrado ✓')
     } else showToast('Error al guardar')
@@ -727,6 +733,14 @@ function PanelGastos({ locacion, gastos, onNuevoGasto, onActualizarGasto, onElim
       )}
       {mostrarForm && (
         <div className="card">
+          <div style={{ marginBottom: 12 }}>
+            <label className="form-label" style={{ display: 'block', marginBottom: 8 }}>Quién registra</label>
+            <div className="miembro-row">
+              {MIEMBROS.map(m => (
+                <button key={m} className={`miembro-btn${form.miembro === m ? ' active' : ''}`} onClick={() => set('miembro', m)}>{m}</button>
+              ))}
+            </div>
+          </div>
           <div className="form-grid">
             <div className="form-group full">
               <label className="form-label">Descripción</label>
@@ -764,7 +778,7 @@ function PanelGastos({ locacion, gastos, onNuevoGasto, onActualizarGasto, onElim
             <div className="pedido-card" key={g.id} onClick={() => setEditando(g)} style={{ cursor: 'pointer' }}>
               <div>
                 <div className="pedido-nombre">{g.descripcion}</div>
-                <div className="pedido-sub">{g.fecha} · {g.categoria}</div>
+                <div className="pedido-sub">{g.fecha} · {g.categoria}{g.miembro ? ` · ${g.miembro}` : ''}</div>
               </div>
               <div className="pedido-right">
                 <span className="pedido-total" style={{ color: '#791F1F' }}>{formatPesos(g.monto)}</span>
@@ -779,7 +793,7 @@ function PanelGastos({ locacion, gastos, onNuevoGasto, onActualizarGasto, onElim
           gasto={editando}
           categorias={categorias}
           onGuardar={async actualizado => {
-            const { error } = await supabase.from('gastos').update({ descripcion: actualizado.descripcion, categoria: actualizado.categoria, monto: actualizado.monto, fecha: actualizado.fecha, mes: actualizado.mes }).eq('id', actualizado.id)
+            const { error } = await supabase.from('gastos').update({ descripcion: actualizado.descripcion, categoria: actualizado.categoria, monto: actualizado.monto, fecha: actualizado.fecha, mes: actualizado.mes, miembro: actualizado.miembro || null }).eq('id', actualizado.id)
             if (!error) { onActualizarGasto(actualizado); showToast('Gasto actualizado ✓') }
             setEditando(null)
           }}
