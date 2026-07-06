@@ -6,13 +6,20 @@ const GENETICAS = ['OG24K', 'Choco OG', 'Z-Kiem', 'Fancy', 'Gorilla Rainbow']
 const MIEMBROS = ['Bruno', 'Checho', 'Nacho', 'Nico']
 const PRECIO_DEFAULT = 12500
 
-function formatPesos(n) {
-  return '$' + Math.round(n).toLocaleString('es-AR')
+// ─── Mapeo email → miembro (atribución automática) ────────────
+const EMAIL_MIEMBRO = {
+  'bruno.ricciardi@hotmail.com': 'Bruno',
+  'checho.denis@gmail.com': 'Checho',
+  'ignacio.agustinlopez97@gmail.com': 'Nacho',
+  'nicolas.lop18@gmail.com': 'Nico',
+}
+function miembroDeSesion(sesion) {
+  const email = sesion?.user?.email?.toLowerCase().trim()
+  return EMAIL_MIEMBRO[email] || null
 }
 
-function hoyDDMM() {
-  const d = new Date()
-  return `${d.getDate()}/${d.getMonth() + 1}`
+function formatPesos(n) {
+  return '$' + Math.round(n).toLocaleString('es-AR')
 }
 
 function hoyCompleto() {
@@ -25,12 +32,11 @@ const mesActual = () => {
   return `${d.getMonth() + 1}/${d.getFullYear()}`
 }
 
-const filaVacia = () => ({ id: Date.now() + Math.random(), nombre: '', cantidad: '' })
+const filaVacia = () => ({ id: Date.now() + Math.random(), nombre: '', cantidad: '', precio: PRECIO_DEFAULT })
 
 const formInicial = {
   socio: '',
   filas: [filaVacia()],
-  precio: PRECIO_DEFAULT,
   propio: false,
   pagado: false,
   metodoPago: 'Transferencia',
@@ -46,11 +52,24 @@ const STOCK_INICIAL = {
   'Gorilla Rainbow': 557,
 }
 
-const CATEGORIAS_GASTOS = ['Servicios', 'Alquiler', 'Insumos cultivo', 'Marketing', 'Bonos comisión directiva', 'Gastos estructurales', 'Inversiones', 'Insumos varios']
+const CATEGORIAS_GASTOS = ['Servicios', 'Alquiler', 'Insumos cultivo', 'Marketing', 'Bonos comisión directiva', 'Gastos estructurales', 'Inversiones', 'Insumos varios', 'Comida']
 const CATEGORIAS_GASTOS_MAP = {
   'Hormi 1.0': CATEGORIAS_GASTOS,
   'Hormi 2.0': CATEGORIAS_GASTOS,
 }
+
+// ─── Esquejes: constantes y color de identidad ────────────────
+const STOCK_ESQUEJES_INICIAL = {
+  'OG24K': 200,
+  'Choco OG': 200,
+  'Z-Kiem': 200,
+  'Fancy': 200,
+  'Gorilla Rainbow': 200,
+}
+const COLOR_ESQUEJES = '#B7791F'
+const COLOR_ESQUEJES_LIGHT = '#FBF0DC'
+const COLOR_ESQUEJES_BORDER = '#E8C77E'
+const filaEsquejeVacia = () => ({ id: Date.now() + Math.random(), nombre: '', cantidad: '', precio: '' })
 
 // ─── DatePicker ───────────────────────────────────────────────
 const DIAS_SEMANA = ['Lu', 'Ma', 'Mi', 'Ju', 'Vi', 'Sa', 'Do']
@@ -166,14 +185,15 @@ function DatePicker({ value, onChange, placeholder = 'Seleccionar fecha' }) {
   )
 }
 
-// ─── Modal edición completa ───────────────────────────────────
+// ─── Modal edición completa (Pedidos) ──────────────────────────
 function ModalEditar({ pedido, onGuardar, onEliminar, onCerrar }) {
+  const tienePrecioPorFila = pedido.geneticas.every(g => g.precio !== undefined && g.precio !== null && g.precio !== '')
   const [form, setForm] = useState({
     socio: pedido.socio,
     miembro: pedido.miembro,
     fecha: pedido.fecha && pedido.mes ? `${pedido.fecha}/${pedido.mes.split('/')[1]}` : (pedido.fecha || ''),
     mes: pedido.mes || '',
-    filas: pedido.geneticas.map(g => ({ id: Math.random(), nombre: g.nombre, cantidad: g.cantidad })),
+    filas: pedido.geneticas.map(g => ({ id: Math.random(), nombre: g.nombre, cantidad: g.cantidad, precio: g.precio ?? '' })),
     precio: pedido.precio,
     propio: pedido.propio,
     pagado: pedido.pagado,
@@ -184,11 +204,13 @@ function ModalEditar({ pedido, onGuardar, onEliminar, onCerrar }) {
   const [confirmando, setConfirmando] = useState(false)
 
   const set = (k, v) => setForm(f => ({ ...f, [k]: v }))
-  const precio = parseFloat(form.precio) || 0
-  const total = form.propio ? 0 : form.filas.reduce((s, f) => s + (parseFloat(f.cantidad) || 0) * precio, 0)
+  const total = form.propio ? 0 : form.filas.reduce((s, f) => {
+    const precioFila = tienePrecioPorFila ? (parseFloat(f.precio) || 0) : (parseFloat(form.precio) || 0)
+    return s + (parseFloat(f.cantidad) || 0) * precioFila
+  }, 0)
 
   function setFila(id, key, val) { set('filas', form.filas.map(f => f.id === id ? { ...f, [key]: val } : f)) }
-  function agregarFila() { set('filas', [...form.filas, { id: Math.random(), nombre: '', cantidad: '' }]) }
+  function agregarFila() { set('filas', [...form.filas, { id: Math.random(), nombre: '', cantidad: '', precio: tienePrecioPorFila ? PRECIO_DEFAULT : '' }]) }
   function eliminarFila(id) { if (form.filas.length > 1) set('filas', form.filas.filter(f => f.id !== id)) }
   function handlePropio(val) { setForm(f => ({ ...f, propio: val, precio: val ? 0 : PRECIO_DEFAULT, pagado: false, fechaCobro: '' })) }
   function handlePagado(val) { setForm(f => ({ ...f, pagado: val, fechaCobro: val ? (form.fechaCobro || hoyCompleto()) : '' })) }
@@ -196,11 +218,13 @@ function ModalEditar({ pedido, onGuardar, onEliminar, onCerrar }) {
   function guardar() {
     const filasValidas = form.filas.filter(f => f.nombre)
     if (!form.socio.trim() || filasValidas.length === 0) return
-    const geneticas = filasValidas.map(f => ({ nombre: f.nombre, cantidad: f.cantidad }))
+    const geneticas = filasValidas.map(f => tienePrecioPorFila
+      ? { nombre: f.nombre, cantidad: f.cantidad, precio: f.precio }
+      : { nombre: f.nombre, cantidad: f.cantidad })
     let mes = form.mes
     const partes = form.fecha.split('/')
     if (partes.length === 3) mes = `${parseInt(partes[1])}/${partes[2]}`
-    onGuardar({ ...pedido, ...form, mes, geneticas, total, metodo_pago: form.metodoPago, fecha_cobro: form.fechaCobro })
+    onGuardar({ ...pedido, ...form, mes, geneticas, total, precio: form.precio, metodo_pago: form.metodoPago, fecha_cobro: form.fechaCobro })
   }
 
   return (
@@ -235,6 +259,9 @@ function ModalEditar({ pedido, onGuardar, onEliminar, onCerrar }) {
                   {GENETICAS.map(g => <option key={g} value={g}>{g}</option>)}
                 </select>
                 <input className="form-control fila-cantidad" type="number" placeholder="g" min="0" value={fila.cantidad} onChange={e => setFila(fila.id, 'cantidad', e.target.value)} />
+                {tienePrecioPorFila && (
+                  <input className="form-control fila-cantidad" type="number" placeholder="$/g" min="0" value={fila.precio} disabled={form.propio} onChange={e => setFila(fila.id, 'precio', e.target.value)} />
+                )}
                 {form.filas.length > 1 && <button className="btn-eliminar-fila" onClick={() => eliminarFila(fila.id)}>✕</button>}
               </div>
             ))}
@@ -242,10 +269,12 @@ function ModalEditar({ pedido, onGuardar, onEliminar, onCerrar }) {
           <button className="btn-agregar-fila" onClick={agregarFila}>+ Agregar genética</button>
         </div>
         <div className="form-grid">
-          <div className="form-group">
-            <label className="form-label">Precio por g ($)</label>
-            <input className="form-control" type="number" value={form.precio} onChange={e => set('precio', e.target.value)} disabled={form.propio} />
-          </div>
+          {!tienePrecioPorFila && (
+            <div className="form-group">
+              <label className="form-label">Precio por g ($)</label>
+              <input className="form-control" type="number" value={form.precio} onChange={e => set('precio', e.target.value)} disabled={form.propio} />
+            </div>
+          )}
           <div className="form-group">
             <div className="total-row">
               <span className="total-label">Total</span>
@@ -386,19 +415,17 @@ function ModalEditarGasto({ gasto, categorias, onGuardar, onEliminar, onCerrar }
 }
 
 // ─── Formulario nuevo pedido ──────────────────────────────────
-function FormNuevo({ onGuardar }) {
-  const [miembro, setMiembro] = useState('Bruno')
+function FormNuevo({ onGuardar, miembro }) {
   const [form, setForm] = useState({ ...formInicial, filas: [filaVacia()] })
   const [toast, setToast] = useState({ show: false, msg: '' })
 
   const set = (key, val) => setForm(f => ({ ...f, [key]: val }))
-  const precio = parseFloat(form.precio) || 0
-  const total = form.propio ? 0 : form.filas.reduce((s, f) => s + (parseFloat(f.cantidad) || 0) * precio, 0)
+  const total = form.propio ? 0 : form.filas.reduce((s, f) => s + (parseFloat(f.cantidad) || 0) * (parseFloat(f.precio) || 0), 0)
 
   function setFila(id, key, val) { set('filas', form.filas.map(f => f.id === id ? { ...f, [key]: val } : f)) }
   function agregarFila() { set('filas', [...form.filas, filaVacia()]) }
   function eliminarFila(id) { if (form.filas.length === 1) return; set('filas', form.filas.filter(f => f.id !== id)) }
-  function handlePropio(val) { setForm(f => ({ ...f, propio: val, precio: val ? 0 : PRECIO_DEFAULT, pagado: false, fechaCobro: '' })) }
+  function handlePropio(val) { setForm(f => ({ ...f, propio: val, pagado: false, fechaCobro: '' })) }
   function handlePagado(val) { setForm(f => ({ ...f, pagado: val, fechaCobro: val ? hoyCompleto() : '' })) }
 
   function showToast(msg) {
@@ -413,14 +440,14 @@ function FormNuevo({ onGuardar }) {
       showToast('Completá socio, genética y cantidad')
       return
     }
-    const geneticas = filasValidas.map(f => ({ nombre: f.nombre, cantidad: f.cantidad }))
+    const geneticas = filasValidas.map(f => ({ nombre: f.nombre, cantidad: f.cantidad, precio: f.precio }))
     const pedido = {
       id: Date.now(),
       fecha: hoyCompleto(),
       miembro,
       socio: form.socio.trim(),
       geneticas,
-      precio,
+      precio: PRECIO_DEFAULT,
       total,
       propio: form.propio,
       pagado: form.pagado,
@@ -435,10 +462,8 @@ function FormNuevo({ onGuardar }) {
 
   return (
     <div className="content">
-      <div className="miembro-row">
-        {MIEMBROS.map(m => (
-          <button key={m} className={`miembro-btn${miembro === m ? ' active' : ''}`} onClick={() => setMiembro(m)}>{m}</button>
-        ))}
+      <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginBottom: 4 }}>
+        Registrando como <strong style={{ color: 'var(--text-primary)' }}>{miembro || '—'}</strong>
       </div>
       <div className="card">
         <div className="form-grid">
@@ -456,17 +481,14 @@ function FormNuevo({ onGuardar }) {
                     {GENETICAS.map(g => <option key={g} value={g}>{g}</option>)}
                   </select>
                   <input className="form-control fila-cantidad" type="number" placeholder="g" min="0" value={fila.cantidad} onChange={e => setFila(fila.id, 'cantidad', e.target.value)} />
+                  <input className="form-control fila-cantidad" type="number" placeholder="$/g" min="0" value={fila.precio} disabled={form.propio} onChange={e => setFila(fila.id, 'precio', e.target.value)} />
                   {form.filas.length > 1 && <button className="btn-eliminar-fila" onClick={() => eliminarFila(fila.id)}>✕</button>}
                 </div>
               ))}
             </div>
             <button className="btn-agregar-fila" onClick={agregarFila}>+ Agregar genética al pedido</button>
           </div>
-          <div className="form-group">
-            <label className="form-label">Precio por g ($)</label>
-            <input className="form-control" type="number" placeholder="0" min="0" value={form.precio} onChange={e => set('precio', e.target.value)} disabled={form.propio} />
-          </div>
-          <div className="form-group">
+          <div className="form-group full">
             <div className="total-row">
               <span className="total-label">Total</span>
               <span className="total-value">{formatPesos(total)}</span>
@@ -652,9 +674,9 @@ function TabStock({ stock }) {
 }
 
 // ─── Tab Gastos ───────────────────────────────────────────────
-function PanelGastos({ locacion, gastos, onNuevoGasto, onActualizarGasto, onEliminarGasto }) {
+function PanelGastos({ locacion, gastos, miembro, onNuevoGasto, onActualizarGasto, onEliminarGasto }) {
   const [mostrarForm, setMostrarForm] = useState(false)
-  const [form, setForm] = useState({ descripcion: '', categoria: '', monto: '', fecha: '', miembro: '' })
+  const [form, setForm] = useState({ descripcion: '', categoria: '', monto: '', fecha: '' })
   const [toast, setToast] = useState({ show: false, msg: '' })
   const [filtroMes, setFiltroMes] = useState('todos')
   const [filtrocat, setFiltrocat] = useState('todas')
@@ -674,11 +696,11 @@ function PanelGastos({ locacion, gastos, onNuevoGasto, onActualizarGasto, onElim
     }
     const partes = (form.fecha || '').split('/')
     const mes = partes.length === 3 ? `${parseInt(partes[1])}/${partes[2]}` : mesActual()
-    const nuevoGasto = { descripcion: form.descripcion.trim(), categoria: form.categoria, monto: parseFloat(form.monto), fecha: form.fecha, mes, locacion, miembro: form.miembro || null }
+    const nuevoGasto = { descripcion: form.descripcion.trim(), categoria: form.categoria, monto: parseFloat(form.monto), fecha: form.fecha, mes, locacion, miembro: miembro || null }
     const { data, error } = await supabase.from('gastos').insert(nuevoGasto).select().single()
     if (!error && data) {
       onNuevoGasto(data)
-      setForm({ descripcion: '', categoria: '', monto: '', fecha: '', miembro: '' })
+      setForm({ descripcion: '', categoria: '', monto: '', fecha: '' })
       setMostrarForm(false)
       showToast('Gasto registrado ✓')
     } else showToast('Error al guardar')
@@ -733,13 +755,8 @@ function PanelGastos({ locacion, gastos, onNuevoGasto, onActualizarGasto, onElim
       )}
       {mostrarForm && (
         <div className="card">
-          <div style={{ marginBottom: 12 }}>
-            <label className="form-label" style={{ display: 'block', marginBottom: 8 }}>Quién registra</label>
-            <div className="miembro-row">
-              {MIEMBROS.map(m => (
-                <button key={m} className={`miembro-btn${form.miembro === m ? ' active' : ''}`} onClick={() => set('miembro', m)}>{m}</button>
-              ))}
-            </div>
+          <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginBottom: 10 }}>
+            Registrando como <strong style={{ color: 'var(--text-primary)' }}>{miembro || '—'}</strong>
           </div>
           <div className="form-grid">
             <div className="form-group full">
@@ -810,7 +827,7 @@ function PanelGastos({ locacion, gastos, onNuevoGasto, onActualizarGasto, onElim
   )
 }
 
-function TabGastos() {
+function TabGastos({ miembro }) {
   const [gastos, setGastos] = useState([])
   const [locacion, setLocacion] = useState('Hormi 1.0')
   useEffect(() => {
@@ -828,6 +845,7 @@ function TabGastos() {
       <PanelGastos
         locacion={locacion}
         gastos={gastosFiltrados}
+        miembro={miembro}
         onNuevoGasto={g => setGastos(prev => [g, ...prev])}
         onActualizarGasto={actualizado => setGastos(prev => prev.map(g => g.id === actualizado.id ? actualizado : g))}
         onEliminarGasto={g => setGastos(prev => prev.filter(x => x.id !== g.id))}
@@ -1103,6 +1121,423 @@ function TabRiegos({ onRiegosChange }) {
   )
 }
 
+// ─── Esquejes: Modal editar ─────────────────────────────────────
+function ModalEditarEsqueje({ esqueje, onGuardar, onEliminar, onCerrar }) {
+  const [form, setForm] = useState({
+    socio: esqueje.socio,
+    miembro: esqueje.miembro,
+    fecha: esqueje.fecha && esqueje.mes ? `${esqueje.fecha}/${esqueje.mes.split('/')[1]}` : (esqueje.fecha || ''),
+    mes: esqueje.mes || '',
+    filas: esqueje.geneticas.map(g => ({ id: Math.random(), nombre: g.nombre, cantidad: g.cantidad, precio: g.precio ?? '' })),
+    propio: esqueje.propio,
+    pagado: esqueje.pagado,
+    metodoPago: esqueje.metodoPago || esqueje.metodo_pago || 'Transferencia',
+    fechaCobro: esqueje.fechaCobro || esqueje.fecha_cobro || '',
+    entregado: esqueje.entregado,
+  })
+  const [confirmando, setConfirmando] = useState(false)
+
+  const set = (k, v) => setForm(f => ({ ...f, [k]: v }))
+  const total = form.propio ? 0 : form.filas.reduce((s, f) => s + (parseFloat(f.cantidad) || 0) * (parseFloat(f.precio) || 0), 0)
+
+  function setFila(id, key, val) { set('filas', form.filas.map(f => f.id === id ? { ...f, [key]: val } : f)) }
+  function agregarFila() { set('filas', [...form.filas, { id: Math.random(), nombre: '', cantidad: '', precio: '' }]) }
+  function eliminarFila(id) { if (form.filas.length > 1) set('filas', form.filas.filter(f => f.id !== id)) }
+  function handlePropio(val) { setForm(f => ({ ...f, propio: val, pagado: false, fechaCobro: '' })) }
+  function handlePagado(val) { setForm(f => ({ ...f, pagado: val, fechaCobro: val ? (form.fechaCobro || hoyCompleto()) : '' })) }
+
+  function guardar() {
+    const filasValidas = form.filas.filter(f => f.nombre)
+    if (!form.socio.trim() || filasValidas.length === 0) return
+    const geneticas = filasValidas.map(f => ({ nombre: f.nombre, cantidad: f.cantidad, precio: f.precio }))
+    let mes = form.mes
+    const partes = form.fecha.split('/')
+    if (partes.length === 3) mes = `${parseInt(partes[1])}/${partes[2]}`
+    onGuardar({ ...esqueje, ...form, mes, geneticas, total, metodo_pago: form.metodoPago, fecha_cobro: form.fechaCobro })
+  }
+
+  return (
+    <div className="modal-overlay" onClick={onCerrar}>
+      <div className="modal-card" onClick={e => e.stopPropagation()} style={{ maxHeight: '90vh', overflowY: 'auto' }}>
+        <div className="modal-header">
+          <div className="modal-titulo">Editar esqueje</div>
+          <button className="modal-cerrar" onClick={onCerrar}>✕</button>
+        </div>
+        <div className="miembro-row" style={{ marginBottom: 0 }}>
+          {MIEMBROS.map(m => (
+            <button key={m} className={`miembro-btn${form.miembro === m ? ' active' : ''}`} onClick={() => set('miembro', m)}>{m}</button>
+          ))}
+        </div>
+        <div className="form-grid">
+          <div className="form-group full">
+            <label className="form-label">Socio</label>
+            <input className="form-control" type="text" value={form.socio} onChange={e => set('socio', e.target.value)} />
+          </div>
+          <div className="form-group full">
+            <label className="form-label">Fecha</label>
+            <DatePicker value={form.fecha} onChange={v => set('fecha', v)} />
+          </div>
+        </div>
+        <div className="form-group full">
+          <label className="form-label">Genética</label>
+          <div className="filas-genetica">
+            {form.filas.map(fila => (
+              <div key={fila.id} className="fila-genetica">
+                <select className="form-control" value={fila.nombre} onChange={e => setFila(fila.id, 'nombre', e.target.value)}>
+                  <option value="">Seleccionar...</option>
+                  {GENETICAS.map(g => <option key={g} value={g}>{g}</option>)}
+                </select>
+                <input className="form-control fila-cantidad" type="number" placeholder="u" min="0" value={fila.cantidad} onChange={e => setFila(fila.id, 'cantidad', e.target.value)} />
+                <input className="form-control fila-cantidad" type="number" placeholder="$/u" min="0" value={fila.precio} disabled={form.propio} onChange={e => setFila(fila.id, 'precio', e.target.value)} />
+                {form.filas.length > 1 && <button className="btn-eliminar-fila" onClick={() => eliminarFila(fila.id)}>✕</button>}
+              </div>
+            ))}
+          </div>
+          <button className="btn-agregar-fila" onClick={agregarFila}>+ Agregar genética</button>
+        </div>
+        <div className="form-group full">
+          <div className="total-row">
+            <span className="total-label">Total</span>
+            <span className="total-value">{formatPesos(total)}</span>
+          </div>
+        </div>
+        <div className="toggle-group">
+          <div className="toggle-row">
+            <span className="toggle-label">Consumo propio</span>
+            <label className="toggle-switch">
+              <input type="checkbox" checked={form.propio} onChange={e => handlePropio(e.target.checked)} />
+              <span className="toggle-slider" />
+            </label>
+          </div>
+          {!form.propio && (
+            <>
+              <div className="toggle-row">
+                <span className="toggle-label">Pago recibido</span>
+                <label className="toggle-switch">
+                  <input type="checkbox" checked={form.pagado} onChange={e => handlePagado(e.target.checked)} />
+                  <span className="toggle-slider" />
+                </label>
+              </div>
+              {form.pagado && (
+                <div className="pago-extra">
+                  <div className="form-group">
+                    <label className="form-label">Método</label>
+                    <select className="form-control" value={form.metodoPago} onChange={e => set('metodoPago', e.target.value)}>
+                      <option>Transferencia</option>
+                      <option>Efectivo</option>
+                    </select>
+                  </div>
+                  <div className="form-group">
+                    <label className="form-label">Fecha cobro</label>
+                    <DatePicker value={form.fechaCobro} onChange={v => set('fechaCobro', v)} />
+                  </div>
+                </div>
+              )}
+            </>
+          )}
+          <div className="toggle-row">
+            <span className="toggle-label">Entregado</span>
+            <label className="toggle-switch">
+              <input type="checkbox" checked={form.entregado} onChange={e => set('entregado', e.target.checked)} />
+              <span className="toggle-slider" />
+            </label>
+          </div>
+        </div>
+        <button className="btn-submit" style={{ marginTop: 16, background: COLOR_ESQUEJES }} onClick={guardar}>Guardar cambios</button>
+        {!confirmando ? (
+          <button onClick={() => setConfirmando(true)} style={{ width: '100%', marginTop: 8, padding: '10px', border: '0.5px solid #791F1F', borderRadius: 'var(--radius-md)', background: 'transparent', color: '#791F1F', fontSize: 14, fontWeight: 500, cursor: 'pointer' }}>
+            Eliminar
+          </button>
+        ) : (
+          <div style={{ marginTop: 8, background: '#FCEBEB', border: '0.5px solid #791F1F', borderRadius: 'var(--radius-md)', padding: 12 }}>
+            <div style={{ fontSize: 13, color: '#791F1F', fontWeight: 500, marginBottom: 10, textAlign: 'center' }}>¿Confirmás la eliminación?</div>
+            <div style={{ display: 'flex', gap: 8 }}>
+              <button onClick={() => onEliminar(esqueje)} style={{ flex: 1, padding: '9px', background: '#791F1F', color: 'white', border: 'none', borderRadius: 'var(--radius-md)', fontSize: 13, fontWeight: 600, cursor: 'pointer' }}>Sí, eliminar</button>
+              <button onClick={() => setConfirmando(false)} style={{ flex: 1, padding: '9px', background: 'transparent', border: '0.5px solid var(--border-mid)', borderRadius: 'var(--radius-md)', fontSize: 13, cursor: 'pointer' }}>Cancelar</button>
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
+// ─── Esquejes: Formulario nuevo ─────────────────────────────────
+function FormNuevoEsqueje({ onGuardar, miembro }) {
+  const [form, setForm] = useState({ socio: '', filas: [filaEsquejeVacia()], propio: false, pagado: false, metodoPago: 'Transferencia', fechaCobro: '', entregado: false })
+  const [toast, setToast] = useState({ show: false, msg: '' })
+
+  const set = (key, val) => setForm(f => ({ ...f, [key]: val }))
+  const total = form.propio ? 0 : form.filas.reduce((s, f) => s + (parseFloat(f.cantidad) || 0) * (parseFloat(f.precio) || 0), 0)
+
+  function setFila(id, key, val) { set('filas', form.filas.map(f => f.id === id ? { ...f, [key]: val } : f)) }
+  function agregarFila() { set('filas', [...form.filas, filaEsquejeVacia()]) }
+  function eliminarFila(id) { if (form.filas.length === 1) return; set('filas', form.filas.filter(f => f.id !== id)) }
+  function handlePropio(val) { setForm(f => ({ ...f, propio: val, pagado: false, fechaCobro: '' })) }
+  function handlePagado(val) { setForm(f => ({ ...f, pagado: val, fechaCobro: val ? hoyCompleto() : '' })) }
+
+  function showToast(msg) {
+    setToast({ show: true, msg })
+    setTimeout(() => setToast({ show: false, msg: '' }), 2500)
+  }
+
+  function guardar() {
+    const filasValidas = form.filas.filter(f => f.nombre)
+    const sinCantidad = filasValidas.some(f => !parseFloat(f.cantidad))
+    if (!form.socio.trim() || filasValidas.length === 0 || sinCantidad) {
+      showToast('Completá socio, genética y cantidad')
+      return
+    }
+    const geneticas = filasValidas.map(f => ({ nombre: f.nombre, cantidad: f.cantidad, precio: f.precio }))
+    const esqueje = {
+      id: Date.now(),
+      fecha: hoyCompleto(),
+      miembro,
+      socio: form.socio.trim(),
+      geneticas,
+      total,
+      propio: form.propio,
+      pagado: form.pagado,
+      metodoPago: form.metodoPago,
+      fechaCobro: form.fechaCobro,
+      entregado: form.entregado,
+    }
+    onGuardar(esqueje)
+    setForm({ socio: '', filas: [filaEsquejeVacia()], propio: false, pagado: false, metodoPago: 'Transferencia', fechaCobro: '', entregado: false })
+    showToast('Esqueje guardado ✓')
+  }
+
+  return (
+    <div>
+      <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginBottom: 4 }}>
+        Registrando como <strong style={{ color: 'var(--text-primary)' }}>{miembro || '—'}</strong>
+      </div>
+      <div className="card">
+        <div className="form-grid">
+          <div className="form-group full">
+            <label className="form-label">Socio</label>
+            <input className="form-control" type="text" placeholder="Nombre del socio..." value={form.socio} onChange={e => set('socio', e.target.value)} />
+          </div>
+          <div className="form-group full">
+            <label className="form-label">Genética</label>
+            <div className="filas-genetica">
+              {form.filas.map(fila => (
+                <div key={fila.id} className="fila-genetica">
+                  <select className="form-control" value={fila.nombre} onChange={e => setFila(fila.id, 'nombre', e.target.value)}>
+                    <option value="">Seleccionar...</option>
+                    {GENETICAS.map(g => <option key={g} value={g}>{g}</option>)}
+                  </select>
+                  <input className="form-control fila-cantidad" type="number" placeholder="u" min="0" value={fila.cantidad} onChange={e => setFila(fila.id, 'cantidad', e.target.value)} />
+                  <input className="form-control fila-cantidad" type="number" placeholder="$/u" min="0" value={fila.precio} disabled={form.propio} onChange={e => setFila(fila.id, 'precio', e.target.value)} />
+                  {form.filas.length > 1 && <button className="btn-eliminar-fila" onClick={() => eliminarFila(fila.id)}>✕</button>}
+                </div>
+              ))}
+            </div>
+            <button className="btn-agregar-fila" onClick={agregarFila}>+ Agregar genética al pedido</button>
+          </div>
+          <div className="form-group full">
+            <div className="total-row">
+              <span className="total-label">Total</span>
+              <span className="total-value">{formatPesos(total)}</span>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div className="card">
+        <div className="toggle-group">
+          <div className="toggle-row">
+            <span className="toggle-label">Consumo propio</span>
+            <label className="toggle-switch">
+              <input type="checkbox" checked={form.propio} onChange={e => handlePropio(e.target.checked)} />
+              <span className="toggle-slider" />
+            </label>
+          </div>
+          {!form.propio && (
+            <>
+              <div className="toggle-row">
+                <span className="toggle-label">Pago recibido</span>
+                <label className="toggle-switch">
+                  <input type="checkbox" checked={form.pagado} onChange={e => handlePagado(e.target.checked)} />
+                  <span className="toggle-slider" />
+                </label>
+              </div>
+              {form.pagado && (
+                <div className="pago-extra">
+                  <div className="form-group">
+                    <label className="form-label">Método</label>
+                    <select className="form-control" value={form.metodoPago} onChange={e => set('metodoPago', e.target.value)}>
+                      <option>Transferencia</option>
+                      <option>Efectivo</option>
+                    </select>
+                  </div>
+                  <div className="form-group">
+                    <label className="form-label">Fecha cobro</label>
+                    <DatePicker value={form.fechaCobro} onChange={v => set('fechaCobro', v)} />
+                  </div>
+                </div>
+              )}
+            </>
+          )}
+          <div className="toggle-row">
+            <span className="toggle-label">Entregado</span>
+            <label className="toggle-switch">
+              <input type="checkbox" checked={form.entregado} onChange={e => set('entregado', e.target.checked)} />
+              <span className="toggle-slider" />
+            </label>
+          </div>
+        </div>
+      </div>
+      <button className="btn-submit" style={{ background: COLOR_ESQUEJES }} onClick={guardar}>Guardar esqueje</button>
+      <div className={`toast${toast.show ? ' show' : ''}`}>{toast.msg}</div>
+    </div>
+  )
+}
+
+// ─── Esquejes: Lista ────────────────────────────────────────────
+function ListaEsquejes({ esquejes, onActualizar, onEliminar }) {
+  const [filtro, setFiltro] = useState('todos')
+  const [mesActivo, setMesActivo] = useState(mesActual())
+  const [editando, setEditando] = useState(null)
+
+  const meses = [...new Set(esquejes.map(e => e.mes).filter(Boolean))].sort((a, b) => {
+    const [ma, ya] = a.split('/').map(Number)
+    const [mb, yb] = b.split('/').map(Number)
+    return yb !== ya ? yb - ya : mb - ma
+  })
+
+  const filtrados = esquejes.filter(e => {
+    const mesOk = mesActivo === 'todos' || e.mes === mesActivo
+    if (filtro === 'sin-entregar') return mesOk && !e.entregado
+    if (filtro === 'sin-cobrar') return mesOk && !e.pagado && !e.propio
+    return mesOk
+  })
+
+  const totalVendido = filtrados.filter(e => !e.propio).reduce((s, e) => s + e.total, 0)
+  const sinEntregar = filtrados.filter(e => !e.entregado).length
+  const NOMBRES_MESES = ['', 'Ene', 'Feb', 'Mar', 'Abr', 'May', 'Jun', 'Jul', 'Ago', 'Sep', 'Oct', 'Nov', 'Dic']
+  function formatMes(mes) {
+    if (!mes) return mes
+    const [m, y] = mes.split('/')
+    return `${NOMBRES_MESES[parseInt(m)]} ${y}`
+  }
+
+  return (
+    <div>
+      <div className="stats-row">
+        <div className="stat-card"><div className="stat-num">{filtrados.length}</div><div className="stat-lbl">Pedidos</div></div>
+        <div className="stat-card"><div className="stat-num" style={{ fontSize: 16 }}>{formatPesos(totalVendido)}</div><div className="stat-lbl">Vendido</div></div>
+        <div className="stat-card"><div className="stat-num" style={{ color: sinEntregar > 0 ? '#854F0B' : undefined }}>{sinEntregar}</div><div className="stat-lbl">Sin entregar</div></div>
+      </div>
+      {meses.length > 0 && (
+        <div className="filtros-row">
+          {meses.map(m => (
+            <button key={m} className={`filtro-btn${mesActivo === m ? ' active' : ''}`} onClick={() => setMesActivo(m)}>{formatMes(m)}</button>
+          ))}
+          <button className={`filtro-btn${mesActivo === 'todos' ? ' active' : ''}`} onClick={() => setMesActivo('todos')}>Todos</button>
+        </div>
+      )}
+      <div className="filtros-row">
+        {[['sin-entregar', 'Sin entregar'], ['sin-cobrar', 'Sin cobrar'], ['todos', 'Todos']].map(([key, label]) => (
+          <button key={key} className={`filtro-btn${filtro === key ? ' active' : ''}`} onClick={() => setFiltro(key)}>{label}</button>
+        ))}
+      </div>
+      <div className="pedidos-list">
+        {filtrados.length === 0
+          ? <div className="empty-state">No hay esquejes para mostrar.</div>
+          : filtrados.map(e => (
+            <div className="pedido-card" key={e.id} onClick={() => setEditando(e)}>
+              <div>
+                <div className="pedido-nombre">{e.socio}</div>
+                <div className="pedido-sub">{e.geneticas.map(g => `${g.nombre} ${g.cantidad}u`).join(' · ')} · {e.fecha} · {e.miembro}</div>
+                <div className="pedido-badges">
+                  <span className={`badge ${e.entregado ? 'badge-entregado' : 'badge-no-entregado'}`}>{e.entregado ? 'Entregado' : 'No entregado'}</span>
+                  {e.propio
+                    ? <span className="badge badge-propio">Consumo propio</span>
+                    : <span className={`badge ${e.pagado ? 'badge-pagado' : 'badge-sin-cobrar'}`}>{e.pagado ? 'Pagado' : 'Sin cobrar'}</span>
+                  }
+                </div>
+              </div>
+              <div className="pedido-right">
+                <span className="pedido-total">{e.propio ? '—' : formatPesos(e.total)}</span>
+                {e.pagado && <span className="pedido-metodo">{e.metodoPago || e.metodo_pago}</span>}
+                <span className="pedido-editar-hint">Tocar para editar</span>
+              </div>
+            </div>
+          ))
+        }
+      </div>
+      {editando && (
+        <ModalEditarEsqueje
+          esqueje={editando}
+          onGuardar={actualizado => { onActualizar(actualizado, editando); setEditando(null) }}
+          onEliminar={e => { onEliminar(e, editando); setEditando(null) }}
+          onCerrar={() => setEditando(null)}
+        />
+      )}
+    </div>
+  )
+}
+
+// ─── Esquejes: Stock ────────────────────────────────────────────
+function TabStockEsquejes({ stock }) {
+  const totalActual = Object.values(stock).reduce((s, v) => s + v, 0)
+  const totalInicial = Object.values(STOCK_ESQUEJES_INICIAL).reduce((s, v) => s + v, 0)
+  return (
+    <div>
+      <div className="card" style={{ marginBottom: 0, borderColor: COLOR_ESQUEJES_BORDER }}>
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr auto auto', gap: '0 16px', alignItems: 'center', marginBottom: 14 }}>
+          <span className="form-label">Genética</span>
+          <span className="form-label">Inicial</span>
+          <span className="form-label">Actual</span>
+        </div>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+          {GENETICAS.map(g => {
+            const unidades = stock[g] ?? 0
+            const inicial = STOCK_ESQUEJES_INICIAL[g] ?? 0
+            const pct = Math.max(0, Math.min(100, (unidades / inicial) * 100))
+            const color = unidades === 0 ? '#791F1F' : unidades < 20 ? '#854F0B' : COLOR_ESQUEJES
+            return (
+              <div key={g}>
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr auto auto', gap: '0 16px', alignItems: 'center', marginBottom: 5 }}>
+                  <span style={{ fontSize: 14, color: 'var(--text-primary)', fontWeight: 500 }}>{g}</span>
+                  <span style={{ fontSize: 13, color: 'var(--text-secondary)' }}>{inicial}u</span>
+                  <span style={{ fontSize: 14, fontWeight: 600, color }}>{unidades}u</span>
+                </div>
+                <div style={{ height: 6, borderRadius: 99, background: 'var(--bg-secondary)', overflow: 'hidden' }}>
+                  <div style={{ height: '100%', width: `${pct}%`, borderRadius: 99, background: color, transition: 'width 0.3s' }} />
+                </div>
+              </div>
+            )
+          })}
+        </div>
+        <div style={{ marginTop: 16, paddingTop: 14, borderTop: '0.5px solid var(--border)', display: 'grid', gridTemplateColumns: '1fr auto auto', gap: '0 16px', alignItems: 'center' }}>
+          <span className="form-label">Total</span>
+          <span style={{ fontSize: 13, color: 'var(--text-secondary)' }}>{totalInicial}u</span>
+          <span style={{ fontSize: 16, fontWeight: 600, color: 'var(--text-primary)' }}>{totalActual}u</span>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// ─── Esquejes: Tab con sub-navegación ───────────────────────────
+function TabEsquejes({ esquejes, stockEsquejes, miembro, onGuardarEsqueje, onActualizarEsqueje, onEliminarEsqueje }) {
+  const [sub, setSub] = useState('nuevo')
+  const activeStyle = { background: COLOR_ESQUEJES_LIGHT, borderColor: COLOR_ESQUEJES_BORDER, color: COLOR_ESQUEJES }
+  return (
+    <div className="content">
+      <div className="miembro-row">
+        <button className={`miembro-btn${sub === 'nuevo' ? ' active' : ''}`} style={sub === 'nuevo' ? activeStyle : {}} onClick={() => setSub('nuevo')}>Nuevo</button>
+        <button className={`miembro-btn${sub === 'lista' ? ' active' : ''}`} style={sub === 'lista' ? activeStyle : {}} onClick={() => setSub('lista')}>Lista</button>
+        <button className={`miembro-btn${sub === 'stock' ? ' active' : ''}`} style={sub === 'stock' ? activeStyle : {}} onClick={() => setSub('stock')}>Stock</button>
+      </div>
+      {sub === 'nuevo' && <FormNuevoEsqueje onGuardar={onGuardarEsqueje} miembro={miembro} />}
+      {sub === 'lista' && <ListaEsquejes esquejes={esquejes} onActualizar={onActualizarEsqueje} onEliminar={onEliminarEsqueje} />}
+      {sub === 'stock' && <TabStockEsquejes stock={stockEsquejes} />}
+    </div>
+  )
+}
+
 // ─── Login ────────────────────────────────────────────────────
 function Login({ onLogin }) {
   const [email, setEmail] = useState('')
@@ -1232,6 +1667,8 @@ export default function App() {
   const [tab, setTab] = useState('nuevo')
   const [pedidos, setPedidos] = useState([])
   const [stock, setStock] = useState(STOCK_INICIAL)
+  const [esquejes, setEsquejes] = useState([])
+  const [stockEsquejes, setStockEsquejes] = useState(STOCK_ESQUEJES_INICIAL)
   const [riegoPromediosVege, setRiegoPromediosVege] = useState({})
   const [riegoPromediosFlora, setRiegoPromediosFlora] = useState({})
   const [cargando, setCargando] = useState(true)
@@ -1266,6 +1703,14 @@ export default function App() {
         const stockObj = {}
         stockData.forEach(s => { stockObj[s.genetica] = s.gramos })
         setStock(stockObj)
+      }
+      const { data: esquejesData } = await supabase.from('esquejes').select('*').order('created_at', { ascending: false })
+      if (esquejesData) setEsquejes(esquejesData.map(e => ({ ...e, metodoPago: e.metodo_pago, fechaCobro: e.fecha_cobro })))
+      const { data: stockEsquejesData } = await supabase.from('stock_esquejes').select('*')
+      if (stockEsquejesData) {
+        const obj = {}
+        stockEsquejesData.forEach(s => { obj[s.genetica] = s.unidades })
+        setStockEsquejes(obj)
       }
       setCargando(false)
     }
@@ -1338,6 +1783,66 @@ export default function App() {
     }
   }, [stock])
 
+  const guardarEsqueje = useCallback(async e => {
+    const { data, error } = await supabase.from('esquejes').insert({
+      fecha: e.fecha, mes: mesActual(), miembro: e.miembro, socio: e.socio,
+      geneticas: e.geneticas, total: e.total, propio: e.propio,
+      pagado: e.pagado, metodo_pago: e.metodoPago, fecha_cobro: e.fechaCobro, entregado: e.entregado,
+    }).select().single()
+    if (!error && data) {
+      const guardado = { ...data, metodoPago: data.metodo_pago, fechaCobro: data.fecha_cobro }
+      setEsquejes(prev => [guardado, ...prev])
+      if (e.entregado) {
+        for (const g of e.geneticas) {
+          const nuevo = (stockEsquejes[g.nombre] ?? 0) - parseFloat(g.cantidad)
+          await supabase.from('stock_esquejes').update({ unidades: nuevo }).eq('genetica', g.nombre)
+          setStockEsquejes(prev => ({ ...prev, [g.nombre]: nuevo }))
+        }
+      }
+    }
+  }, [stockEsquejes])
+
+  const actualizarEsqueje = useCallback(async (actualizado, anterior) => {
+    const { error } = await supabase.from('esquejes').update({
+      socio: actualizado.socio, miembro: actualizado.miembro, fecha: actualizado.fecha,
+      mes: actualizado.mes, geneticas: actualizado.geneticas,
+      total: actualizado.total, propio: actualizado.propio, pagado: actualizado.pagado,
+      metodo_pago: actualizado.metodo_pago || actualizado.metodoPago,
+      fecha_cobro: actualizado.fecha_cobro || actualizado.fechaCobro, entregado: actualizado.entregado,
+    }).eq('id', actualizado.id)
+    if (!error) {
+      setEsquejes(prev => prev.map(x => x.id === actualizado.id ? { ...actualizado, metodoPago: actualizado.metodo_pago || actualizado.metodoPago, fechaCobro: actualizado.fecha_cobro || actualizado.fechaCobro } : x))
+      if (anterior.entregado) {
+        for (const g of anterior.geneticas) {
+          const nuevo = (stockEsquejes[g.nombre] ?? 0) + parseFloat(g.cantidad)
+          await supabase.from('stock_esquejes').update({ unidades: nuevo }).eq('genetica', g.nombre)
+          setStockEsquejes(prev => ({ ...prev, [g.nombre]: nuevo }))
+        }
+      }
+      if (actualizado.entregado) {
+        for (const g of actualizado.geneticas) {
+          const nuevo = (stockEsquejes[g.nombre] ?? 0) - parseFloat(g.cantidad)
+          await supabase.from('stock_esquejes').update({ unidades: nuevo }).eq('genetica', g.nombre)
+          setStockEsquejes(prev => ({ ...prev, [g.nombre]: nuevo }))
+        }
+      }
+    }
+  }, [stockEsquejes])
+
+  const eliminarEsqueje = useCallback(async (esqueje) => {
+    const { error } = await supabase.from('esquejes').delete().eq('id', esqueje.id)
+    if (!error) {
+      setEsquejes(prev => prev.filter(x => x.id !== esqueje.id))
+      if (esqueje.entregado) {
+        for (const g of esqueje.geneticas) {
+          const nuevo = (stockEsquejes[g.nombre] ?? 0) + parseFloat(g.cantidad)
+          await supabase.from('stock_esquejes').update({ unidades: nuevo }).eq('genetica', g.nombre)
+          setStockEsquejes(prev => ({ ...prev, [g.nombre]: nuevo }))
+        }
+      }
+    }
+  }, [stockEsquejes])
+
   if (chequeandoSesion) return (
     <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100vh', color: 'var(--text-secondary)', fontSize: 14 }}>
       Cargando...
@@ -1349,6 +1854,22 @@ export default function App() {
   if (cargando) return (
     <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100vh', color: 'var(--text-secondary)', fontSize: 14 }}>
       Cargando...
+    </div>
+  )
+
+  const miembro = miembroDeSesion(sesion)
+
+  if (!miembro) return (
+    <div style={{ minHeight: '100vh', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: 24, background: 'var(--bg)' }}>
+      <div style={{ width: '100%', maxWidth: 360 }}>
+        <div style={{ background: '#FCEBEB', border: '0.5px solid #791F1F', borderRadius: 'var(--radius-lg)', padding: '16px 18px' }}>
+          <div style={{ fontSize: 14, fontWeight: 600, color: '#791F1F', marginBottom: 6 }}>Cuenta sin vincular</div>
+          <div style={{ fontSize: 13, color: 'var(--text-primary)', lineHeight: 1.5 }}>
+            Tu email <strong>{sesion.user.email}</strong> no está mapeado a ningún miembro de la directiva. Avisale a Nacho para que lo agregue en el código antes de seguir.
+          </div>
+        </div>
+        <button onClick={cerrarSesion} style={{ marginTop: 16, width: '100%', height: 40, borderRadius: 'var(--radius-md)', border: '0.5px solid var(--border-mid)', background: 'transparent', cursor: 'pointer', fontSize: 13, color: 'var(--text-secondary)' }}>Salir</button>
+      </div>
     </div>
   )
 
@@ -1370,14 +1891,25 @@ export default function App() {
           <button className={`tab${tab === 'pedidos' ? ' active' : ''}`} onClick={() => setTab('pedidos')}>Lista</button>
           <button className={`tab${tab === 'stock' ? ' active' : ''}`} onClick={() => setTab('stock')}>Stock</button>
           <button className={`tab${tab === 'gastos' ? ' active' : ''}`} onClick={() => setTab('gastos')}>Gastos</button>
+          <button className={`tab${tab === 'esquejes' ? ' active' : ''}`} onClick={() => setTab('esquejes')}>Esquejes</button>
           <button className={`tab${tab === 'riegos' ? ' active' : ''}`} onClick={() => setTab('riegos')}>Riegos</button>
           <button className={`tab${tab === 'calendario' ? ' active' : ''}`} onClick={() => setTab('calendario')}>Cultivo</button>
         </div>
       </div>
-      {tab === 'nuevo' && <FormNuevo onGuardar={guardarPedido} />}
+      {tab === 'nuevo' && <FormNuevo onGuardar={guardarPedido} miembro={miembro} />}
       {tab === 'pedidos' && <ListaPedidos pedidos={pedidos} onActualizar={actualizarPedido} onEliminar={eliminarPedido} />}
       {tab === 'stock' && <TabStock stock={stock} />}
-      {tab === 'gastos' && <TabGastos />}
+      {tab === 'gastos' && <TabGastos miembro={miembro} />}
+      {tab === 'esquejes' && (
+        <TabEsquejes
+          esquejes={esquejes}
+          stockEsquejes={stockEsquejes}
+          miembro={miembro}
+          onGuardarEsqueje={guardarEsqueje}
+          onActualizarEsqueje={actualizarEsqueje}
+          onEliminarEsqueje={eliminarEsqueje}
+        />
+      )}
       {tab === 'riegos' && <TabRiegos onRiegosChange={handleRiegosChange} />}
       {tab === 'calendario' && <TabCalendario riegoPromediosVege={riegoPromediosVege} riegoPromediosFlora={riegoPromediosFlora} />}
       {mostrarCambiarPass && <ModalCambiarPassword onCerrar={() => setMostrarCambiarPass(false)} />}
