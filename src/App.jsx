@@ -461,7 +461,7 @@ function FormNuevo({ onGuardar, miembro }) {
   }
 
   return (
-    <div className="content">
+    <div>
       <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginBottom: 4 }}>
         Registrando como <strong style={{ color: 'var(--text-primary)' }}>{miembro || '—'}</strong>
       </div>
@@ -575,7 +575,7 @@ function ListaPedidos({ pedidos, onActualizar, onEliminar }) {
   }
 
   return (
-    <div className="content">
+    <div>
       <div className="stats-row">
         <div className="stat-card"><div className="stat-num">{filtrados.length}</div><div className="stat-lbl">Pedidos</div></div>
         <div className="stat-card"><div className="stat-num" style={{ fontSize: 16 }}>{formatPesos(totalVendido)}</div><div className="stat-lbl">Vendido</div></div>
@@ -636,7 +636,7 @@ function TabStock({ stock }) {
   const totalActual = Object.values(stock).reduce((s, v) => s + v, 0)
   const totalInicial = Object.values(STOCK_INICIAL).reduce((s, v) => s + v, 0)
   return (
-    <div className="content">
+    <div>
       <div className="card" style={{ marginBottom: 0 }}>
         <div style={{ display: 'grid', gridTemplateColumns: '1fr auto auto', gap: '0 16px', alignItems: 'center', marginBottom: 14 }}>
           <span className="form-label">Genética</span>
@@ -669,6 +669,23 @@ function TabStock({ stock }) {
           <span style={{ fontSize: 16, fontWeight: 600, color: 'var(--text-primary)' }}>{totalActual}g</span>
         </div>
       </div>
+    </div>
+  )
+}
+
+// ─── Tab Cosecha: agrupa Nuevo / Lista / Stock de materia vegetal ──
+function TabCosecha({ pedidos, stock, miembro, onGuardarPedido, onActualizarPedido, onEliminarPedido }) {
+  const [sub, setSub] = useState('nuevo')
+  return (
+    <div className="content">
+      <div className="miembro-row">
+        <button className={`miembro-btn${sub === 'nuevo' ? ' active' : ''}`} onClick={() => setSub('nuevo')}>Nuevo</button>
+        <button className={`miembro-btn${sub === 'lista' ? ' active' : ''}`} onClick={() => setSub('lista')}>Lista</button>
+        <button className={`miembro-btn${sub === 'stock' ? ' active' : ''}`} onClick={() => setSub('stock')}>Stock</button>
+      </div>
+      {sub === 'nuevo' && <FormNuevo onGuardar={async p => { await onGuardarPedido(p); setSub('lista') }} miembro={miembro} />}
+      {sub === 'lista' && <ListaPedidos pedidos={pedidos} onActualizar={onActualizarPedido} onEliminar={onEliminarPedido} />}
+      {sub === 'stock' && <TabStock stock={stock} />}
     </div>
   )
 }
@@ -1664,7 +1681,7 @@ function ModalCambiarPassword({ onCerrar }) {
 
 // ─── App raíz ─────────────────────────────────────────────────
 export default function App() {
-  const [tab, setTab] = useState('nuevo')
+  const [tab, setTab] = useState('cosecha')
   const [pedidos, setPedidos] = useState([])
   const [stock, setStock] = useState(STOCK_INICIAL)
   const [esquejes, setEsquejes] = useState([])
@@ -1739,7 +1756,6 @@ export default function App() {
         }
       }
     }
-    setTab('pedidos')
   }, [stock])
 
   const actualizarPedido = useCallback(async (actualizado, anterior) => {
@@ -1887,18 +1903,23 @@ export default function App() {
           </div>
         </div>
         <div className="tab-bar">
-          <button className={`tab${tab === 'nuevo' ? ' active' : ''}`} onClick={() => setTab('nuevo')}>Pedidos</button>
-          <button className={`tab${tab === 'pedidos' ? ' active' : ''}`} onClick={() => setTab('pedidos')}>Lista</button>
-          <button className={`tab${tab === 'stock' ? ' active' : ''}`} onClick={() => setTab('stock')}>Stock</button>
-          <button className={`tab${tab === 'gastos' ? ' active' : ''}`} onClick={() => setTab('gastos')}>Gastos</button>
+          <button className={`tab${tab === 'cosecha' ? ' active' : ''}`} onClick={() => setTab('cosecha')}>Cosecha</button>
           <button className={`tab${tab === 'esquejes' ? ' active' : ''}`} onClick={() => setTab('esquejes')}>Esquejes</button>
+          <button className={`tab${tab === 'gastos' ? ' active' : ''}`} onClick={() => setTab('gastos')}>Gastos</button>
           <button className={`tab${tab === 'riegos' ? ' active' : ''}`} onClick={() => setTab('riegos')}>Riegos</button>
           <button className={`tab${tab === 'calendario' ? ' active' : ''}`} onClick={() => setTab('calendario')}>Cultivo</button>
         </div>
       </div>
-      {tab === 'nuevo' && <FormNuevo onGuardar={guardarPedido} miembro={miembro} />}
-      {tab === 'pedidos' && <ListaPedidos pedidos={pedidos} onActualizar={actualizarPedido} onEliminar={eliminarPedido} />}
-      {tab === 'stock' && <TabStock stock={stock} />}
+      {tab === 'cosecha' && (
+        <TabCosecha
+          pedidos={pedidos}
+          stock={stock}
+          miembro={miembro}
+          onGuardarPedido={guardarPedido}
+          onActualizarPedido={actualizarPedido}
+          onEliminarPedido={eliminarPedido}
+        />
+      )}
       {tab === 'gastos' && <TabGastos miembro={miembro} />}
       {tab === 'esquejes' && (
         <TabEsquejes
