@@ -19,7 +19,8 @@ function miembroDeSesion(sesion) {
 }
 
 function formatPesos(n) {
-  return '$' + Math.round(n).toLocaleString('es-AR')
+  const v = Number(n)
+  return '$' + Math.round(isFinite(v) ? v : 0).toLocaleString('es-AR')
 }
 
 function hoyCompleto() {
@@ -41,6 +42,7 @@ const formInicial = {
   pagado: false,
   metodoPago: 'Transferencia',
   fechaCobro: '',
+  cuenta: '',
   entregado: false,
 }
 
@@ -57,6 +59,11 @@ const CATEGORIAS_GASTOS_MAP = {
   'Hormi 1.0': CATEGORIAS_GASTOS,
   'Hormi 2.0': CATEGORIAS_GASTOS,
 }
+
+// ─── Finanzas: cuentas ──────────────────────────────────────────
+const CUENTA_EFECTIVO = 'Efectivo - Caja Hormi'
+const CUENTAS_BANCARIAS = ['NaranjaX - Nacho', 'NaranjaX - Nico', 'Lemon', 'Sincuenta']
+const CUENTAS = [...CUENTAS_BANCARIAS, CUENTA_EFECTIVO]
 
 // ─── Esquejes: constantes y color de identidad ────────────────
 const STOCK_ESQUEJES_INICIAL = {
@@ -187,7 +194,7 @@ function DatePicker({ value, onChange, placeholder = 'Seleccionar fecha' }) {
 
 // ─── Modal edición completa (Pedidos) ──────────────────────────
 function ModalEditar({ pedido, onGuardar, onEliminar, onCerrar }) {
-  const tienePrecioPorFila = pedido.geneticas.every(g => g.precio !== undefined && g.precio !== null && g.precio !== '')
+  const tienePrecioPorFila = pedido.geneticas.some(g => g.precio !== undefined && g.precio !== null)
   const [form, setForm] = useState({
     socio: pedido.socio,
     miembro: pedido.miembro,
@@ -199,6 +206,7 @@ function ModalEditar({ pedido, onGuardar, onEliminar, onCerrar }) {
     pagado: pedido.pagado,
     metodoPago: pedido.metodoPago || pedido.metodo_pago || 'Transferencia',
     fechaCobro: pedido.fechaCobro || pedido.fecha_cobro || '',
+    cuenta: pedido.cuenta || '',
     entregado: pedido.entregado,
   })
   const [confirmando, setConfirmando] = useState(false)
@@ -212,19 +220,26 @@ function ModalEditar({ pedido, onGuardar, onEliminar, onCerrar }) {
   function setFila(id, key, val) { set('filas', form.filas.map(f => f.id === id ? { ...f, [key]: val } : f)) }
   function agregarFila() { set('filas', [...form.filas, { id: Math.random(), nombre: '', cantidad: '', precio: tienePrecioPorFila ? PRECIO_DEFAULT : '' }]) }
   function eliminarFila(id) { if (form.filas.length > 1) set('filas', form.filas.filter(f => f.id !== id)) }
-  function handlePropio(val) { setForm(f => ({ ...f, propio: val, precio: val ? 0 : PRECIO_DEFAULT, pagado: false, fechaCobro: '' })) }
+  function handlePropio(val) { setForm(f => ({ ...f, propio: val, precio: val ? 0 : PRECIO_DEFAULT, pagado: false, fechaCobro: '', cuenta: '' })) }
   function handlePagado(val) { setForm(f => ({ ...f, pagado: val, fechaCobro: val ? (form.fechaCobro || hoyCompleto()) : '' })) }
+  function handleMetodoPago(val) { setForm(f => ({ ...f, metodoPago: val, cuenta: val === 'Efectivo' ? CUENTA_EFECTIVO : (f.cuenta === CUENTA_EFECTIVO ? '' : f.cuenta) })) }
 
   function guardar() {
     const filasValidas = form.filas.filter(f => f.nombre)
-    if (!form.socio.trim() || filasValidas.length === 0) return
+    const sinCantidad = filasValidas.some(f => !parseFloat(f.cantidad))
+    if (!form.socio.trim() || filasValidas.length === 0 || sinCantidad) return
     const geneticas = filasValidas.map(f => tienePrecioPorFila
       ? { nombre: f.nombre, cantidad: f.cantidad, precio: f.precio }
       : { nombre: f.nombre, cantidad: f.cantidad })
     let mes = form.mes
     const partes = form.fecha.split('/')
     if (partes.length === 3) mes = `${parseInt(partes[1])}/${partes[2]}`
-    onGuardar({ ...pedido, ...form, mes, geneticas, total, precio: form.precio, metodo_pago: form.metodoPago, fecha_cobro: form.fechaCobro })
+    onGuardar({
+      ...pedido, ...form, mes, geneticas, total, precio: form.precio,
+      metodo_pago: form.metodoPago, fecha_cobro: form.fechaCobro,
+      cuenta: form.pagado ? (form.cuenta || null) : null,
+      cuentaEstimada: false,
+    })
   }
 
   return (
@@ -303,7 +318,7 @@ function ModalEditar({ pedido, onGuardar, onEliminar, onCerrar }) {
                 <div className="pago-extra">
                   <div className="form-group">
                     <label className="form-label">Método</label>
-                    <select className="form-control" value={form.metodoPago} onChange={e => set('metodoPago', e.target.value)}>
+                    <select className="form-control" value={form.metodoPago} onChange={e => handleMetodoPago(e.target.value)}>
                       <option>Transferencia</option>
                       <option>Efectivo</option>
                     </select>
@@ -311,6 +326,13 @@ function ModalEditar({ pedido, onGuardar, onEliminar, onCerrar }) {
                   <div className="form-group">
                     <label className="form-label">Fecha cobro</label>
                     <DatePicker value={form.fechaCobro} onChange={v => set('fechaCobro', v)} />
+                  </div>
+                  <div className="form-group full">
+                    <label className="form-label">Cuenta</label>
+                    <select className="form-control" value={form.cuenta} disabled={form.metodoPago === 'Efectivo'} onChange={e => set('cuenta', e.target.value)}>
+                      <option value="">Seleccionar...</option>
+                      {(form.metodoPago === 'Efectivo' ? [CUENTA_EFECTIVO] : CUENTAS_BANCARIAS).map(c => <option key={c} value={c}>{c}</option>)}
+                    </select>
                   </div>
                 </div>
               )}
@@ -351,6 +373,7 @@ function ModalEditarGasto({ gasto, categorias, onGuardar, onEliminar, onCerrar }
     monto: gasto.monto,
     fecha: gasto.fecha || '',
     miembro: gasto.miembro || '',
+    cuenta: gasto.cuenta || '',
   })
   const [confirmando, setConfirmando] = useState(false)
   const set = (k, v) => setForm(f => ({ ...f, [k]: v }))
@@ -359,7 +382,7 @@ function ModalEditarGasto({ gasto, categorias, onGuardar, onEliminar, onCerrar }
     if (!form.descripcion.trim() || !form.categoria || !parseFloat(form.monto)) return
     const partes = form.fecha.split('/')
     const mes = partes.length === 3 ? `${parseInt(partes[1])}/${partes[2]}` : gasto.mes
-    onGuardar({ ...gasto, ...form, monto: parseFloat(form.monto), mes })
+    onGuardar({ ...gasto, ...form, monto: parseFloat(form.monto), mes, cuenta: form.cuenta || null, cuentaEstimada: false })
   }
 
   return (
@@ -394,6 +417,13 @@ function ModalEditarGasto({ gasto, categorias, onGuardar, onEliminar, onCerrar }
             <label className="form-label">Fecha</label>
             <DatePicker value={form.fecha} onChange={v => set('fecha', v)} />
           </div>
+          <div className="form-group full">
+            <label className="form-label">Cuenta de la que salió</label>
+            <select className="form-control" value={form.cuenta} onChange={e => set('cuenta', e.target.value)}>
+              <option value="">Seleccionar...</option>
+              {CUENTAS.map(c => <option key={c} value={c}>{c}</option>)}
+            </select>
+          </div>
         </div>
         <button className="btn-submit" style={{ marginTop: 16 }} onClick={guardar}>Guardar cambios</button>
         {!confirmando ? (
@@ -425,8 +455,9 @@ function FormNuevo({ onGuardar, miembro }) {
   function setFila(id, key, val) { set('filas', form.filas.map(f => f.id === id ? { ...f, [key]: val } : f)) }
   function agregarFila() { set('filas', [...form.filas, filaVacia()]) }
   function eliminarFila(id) { if (form.filas.length === 1) return; set('filas', form.filas.filter(f => f.id !== id)) }
-  function handlePropio(val) { setForm(f => ({ ...f, propio: val, pagado: false, fechaCobro: '' })) }
+  function handlePropio(val) { setForm(f => ({ ...f, propio: val, pagado: false, fechaCobro: '', cuenta: '' })) }
   function handlePagado(val) { setForm(f => ({ ...f, pagado: val, fechaCobro: val ? hoyCompleto() : '' })) }
+  function handleMetodoPago(val) { setForm(f => ({ ...f, metodoPago: val, cuenta: val === 'Efectivo' ? CUENTA_EFECTIVO : (f.cuenta === CUENTA_EFECTIVO ? '' : f.cuenta) })) }
 
   function showToast(msg) {
     setToast({ show: true, msg })
@@ -453,6 +484,8 @@ function FormNuevo({ onGuardar, miembro }) {
       pagado: form.pagado,
       metodoPago: form.metodoPago,
       fechaCobro: form.fechaCobro,
+      cuenta: form.pagado ? (form.cuenta || null) : null,
+      cuentaEstimada: false,
       entregado: form.entregado,
     }
     onGuardar(pedido)
@@ -518,7 +551,7 @@ function FormNuevo({ onGuardar, miembro }) {
                 <div className="pago-extra">
                   <div className="form-group">
                     <label className="form-label">Método</label>
-                    <select className="form-control" value={form.metodoPago} onChange={e => set('metodoPago', e.target.value)}>
+                    <select className="form-control" value={form.metodoPago} onChange={e => handleMetodoPago(e.target.value)}>
                       <option>Transferencia</option>
                       <option>Efectivo</option>
                     </select>
@@ -526,6 +559,13 @@ function FormNuevo({ onGuardar, miembro }) {
                   <div className="form-group">
                     <label className="form-label">Fecha cobro</label>
                     <DatePicker value={form.fechaCobro} onChange={v => set('fechaCobro', v)} />
+                  </div>
+                  <div className="form-group full">
+                    <label className="form-label">Cuenta</label>
+                    <select className="form-control" value={form.cuenta} disabled={form.metodoPago === 'Efectivo'} onChange={e => set('cuenta', e.target.value)}>
+                      <option value="">Seleccionar...</option>
+                      {(form.metodoPago === 'Efectivo' ? [CUENTA_EFECTIVO] : CUENTAS_BANCARIAS).map(c => <option key={c} value={c}>{c}</option>)}
+                    </select>
                   </div>
                 </div>
               )}
@@ -612,7 +652,7 @@ function ListaPedidos({ pedidos, onActualizar, onEliminar }) {
               </div>
               <div className="pedido-right">
                 <span className="pedido-total">{p.propio ? '—' : formatPesos(p.total)}</span>
-                {p.pagado && <span className="pedido-metodo">{p.metodoPago || p.metodo_pago}</span>}
+                {p.pagado && <span className="pedido-metodo">{p.metodoPago || p.metodo_pago}{p.cuenta ? ` · ${p.cuenta}` : ''}{p.cuenta_estimada ? ' (estimada)' : ''}</span>}
                 <span className="pedido-editar-hint">Tocar para editar</span>
               </div>
             </div>
@@ -693,7 +733,7 @@ function TabCosecha({ pedidos, stock, miembro, onGuardarPedido, onActualizarPedi
 // ─── Tab Gastos ───────────────────────────────────────────────
 function PanelGastos({ locacion, gastos, miembro, onNuevoGasto, onActualizarGasto, onEliminarGasto }) {
   const [mostrarForm, setMostrarForm] = useState(false)
-  const [form, setForm] = useState({ descripcion: '', categoria: '', monto: '', fecha: '' })
+  const [form, setForm] = useState({ descripcion: '', categoria: '', monto: '', fecha: '', cuenta: '' })
   const [toast, setToast] = useState({ show: false, msg: '' })
   const [filtroMes, setFiltroMes] = useState('todos')
   const [filtrocat, setFiltrocat] = useState('todas')
@@ -713,11 +753,11 @@ function PanelGastos({ locacion, gastos, miembro, onNuevoGasto, onActualizarGast
     }
     const partes = (form.fecha || '').split('/')
     const mes = partes.length === 3 ? `${parseInt(partes[1])}/${partes[2]}` : mesActual()
-    const nuevoGasto = { descripcion: form.descripcion.trim(), categoria: form.categoria, monto: parseFloat(form.monto), fecha: form.fecha, mes, locacion, miembro: miembro || null }
+    const nuevoGasto = { descripcion: form.descripcion.trim(), categoria: form.categoria, monto: parseFloat(form.monto), fecha: form.fecha, mes, locacion, miembro: miembro || null, cuenta: form.cuenta || null, cuenta_estimada: false }
     const { data, error } = await supabase.from('gastos').insert(nuevoGasto).select().single()
     if (!error && data) {
       onNuevoGasto(data)
-      setForm({ descripcion: '', categoria: '', monto: '', fecha: '' })
+      setForm({ descripcion: '', categoria: '', monto: '', fecha: '', cuenta: '' })
       setMostrarForm(false)
       showToast('Gasto registrado ✓')
     } else showToast('Error al guardar')
@@ -795,6 +835,13 @@ function PanelGastos({ locacion, gastos, miembro, onNuevoGasto, onActualizarGast
               <label className="form-label">Fecha</label>
               <DatePicker value={form.fecha} onChange={v => set('fecha', v)} />
             </div>
+            <div className="form-group full">
+              <label className="form-label">Cuenta de la que sale</label>
+              <select className="form-control" value={form.cuenta} onChange={e => set('cuenta', e.target.value)}>
+                <option value="">Seleccionar...</option>
+                {CUENTAS.map(c => <option key={c} value={c}>{c}</option>)}
+              </select>
+            </div>
           </div>
           <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
             <button className="btn-submit" onClick={guardarGasto} style={{ flex: 1 }}>Guardar gasto</button>
@@ -812,7 +859,7 @@ function PanelGastos({ locacion, gastos, miembro, onNuevoGasto, onActualizarGast
             <div className="pedido-card" key={g.id} onClick={() => setEditando(g)} style={{ cursor: 'pointer' }}>
               <div>
                 <div className="pedido-nombre">{g.descripcion}</div>
-                <div className="pedido-sub">{g.fecha} · {g.categoria}{g.miembro ? ` · ${g.miembro}` : ''}</div>
+                <div className="pedido-sub">{g.fecha} · {g.categoria}{g.miembro ? ` · ${g.miembro}` : ''}{g.cuenta ? ` · ${g.cuenta}` : ''}{g.cuenta_estimada ? ' · estimada' : ''}</div>
               </div>
               <div className="pedido-right">
                 <span className="pedido-total" style={{ color: '#791F1F' }}>{formatPesos(g.monto)}</span>
@@ -827,8 +874,8 @@ function PanelGastos({ locacion, gastos, miembro, onNuevoGasto, onActualizarGast
           gasto={editando}
           categorias={categorias}
           onGuardar={async actualizado => {
-            const { error } = await supabase.from('gastos').update({ descripcion: actualizado.descripcion, categoria: actualizado.categoria, monto: actualizado.monto, fecha: actualizado.fecha, mes: actualizado.mes, miembro: actualizado.miembro || null }).eq('id', actualizado.id)
-            if (!error) { onActualizarGasto(actualizado); showToast('Gasto actualizado ✓') }
+            const { error } = await supabase.from('gastos').update({ descripcion: actualizado.descripcion, categoria: actualizado.categoria, monto: actualizado.monto, fecha: actualizado.fecha, mes: actualizado.mes, miembro: actualizado.miembro || null, cuenta: actualizado.cuenta || null, cuenta_estimada: false }).eq('id', actualizado.id)
+            if (!error) { onActualizarGasto({ ...actualizado, cuenta_estimada: false }); showToast('Gasto actualizado ✓') }
             setEditando(null)
           }}
           onEliminar={async g => {
@@ -839,6 +886,154 @@ function PanelGastos({ locacion, gastos, miembro, onNuevoGasto, onActualizarGast
           onCerrar={() => setEditando(null)}
         />
       )}
+      <div className={`toast${toast.show ? ' show' : ''}`}>{toast.msg}</div>
+    </div>
+  )
+}
+
+// ─── Tab Finanzas ───────────────────────────────────────────────
+function formatFechaISOCorta(iso) {
+  if (!iso) return ''
+  const [y, m, d] = iso.split('-')
+  return `${parseInt(d)}/${parseInt(m)}/${y}`
+}
+
+function TabFinanzas({ pedidos, esquejes }) {
+  const [gastos, setGastos] = useState([])
+  const [cuentas, setCuentas] = useState([])
+  const [cargando, setCargando] = useState(true)
+  const [editandoSaldo, setEditandoSaldo] = useState(null)
+  const [inputSaldo, setInputSaldo] = useState('')
+  const [toast, setToast] = useState({ show: false, msg: '' })
+
+  function showToast(msg) {
+    setToast({ show: true, msg })
+    setTimeout(() => setToast({ show: false, msg: '' }), 2500)
+  }
+
+  useEffect(() => {
+    async function cargar() {
+      const { data: gastosData } = await supabase.from('gastos').select('*')
+      if (gastosData) setGastos(gastosData)
+      const { data: cuentasData } = await supabase.from('cuentas').select('*')
+      if (cuentasData) setCuentas(cuentasData)
+      setCargando(false)
+    }
+    cargar()
+  }, [])
+
+  function cuentaInfo(nombre) {
+    return cuentas.find(c => c.nombre === nombre) || { nombre, saldo_inicial: 0, fecha_corte: '2026-05-31', validado: false }
+  }
+
+  function esDesdeCorte(fechaStr, corteISO) {
+    if (!fechaStr) return true            // sin fecha (imports jun-jul): se cuentan igual
+    const d = parseFechaDP(fechaStr)
+    if (!d) return true                   // fecha ilegible: contarla, no perder plata
+    const [y, m, dd] = (corteISO || '2026-05-31').split('-').map(Number)
+    const corte = new Date(y, m - 1, dd)  // corte como fecha LOCAL (misma base que parseFechaDP)
+    return d >= corte
+  }
+
+  const resumen = CUENTAS.map(nombre => {
+    const info = cuentaInfo(nombre)
+    const ingresosPedidos = pedidos.filter(p => p.pagado && p.cuenta === nombre && esDesdeCorte(p.fecha, info.fecha_corte)).reduce((s, p) => s + (p.total || 0), 0)
+    const ingresosEsquejes = esquejes.filter(e => e.pagado && e.cuenta === nombre && esDesdeCorte(e.fecha, info.fecha_corte)).reduce((s, e) => s + (e.total || 0), 0)
+    const egresos = gastos.filter(g => g.cuenta === nombre && esDesdeCorte(g.fecha, info.fecha_corte)).reduce((s, g) => s + (g.monto || 0), 0)
+    const ingresos = ingresosPedidos + ingresosEsquejes
+    const saldo = (info.saldo_inicial || 0) + ingresos - egresos
+    const estimados =
+      pedidos.filter(p => p.cuenta === nombre && p.cuenta_estimada).length +
+      esquejes.filter(e => e.cuenta === nombre && e.cuenta_estimada).length +
+      gastos.filter(g => g.cuenta === nombre && g.cuenta_estimada).length
+    return { nombre, info, ingresos, egresos, saldo, estimados }
+  })
+
+  const totalGeneral = resumen.reduce((s, r) => s + r.saldo, 0)
+  const totalEstimados = resumen.reduce((s, r) => s + r.estimados, 0)
+
+  async function guardarSaldoInicial(nombre) {
+    const valor = parseFloat(inputSaldo)
+    if (isNaN(valor)) { showToast('Ingresá un número válido'); return }
+    const existente = cuentas.find(c => c.nombre === nombre)
+    if (existente) {
+      const { error } = await supabase.from('cuentas').update({ saldo_inicial: valor, validado: true }).eq('nombre', nombre)
+      if (!error) { setCuentas(prev => prev.map(c => c.nombre === nombre ? { ...c, saldo_inicial: valor, validado: true } : c)); showToast('Saldo inicial validado ✓') }
+      else showToast('Error al guardar')
+    } else {
+      const { data, error } = await supabase.from('cuentas').insert({ nombre, saldo_inicial: valor, fecha_corte: '2026-05-31', validado: true }).select().single()
+      if (!error && data) { setCuentas(prev => [...prev, data]); showToast('Saldo inicial validado ✓') }
+      else showToast('Error al guardar')
+    }
+    setEditandoSaldo(null)
+    setInputSaldo('')
+  }
+
+  if (cargando) return <div className="content"><div className="empty-state">Cargando Finanzas...</div></div>
+
+  return (
+    <div className="content">
+      <div className="card" style={{ marginBottom: 14 }}>
+        <div style={{ fontSize: 12, color: 'var(--text-secondary)', lineHeight: 1.5 }}>
+          Saldo por cuenta = saldo inicial + pedidos y esquejes cobrados − gastos, desde la fecha de corte de cada cuenta. Mientras el saldo inicial no esté validado con el equipo, la cifra es un <strong>movimiento neto</strong>, no el saldo real de la cuenta.
+        </div>
+      </div>
+      <div className="stats-row">
+        <div className="stat-card">
+          <div className="stat-num" style={{ fontSize: 16, color: totalGeneral < 0 ? '#791F1F' : 'var(--green-dark)' }}>{formatPesos(totalGeneral)}</div>
+          <div className="stat-lbl">Total todas las cuentas</div>
+        </div>
+        <div className="stat-card">
+          <div className="stat-num" style={{ color: totalEstimados > 0 ? '#854F0B' : undefined }}>{totalEstimados}</div>
+          <div className="stat-lbl">Registros a revisar</div>
+        </div>
+      </div>
+      {totalEstimados > 0 && (
+        <div className="card" style={{ marginBottom: 14, background: '#FFF8ED', borderColor: '#E8C77E' }}>
+          <div style={{ fontSize: 12, color: '#854F0B', lineHeight: 1.5 }}>
+            Hay <strong>{totalEstimados}</strong> registro(s) de junio-julio con cuenta estimada (asignada por quién cargó el pedido/gasto, no confirmada contra comprobante). Se pueden corregir abriendo cada uno desde Cosecha, Esquejes o Gastos → Lista.
+          </div>
+        </div>
+      )}
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+        {resumen.map(r => (
+          <div className="card" key={r.nombre}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+              <div>
+                <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--text-primary)' }}>{r.nombre}</div>
+                <div style={{ fontSize: 11, color: 'var(--text-secondary)', marginTop: 2 }}>
+                  {r.info.validado ? 'Saldo actual' : `Movimiento neto desde ${formatFechaISOCorta(r.info.fecha_corte)}`}
+                </div>
+              </div>
+              <div style={{ fontSize: 18, fontWeight: 700, color: r.saldo < 0 ? '#791F1F' : 'var(--green-dark)' }}>{formatPesos(r.saldo)}</div>
+            </div>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '5px 12px', marginTop: 10, paddingTop: 10, borderTop: '0.5px solid var(--border)' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                <span style={{ fontSize: 12, color: 'var(--text-secondary)' }}>Ingresos</span>
+                <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--green-dark)' }}>{formatPesos(r.ingresos)}</span>
+              </div>
+              <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                <span style={{ fontSize: 12, color: 'var(--text-secondary)' }}>Gastos</span>
+                <span style={{ fontSize: 12, fontWeight: 600, color: '#791F1F' }}>{formatPesos(r.egresos)}</span>
+              </div>
+            </div>
+            {r.estimados > 0 && (
+              <div style={{ fontSize: 11, color: '#854F0B', marginTop: 8 }}>{r.estimados} registro(s) estimado(s) en esta cuenta</div>
+            )}
+            {editandoSaldo === r.nombre ? (
+              <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
+                <input className="form-control" type="number" placeholder="Saldo real validado" value={inputSaldo} onChange={e => setInputSaldo(e.target.value)} style={{ flex: 1 }} />
+                <button className="btn-submit" style={{ width: 'auto', padding: '0 14px' }} onClick={() => guardarSaldoInicial(r.nombre)}>Guardar</button>
+                <button onClick={() => { setEditandoSaldo(null); setInputSaldo('') }} style={{ padding: '0 12px', border: '0.5px solid var(--border-mid)', borderRadius: 'var(--radius-md)', background: 'transparent', cursor: 'pointer', fontSize: 13, color: 'var(--text-secondary)' }}>Cancelar</button>
+              </div>
+            ) : (
+              <button onClick={() => { setEditandoSaldo(r.nombre); setInputSaldo(String(r.info.saldo_inicial || 0)) }} style={{ marginTop: 10, background: 'none', border: 'none', padding: 0, fontSize: 12, color: 'var(--green-dark)', fontWeight: 500, cursor: 'pointer' }}>
+                {r.info.validado ? 'Corregir saldo validado' : 'Validar saldo inicial con el equipo'}
+              </button>
+            )}
+          </div>
+        ))}
+      </div>
       <div className={`toast${toast.show ? ' show' : ''}`}>{toast.msg}</div>
     </div>
   )
@@ -980,7 +1175,7 @@ function promediarRiegos(riegos) {
   const keys = ['ec', 'ph', 'ppfd', 'pulsos', 'ml', 'vpd', 'hr', 'temp']
   const resultado = {}
   keys.forEach(k => {
-    const vals = riegos.map(r => parseFloat(r[k])).filter(v => !isNaN(v))
+    const vals = riegos.map(r => parseFloat(String(r[k] ?? '').replace(',', '.'))).filter(v => !isNaN(v))
     if (vals.length > 0) resultado[k] = (vals.reduce((a, b) => a + b, 0) / vals.length).toFixed(1)
   })
   ;['tiempoPulso', 'fertilizantes'].forEach(k => {
@@ -1150,6 +1345,7 @@ function ModalEditarEsqueje({ esqueje, onGuardar, onEliminar, onCerrar }) {
     pagado: esqueje.pagado,
     metodoPago: esqueje.metodoPago || esqueje.metodo_pago || 'Transferencia',
     fechaCobro: esqueje.fechaCobro || esqueje.fecha_cobro || '',
+    cuenta: esqueje.cuenta || '',
     entregado: esqueje.entregado,
   })
   const [confirmando, setConfirmando] = useState(false)
@@ -1160,17 +1356,24 @@ function ModalEditarEsqueje({ esqueje, onGuardar, onEliminar, onCerrar }) {
   function setFila(id, key, val) { set('filas', form.filas.map(f => f.id === id ? { ...f, [key]: val } : f)) }
   function agregarFila() { set('filas', [...form.filas, { id: Math.random(), nombre: '', cantidad: '', precio: '' }]) }
   function eliminarFila(id) { if (form.filas.length > 1) set('filas', form.filas.filter(f => f.id !== id)) }
-  function handlePropio(val) { setForm(f => ({ ...f, propio: val, pagado: false, fechaCobro: '' })) }
+  function handlePropio(val) { setForm(f => ({ ...f, propio: val, pagado: false, fechaCobro: '', cuenta: '' })) }
   function handlePagado(val) { setForm(f => ({ ...f, pagado: val, fechaCobro: val ? (form.fechaCobro || hoyCompleto()) : '' })) }
+  function handleMetodoPago(val) { setForm(f => ({ ...f, metodoPago: val, cuenta: val === 'Efectivo' ? CUENTA_EFECTIVO : (f.cuenta === CUENTA_EFECTIVO ? '' : f.cuenta) })) }
 
   function guardar() {
     const filasValidas = form.filas.filter(f => f.nombre)
-    if (!form.socio.trim() || filasValidas.length === 0) return
+    const sinCantidad = filasValidas.some(f => !parseFloat(f.cantidad))
+    if (!form.socio.trim() || filasValidas.length === 0 || sinCantidad) return
     const geneticas = filasValidas.map(f => ({ nombre: f.nombre, cantidad: f.cantidad, precio: f.precio }))
     let mes = form.mes
     const partes = form.fecha.split('/')
     if (partes.length === 3) mes = `${parseInt(partes[1])}/${partes[2]}`
-    onGuardar({ ...esqueje, ...form, mes, geneticas, total, metodo_pago: form.metodoPago, fecha_cobro: form.fechaCobro })
+    onGuardar({
+      ...esqueje, ...form, mes, geneticas, total,
+      metodo_pago: form.metodoPago, fecha_cobro: form.fechaCobro,
+      cuenta: form.pagado ? (form.cuenta || null) : null,
+      cuentaEstimada: false,
+    })
   }
 
   return (
@@ -1239,7 +1442,7 @@ function ModalEditarEsqueje({ esqueje, onGuardar, onEliminar, onCerrar }) {
                 <div className="pago-extra">
                   <div className="form-group">
                     <label className="form-label">Método</label>
-                    <select className="form-control" value={form.metodoPago} onChange={e => set('metodoPago', e.target.value)}>
+                    <select className="form-control" value={form.metodoPago} onChange={e => handleMetodoPago(e.target.value)}>
                       <option>Transferencia</option>
                       <option>Efectivo</option>
                     </select>
@@ -1247,6 +1450,13 @@ function ModalEditarEsqueje({ esqueje, onGuardar, onEliminar, onCerrar }) {
                   <div className="form-group">
                     <label className="form-label">Fecha cobro</label>
                     <DatePicker value={form.fechaCobro} onChange={v => set('fechaCobro', v)} />
+                  </div>
+                  <div className="form-group full">
+                    <label className="form-label">Cuenta</label>
+                    <select className="form-control" value={form.cuenta} disabled={form.metodoPago === 'Efectivo'} onChange={e => set('cuenta', e.target.value)}>
+                      <option value="">Seleccionar...</option>
+                      {(form.metodoPago === 'Efectivo' ? [CUENTA_EFECTIVO] : CUENTAS_BANCARIAS).map(c => <option key={c} value={c}>{c}</option>)}
+                    </select>
                   </div>
                 </div>
               )}
@@ -1281,7 +1491,7 @@ function ModalEditarEsqueje({ esqueje, onGuardar, onEliminar, onCerrar }) {
 
 // ─── Esquejes: Formulario nuevo ─────────────────────────────────
 function FormNuevoEsqueje({ onGuardar, miembro }) {
-  const [form, setForm] = useState({ socio: '', filas: [filaEsquejeVacia()], propio: false, pagado: false, metodoPago: 'Transferencia', fechaCobro: '', entregado: false })
+  const [form, setForm] = useState({ socio: '', filas: [filaEsquejeVacia()], propio: false, pagado: false, metodoPago: 'Transferencia', fechaCobro: '', cuenta: '', entregado: false })
   const [toast, setToast] = useState({ show: false, msg: '' })
 
   const set = (key, val) => setForm(f => ({ ...f, [key]: val }))
@@ -1290,8 +1500,9 @@ function FormNuevoEsqueje({ onGuardar, miembro }) {
   function setFila(id, key, val) { set('filas', form.filas.map(f => f.id === id ? { ...f, [key]: val } : f)) }
   function agregarFila() { set('filas', [...form.filas, filaEsquejeVacia()]) }
   function eliminarFila(id) { if (form.filas.length === 1) return; set('filas', form.filas.filter(f => f.id !== id)) }
-  function handlePropio(val) { setForm(f => ({ ...f, propio: val, pagado: false, fechaCobro: '' })) }
+  function handlePropio(val) { setForm(f => ({ ...f, propio: val, pagado: false, fechaCobro: '', cuenta: '' })) }
   function handlePagado(val) { setForm(f => ({ ...f, pagado: val, fechaCobro: val ? hoyCompleto() : '' })) }
+  function handleMetodoPago(val) { setForm(f => ({ ...f, metodoPago: val, cuenta: val === 'Efectivo' ? CUENTA_EFECTIVO : (f.cuenta === CUENTA_EFECTIVO ? '' : f.cuenta) })) }
 
   function showToast(msg) {
     setToast({ show: true, msg })
@@ -1317,10 +1528,12 @@ function FormNuevoEsqueje({ onGuardar, miembro }) {
       pagado: form.pagado,
       metodoPago: form.metodoPago,
       fechaCobro: form.fechaCobro,
+      cuenta: form.pagado ? (form.cuenta || null) : null,
+      cuentaEstimada: false,
       entregado: form.entregado,
     }
     onGuardar(esqueje)
-    setForm({ socio: '', filas: [filaEsquejeVacia()], propio: false, pagado: false, metodoPago: 'Transferencia', fechaCobro: '', entregado: false })
+    setForm({ socio: '', filas: [filaEsquejeVacia()], propio: false, pagado: false, metodoPago: 'Transferencia', fechaCobro: '', cuenta: '', entregado: false })
     showToast('Esqueje guardado ✓')
   }
 
@@ -1382,7 +1595,7 @@ function FormNuevoEsqueje({ onGuardar, miembro }) {
                 <div className="pago-extra">
                   <div className="form-group">
                     <label className="form-label">Método</label>
-                    <select className="form-control" value={form.metodoPago} onChange={e => set('metodoPago', e.target.value)}>
+                    <select className="form-control" value={form.metodoPago} onChange={e => handleMetodoPago(e.target.value)}>
                       <option>Transferencia</option>
                       <option>Efectivo</option>
                     </select>
@@ -1390,6 +1603,13 @@ function FormNuevoEsqueje({ onGuardar, miembro }) {
                   <div className="form-group">
                     <label className="form-label">Fecha cobro</label>
                     <DatePicker value={form.fechaCobro} onChange={v => set('fechaCobro', v)} />
+                  </div>
+                  <div className="form-group full">
+                    <label className="form-label">Cuenta</label>
+                    <select className="form-control" value={form.cuenta} disabled={form.metodoPago === 'Efectivo'} onChange={e => set('cuenta', e.target.value)}>
+                      <option value="">Seleccionar...</option>
+                      {(form.metodoPago === 'Efectivo' ? [CUENTA_EFECTIVO] : CUENTAS_BANCARIAS).map(c => <option key={c} value={c}>{c}</option>)}
+                    </select>
                   </div>
                 </div>
               )}
@@ -1476,7 +1696,7 @@ function ListaEsquejes({ esquejes, onActualizar, onEliminar }) {
               </div>
               <div className="pedido-right">
                 <span className="pedido-total">{e.propio ? '—' : formatPesos(e.total)}</span>
-                {e.pagado && <span className="pedido-metodo">{e.metodoPago || e.metodo_pago}</span>}
+                {e.pagado && <span className="pedido-metodo">{e.metodoPago || e.metodo_pago}{e.cuenta ? ` · ${e.cuenta}` : ''}{e.cuenta_estimada ? ' (estimada)' : ''}</span>}
                 <span className="pedido-editar-hint">Tocar para editar</span>
               </div>
             </div>
@@ -1679,6 +1899,29 @@ function ModalCambiarPassword({ onCerrar }) {
   )
 }
 
+// ─── Stock: ajuste atómico vía RPC (server-side, sin doble descuento ni carreras) ───
+function acumularCantidades(geneticas, signo, acc) {
+  for (const g of geneticas || []) {
+    const cant = parseFloat(g.cantidad)
+    if (!g.nombre || !isFinite(cant) || cant < 0) continue
+    acc[g.nombre] = (acc[g.nombre] || 0) + signo * cant
+  }
+  return acc
+}
+
+async function aplicarDeltas(deltas, rpcName, setStockFn) {
+  for (const [genetica, delta] of Object.entries(deltas)) {
+    if (!delta) continue
+    const { data, error } = await supabase.rpc(rpcName, { p_genetica: genetica, p_delta: delta })
+    if (error) {
+      console.error('Error ajustando stock', genetica, error)
+      alert(`Se guardó el registro, pero no se pudo ajustar el stock de ${genetica}. Revisalo manualmente.`)
+      continue
+    }
+    if (data != null) setStockFn(prev => ({ ...prev, [genetica]: Number(data) }))
+  }
+}
+
 // ─── App raíz ─────────────────────────────────────────────────
 export default function App() {
   const [tab, setTab] = useState('cosecha')
@@ -1732,7 +1975,7 @@ export default function App() {
       setCargando(false)
     }
     cargarDatos()
-  }, [sesion])
+  }, [sesion?.user?.id])
 
   function handleRiegosChange(etapa, promedios) {
     if (etapa === 'vegetativo') setRiegoPromediosVege(promedios)
@@ -1743,20 +1986,17 @@ export default function App() {
     const { data, error } = await supabase.from('pedidos').insert({
       fecha: p.fecha, mes: mesActual(), miembro: p.miembro, socio: p.socio,
       geneticas: p.geneticas, precio: p.precio, total: p.total, propio: p.propio,
-      pagado: p.pagado, metodo_pago: p.metodoPago, fecha_cobro: p.fechaCobro, entregado: p.entregado,
+      pagado: p.pagado, metodo_pago: p.metodoPago, fecha_cobro: p.fechaCobro,
+      cuenta: p.cuenta || null, cuenta_estimada: p.cuentaEstimada ?? false, entregado: p.entregado,
     }).select().single()
     if (!error && data) {
       const pedidoGuardado = { ...data, metodoPago: data.metodo_pago, fechaCobro: data.fecha_cobro }
       setPedidos(prev => [pedidoGuardado, ...prev])
       if (p.entregado) {
-        for (const g of p.geneticas) {
-          const nuevoStock = (stock[g.nombre] ?? 0) - parseFloat(g.cantidad)
-          await supabase.from('stock').update({ gramos: nuevoStock }).eq('genetica', g.nombre)
-          setStock(prev => ({ ...prev, [g.nombre]: nuevoStock }))
-        }
+        await aplicarDeltas(acumularCantidades(p.geneticas, -1, {}), 'ajustar_stock', setStock)
       }
     }
-  }, [stock])
+  }, [])
 
   const actualizarPedido = useCallback(async (actualizado, anterior) => {
     const { error } = await supabase.from('pedidos').update({
@@ -1764,59 +2004,44 @@ export default function App() {
       mes: actualizado.mes, geneticas: actualizado.geneticas, precio: actualizado.precio,
       total: actualizado.total, propio: actualizado.propio, pagado: actualizado.pagado,
       metodo_pago: actualizado.metodo_pago || actualizado.metodoPago,
-      fecha_cobro: actualizado.fecha_cobro || actualizado.fechaCobro, entregado: actualizado.entregado,
+      fecha_cobro: actualizado.fecha_cobro || actualizado.fechaCobro,
+      cuenta: actualizado.cuenta || null, cuenta_estimada: actualizado.cuentaEstimada ?? false,
+      entregado: actualizado.entregado,
     }).eq('id', actualizado.id)
     if (!error) {
-      setPedidos(prev => prev.map(p => p.id === actualizado.id ? { ...actualizado, metodoPago: actualizado.metodo_pago || actualizado.metodoPago, fechaCobro: actualizado.fecha_cobro || actualizado.fechaCobro } : p))
-      if (anterior.entregado) {
-        for (const g of anterior.geneticas) {
-          const nuevoStock = (stock[g.nombre] ?? 0) + parseFloat(g.cantidad)
-          await supabase.from('stock').update({ gramos: nuevoStock }).eq('genetica', g.nombre)
-          setStock(prev => ({ ...prev, [g.nombre]: nuevoStock }))
-        }
-      }
-      if (actualizado.entregado) {
-        for (const g of actualizado.geneticas) {
-          const nuevoStock = (stock[g.nombre] ?? 0) - parseFloat(g.cantidad)
-          await supabase.from('stock').update({ gramos: nuevoStock }).eq('genetica', g.nombre)
-          setStock(prev => ({ ...prev, [g.nombre]: nuevoStock }))
-        }
-      }
+      setPedidos(prev => prev.map(p => p.id === actualizado.id ? { ...actualizado, metodoPago: actualizado.metodo_pago || actualizado.metodoPago, fechaCobro: actualizado.fecha_cobro || actualizado.fechaCobro, cuenta_estimada: actualizado.cuentaEstimada ?? false } : p))
+      const deltas = {}
+      if (anterior.entregado) acumularCantidades(anterior.geneticas, 1, deltas)
+      if (actualizado.entregado) acumularCantidades(actualizado.geneticas, -1, deltas)
+      await aplicarDeltas(deltas, 'ajustar_stock', setStock)
     }
-  }, [stock])
+  }, [])
 
   const eliminarPedido = useCallback(async (pedido) => {
     const { error } = await supabase.from('pedidos').delete().eq('id', pedido.id)
     if (!error) {
       setPedidos(prev => prev.filter(p => p.id !== pedido.id))
       if (pedido.entregado) {
-        for (const g of pedido.geneticas) {
-          const nuevoStock = (stock[g.nombre] ?? 0) + parseFloat(g.cantidad)
-          await supabase.from('stock').update({ gramos: nuevoStock }).eq('genetica', g.nombre)
-          setStock(prev => ({ ...prev, [g.nombre]: nuevoStock }))
-        }
+        await aplicarDeltas(acumularCantidades(pedido.geneticas, 1, {}), 'ajustar_stock', setStock)
       }
     }
-  }, [stock])
+  }, [])
 
   const guardarEsqueje = useCallback(async e => {
     const { data, error } = await supabase.from('esquejes').insert({
       fecha: e.fecha, mes: mesActual(), miembro: e.miembro, socio: e.socio,
       geneticas: e.geneticas, total: e.total, propio: e.propio,
-      pagado: e.pagado, metodo_pago: e.metodoPago, fecha_cobro: e.fechaCobro, entregado: e.entregado,
+      pagado: e.pagado, metodo_pago: e.metodoPago, fecha_cobro: e.fechaCobro,
+      cuenta: e.cuenta || null, cuenta_estimada: e.cuentaEstimada ?? false, entregado: e.entregado,
     }).select().single()
     if (!error && data) {
       const guardado = { ...data, metodoPago: data.metodo_pago, fechaCobro: data.fecha_cobro }
       setEsquejes(prev => [guardado, ...prev])
       if (e.entregado) {
-        for (const g of e.geneticas) {
-          const nuevo = (stockEsquejes[g.nombre] ?? 0) - parseFloat(g.cantidad)
-          await supabase.from('stock_esquejes').update({ unidades: nuevo }).eq('genetica', g.nombre)
-          setStockEsquejes(prev => ({ ...prev, [g.nombre]: nuevo }))
-        }
+        await aplicarDeltas(acumularCantidades(e.geneticas, -1, {}), 'ajustar_stock_esquejes', setStockEsquejes)
       }
     }
-  }, [stockEsquejes])
+  }, [])
 
   const actualizarEsqueje = useCallback(async (actualizado, anterior) => {
     const { error } = await supabase.from('esquejes').update({
@@ -1824,40 +2049,28 @@ export default function App() {
       mes: actualizado.mes, geneticas: actualizado.geneticas,
       total: actualizado.total, propio: actualizado.propio, pagado: actualizado.pagado,
       metodo_pago: actualizado.metodo_pago || actualizado.metodoPago,
-      fecha_cobro: actualizado.fecha_cobro || actualizado.fechaCobro, entregado: actualizado.entregado,
+      fecha_cobro: actualizado.fecha_cobro || actualizado.fechaCobro,
+      cuenta: actualizado.cuenta || null, cuenta_estimada: actualizado.cuentaEstimada ?? false,
+      entregado: actualizado.entregado,
     }).eq('id', actualizado.id)
     if (!error) {
-      setEsquejes(prev => prev.map(x => x.id === actualizado.id ? { ...actualizado, metodoPago: actualizado.metodo_pago || actualizado.metodoPago, fechaCobro: actualizado.fecha_cobro || actualizado.fechaCobro } : x))
-      if (anterior.entregado) {
-        for (const g of anterior.geneticas) {
-          const nuevo = (stockEsquejes[g.nombre] ?? 0) + parseFloat(g.cantidad)
-          await supabase.from('stock_esquejes').update({ unidades: nuevo }).eq('genetica', g.nombre)
-          setStockEsquejes(prev => ({ ...prev, [g.nombre]: nuevo }))
-        }
-      }
-      if (actualizado.entregado) {
-        for (const g of actualizado.geneticas) {
-          const nuevo = (stockEsquejes[g.nombre] ?? 0) - parseFloat(g.cantidad)
-          await supabase.from('stock_esquejes').update({ unidades: nuevo }).eq('genetica', g.nombre)
-          setStockEsquejes(prev => ({ ...prev, [g.nombre]: nuevo }))
-        }
-      }
+      setEsquejes(prev => prev.map(x => x.id === actualizado.id ? { ...actualizado, metodoPago: actualizado.metodo_pago || actualizado.metodoPago, fechaCobro: actualizado.fecha_cobro || actualizado.fechaCobro, cuenta_estimada: actualizado.cuentaEstimada ?? false } : x))
+      const deltas = {}
+      if (anterior.entregado) acumularCantidades(anterior.geneticas, 1, deltas)
+      if (actualizado.entregado) acumularCantidades(actualizado.geneticas, -1, deltas)
+      await aplicarDeltas(deltas, 'ajustar_stock_esquejes', setStockEsquejes)
     }
-  }, [stockEsquejes])
+  }, [])
 
   const eliminarEsqueje = useCallback(async (esqueje) => {
     const { error } = await supabase.from('esquejes').delete().eq('id', esqueje.id)
     if (!error) {
       setEsquejes(prev => prev.filter(x => x.id !== esqueje.id))
       if (esqueje.entregado) {
-        for (const g of esqueje.geneticas) {
-          const nuevo = (stockEsquejes[g.nombre] ?? 0) + parseFloat(g.cantidad)
-          await supabase.from('stock_esquejes').update({ unidades: nuevo }).eq('genetica', g.nombre)
-          setStockEsquejes(prev => ({ ...prev, [g.nombre]: nuevo }))
-        }
+        await aplicarDeltas(acumularCantidades(esqueje.geneticas, 1, {}), 'ajustar_stock_esquejes', setStockEsquejes)
       }
     }
-  }, [stockEsquejes])
+  }, [])
 
   if (chequeandoSesion) return (
     <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100vh', color: 'var(--text-secondary)', fontSize: 14 }}>
@@ -1906,6 +2119,7 @@ export default function App() {
           <button className={`tab${tab === 'cosecha' ? ' active' : ''}`} onClick={() => setTab('cosecha')}>Cosecha</button>
           <button className={`tab${tab === 'esquejes' ? ' active' : ''}`} onClick={() => setTab('esquejes')}>Esquejes</button>
           <button className={`tab${tab === 'gastos' ? ' active' : ''}`} onClick={() => setTab('gastos')}>Gastos</button>
+          <button className={`tab${tab === 'finanzas' ? ' active' : ''}`} onClick={() => setTab('finanzas')}>Finanzas</button>
           <button className={`tab${tab === 'riegos' ? ' active' : ''}`} onClick={() => setTab('riegos')}>Riegos</button>
           <button className={`tab${tab === 'calendario' ? ' active' : ''}`} onClick={() => setTab('calendario')}>Cultivo</button>
         </div>
@@ -1921,6 +2135,7 @@ export default function App() {
         />
       )}
       {tab === 'gastos' && <TabGastos miembro={miembro} />}
+      {tab === 'finanzas' && <TabFinanzas pedidos={pedidos} esquejes={esquejes} />}
       {tab === 'esquejes' && (
         <TabEsquejes
           esquejes={esquejes}
