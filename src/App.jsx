@@ -198,7 +198,7 @@ function ModalEditar({ pedido, onGuardar, onEliminar, onCerrar }) {
   const [form, setForm] = useState({
     socio: pedido.socio,
     miembro: pedido.miembro,
-    fecha: pedido.fecha && pedido.mes ? `${pedido.fecha}/${pedido.mes.split('/')[1]}` : (pedido.fecha || ''),
+    fecha: pedido.fecha || '',
     mes: pedido.mes || '',
     filas: pedido.geneticas.map(g => ({ id: Math.random(), nombre: g.nombre, cantidad: g.cantidad, precio: g.precio ?? '' })),
     precio: pedido.precio,
@@ -1338,7 +1338,7 @@ function ModalEditarEsqueje({ esqueje, onGuardar, onEliminar, onCerrar }) {
   const [form, setForm] = useState({
     socio: esqueje.socio,
     miembro: esqueje.miembro,
-    fecha: esqueje.fecha && esqueje.mes ? `${esqueje.fecha}/${esqueje.mes.split('/')[1]}` : (esqueje.fecha || ''),
+    fecha: esqueje.fecha || '',
     mes: esqueje.mes || '',
     filas: esqueje.geneticas.map(g => ({ id: Math.random(), nombre: g.nombre, cantidad: g.cantidad, precio: g.precio ?? '' })),
     propio: esqueje.propio,
