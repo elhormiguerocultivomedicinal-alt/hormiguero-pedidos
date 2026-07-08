@@ -210,6 +210,7 @@ function ModalEditar({ pedido, onGuardar, onEliminar, onCerrar }) {
     entregado: pedido.entregado,
   })
   const [confirmando, setConfirmando] = useState(false)
+  const [errorCuenta, setErrorCuenta] = useState(false)
 
   const set = (k, v) => setForm(f => ({ ...f, [k]: v }))
   const total = form.propio ? 0 : form.filas.reduce((s, f) => {
@@ -228,6 +229,8 @@ function ModalEditar({ pedido, onGuardar, onEliminar, onCerrar }) {
     const filasValidas = form.filas.filter(f => f.nombre)
     const sinCantidad = filasValidas.some(f => !parseFloat(f.cantidad))
     if (!form.socio.trim() || filasValidas.length === 0 || sinCantidad) return
+    if (form.pagado && !form.cuenta) { setErrorCuenta(true); return }
+    setErrorCuenta(false)
     const geneticas = filasValidas.map(f => tienePrecioPorFila
       ? { nombre: f.nombre, cantidad: f.cantidad, precio: f.precio }
       : { nombre: f.nombre, cantidad: f.cantidad })
@@ -329,10 +332,11 @@ function ModalEditar({ pedido, onGuardar, onEliminar, onCerrar }) {
                   </div>
                   <div className="form-group full">
                     <label className="form-label">Cuenta</label>
-                    <select className="form-control" value={form.cuenta} disabled={form.metodoPago === 'Efectivo'} onChange={e => set('cuenta', e.target.value)}>
+                    <select className="form-control" value={form.cuenta} disabled={form.metodoPago === 'Efectivo'} onChange={e => { set('cuenta', e.target.value); setErrorCuenta(false) }}>
                       <option value="">Seleccionar...</option>
                       {(form.metodoPago === 'Efectivo' ? [CUENTA_EFECTIVO] : CUENTAS_BANCARIAS).map(c => <option key={c} value={c}>{c}</option>)}
                     </select>
+                    {errorCuenta && <div style={{ fontSize: 12, color: '#791F1F', marginTop: 4 }}>Elegí una cuenta: si no, este pago no se va a reflejar en Finanzas.</div>}
                   </div>
                 </div>
               )}
@@ -376,10 +380,13 @@ function ModalEditarGasto({ gasto, categorias, onGuardar, onEliminar, onCerrar }
     cuenta: gasto.cuenta || '',
   })
   const [confirmando, setConfirmando] = useState(false)
+  const [errorCuenta, setErrorCuenta] = useState(false)
   const set = (k, v) => setForm(f => ({ ...f, [k]: v }))
 
   function guardar() {
     if (!form.descripcion.trim() || !form.categoria || !parseFloat(form.monto)) return
+    if (!form.cuenta) { setErrorCuenta(true); return }
+    setErrorCuenta(false)
     const partes = form.fecha.split('/')
     const mes = partes.length === 3 ? `${parseInt(partes[1])}/${partes[2]}` : gasto.mes
     onGuardar({ ...gasto, ...form, monto: parseFloat(form.monto), mes, cuenta: form.cuenta || null, cuentaEstimada: false })
@@ -419,10 +426,11 @@ function ModalEditarGasto({ gasto, categorias, onGuardar, onEliminar, onCerrar }
           </div>
           <div className="form-group full">
             <label className="form-label">Cuenta de la que salió</label>
-            <select className="form-control" value={form.cuenta} onChange={e => set('cuenta', e.target.value)}>
+            <select className="form-control" value={form.cuenta} onChange={e => { set('cuenta', e.target.value); setErrorCuenta(false) }}>
               <option value="">Seleccionar...</option>
               {CUENTAS.map(c => <option key={c} value={c}>{c}</option>)}
             </select>
+            {errorCuenta && <div style={{ fontSize: 12, color: '#791F1F', marginTop: 4 }}>Elegí una cuenta: si no, este gasto no se va a descontar en Finanzas.</div>}
           </div>
         </div>
         <button className="btn-submit" style={{ marginTop: 16 }} onClick={guardar}>Guardar cambios</button>
@@ -469,6 +477,10 @@ function FormNuevo({ onGuardar, miembro }) {
     const sinCantidad = filasValidas.some(f => !parseFloat(f.cantidad))
     if (!form.socio.trim() || filasValidas.length === 0 || sinCantidad) {
       showToast('Completá socio, genética y cantidad')
+      return
+    }
+    if (form.pagado && !form.cuenta) {
+      showToast('Elegí una cuenta para el pago')
       return
     }
     const geneticas = filasValidas.map(f => ({ nombre: f.nombre, cantidad: f.cantidad, precio: f.precio }))
@@ -751,6 +763,10 @@ function PanelGastos({ locacion, gastos, miembro, onNuevoGasto, onActualizarGast
       showToast('Completá descripción, categoría y monto')
       return
     }
+    if (!form.cuenta) {
+      showToast('Elegí la cuenta de la que salió el gasto')
+      return
+    }
     const partes = (form.fecha || '').split('/')
     const mes = partes.length === 3 ? `${parseInt(partes[1])}/${partes[2]}` : mesActual()
     const nuevoGasto = { descripcion: form.descripcion.trim(), categoria: form.categoria, monto: parseFloat(form.monto), fecha: form.fecha, mes, locacion, miembro: miembro || null, cuenta: form.cuenta || null, cuenta_estimada: false }
@@ -902,6 +918,7 @@ function TabFinanzas({ pedidos, esquejes }) {
   const [gastos, setGastos] = useState([])
   const [cuentas, setCuentas] = useState([])
   const [cargando, setCargando] = useState(true)
+  const [errorCarga, setErrorCarga] = useState(false)
   const [editandoSaldo, setEditandoSaldo] = useState(null)
   const [inputSaldo, setInputSaldo] = useState('')
   const [toast, setToast] = useState({ show: false, msg: '' })
@@ -911,16 +928,17 @@ function TabFinanzas({ pedidos, esquejes }) {
     setTimeout(() => setToast({ show: false, msg: '' }), 2500)
   }
 
-  useEffect(() => {
-    async function cargar() {
-      const { data: gastosData } = await supabase.from('gastos').select('*')
-      if (gastosData) setGastos(gastosData)
-      const { data: cuentasData } = await supabase.from('cuentas').select('*')
-      if (cuentasData) setCuentas(cuentasData)
-      setCargando(false)
-    }
-    cargar()
-  }, [])
+  async function cargar() {
+    setCargando(true)
+    const { data: gastosData, error: errGastos } = await supabase.from('gastos').select('*')
+    if (gastosData) setGastos(gastosData)
+    const { data: cuentasData, error: errCuentas } = await supabase.from('cuentas').select('*')
+    if (cuentasData) setCuentas(cuentasData)
+    setErrorCarga(Boolean(errGastos || errCuentas))
+    setCargando(false)
+  }
+
+  useEffect(() => { cargar() }, [])
 
   function cuentaInfo(nombre) {
     return cuentas.find(c => c.nombre === nombre) || { nombre, saldo_inicial: 0, fecha_corte: '2026-05-31', validado: false }
@@ -952,6 +970,15 @@ function TabFinanzas({ pedidos, esquejes }) {
   const totalGeneral = resumen.reduce((s, r) => s + r.saldo, 0)
   const totalEstimados = resumen.reduce((s, r) => s + r.estimados, 0)
 
+  // Registros pagados/con egreso pero sin cuenta asignada: no entran en ningún saldo de arriba
+  // y por eso no deben quedar invisibles — se muestran aparte para que se corrijan.
+  const pedidosSinCuenta = pedidos.filter(p => p.pagado && !p.cuenta)
+  const esquejesSinCuenta = esquejes.filter(e => e.pagado && !e.cuenta)
+  const gastosSinCuenta = gastos.filter(g => !g.cuenta)
+  const ingresosSinCuenta = pedidosSinCuenta.reduce((s, p) => s + (p.total || 0), 0) + esquejesSinCuenta.reduce((s, e) => s + (e.total || 0), 0)
+  const egresosSinCuenta = gastosSinCuenta.reduce((s, g) => s + (g.monto || 0), 0)
+  const cantidadSinCuenta = pedidosSinCuenta.length + esquejesSinCuenta.length + gastosSinCuenta.length
+
   async function guardarSaldoInicial(nombre) {
     const valor = parseFloat(inputSaldo)
     if (isNaN(valor)) { showToast('Ingresá un número válido'); return }
@@ -970,6 +997,19 @@ function TabFinanzas({ pedidos, esquejes }) {
   }
 
   if (cargando) return <div className="content"><div className="empty-state">Cargando Finanzas...</div></div>
+
+  if (errorCarga) {
+    return (
+      <div className="content">
+        <div className="card" style={{ background: '#FCEBEB', borderColor: '#791F1F' }}>
+          <div style={{ fontSize: 13, color: '#791F1F', fontWeight: 500, marginBottom: 10 }}>
+            No se pudieron cargar los datos financieros. Los saldos NO se muestran para evitar mostrar números incorrectos.
+          </div>
+          <button className="btn-submit" onClick={cargar}>Reintentar</button>
+        </div>
+      </div>
+    )
+  }
 
   return (
     <div className="content">
@@ -992,6 +1032,13 @@ function TabFinanzas({ pedidos, esquejes }) {
         <div className="card" style={{ marginBottom: 14, background: '#FFF8ED', borderColor: '#E8C77E' }}>
           <div style={{ fontSize: 12, color: '#854F0B', lineHeight: 1.5 }}>
             Hay <strong>{totalEstimados}</strong> registro(s) de junio-julio con cuenta estimada (asignada por quién cargó el pedido/gasto, no confirmada contra comprobante). Se pueden corregir abriendo cada uno desde Cosecha, Esquejes o Gastos → Lista.
+          </div>
+        </div>
+      )}
+      {cantidadSinCuenta > 0 && (
+        <div className="card" style={{ marginBottom: 14, background: '#FCEBEB', borderColor: '#791F1F' }}>
+          <div style={{ fontSize: 12, color: '#791F1F', lineHeight: 1.5 }}>
+            <strong>Atención:</strong> hay <strong>{cantidadSinCuenta}</strong> registro(s) pagado(s)/con gasto SIN cuenta asignada, por eso <strong>no están sumados en ningún total de arriba</strong> (ingresos sin contar: {formatPesos(ingresosSinCuenta)} · gastos sin contar: {formatPesos(egresosSinCuenta)}). Corregilos desde Cosecha, Esquejes o Gastos → Lista, abriendo cada registro y eligiendo su cuenta.
           </div>
         </div>
       )}
@@ -1349,6 +1396,7 @@ function ModalEditarEsqueje({ esqueje, onGuardar, onEliminar, onCerrar }) {
     entregado: esqueje.entregado,
   })
   const [confirmando, setConfirmando] = useState(false)
+  const [errorCuenta, setErrorCuenta] = useState(false)
 
   const set = (k, v) => setForm(f => ({ ...f, [k]: v }))
   const total = form.propio ? 0 : form.filas.reduce((s, f) => s + (parseFloat(f.cantidad) || 0) * (parseFloat(f.precio) || 0), 0)
@@ -1364,6 +1412,8 @@ function ModalEditarEsqueje({ esqueje, onGuardar, onEliminar, onCerrar }) {
     const filasValidas = form.filas.filter(f => f.nombre)
     const sinCantidad = filasValidas.some(f => !parseFloat(f.cantidad))
     if (!form.socio.trim() || filasValidas.length === 0 || sinCantidad) return
+    if (form.pagado && !form.cuenta) { setErrorCuenta(true); return }
+    setErrorCuenta(false)
     const geneticas = filasValidas.map(f => ({ nombre: f.nombre, cantidad: f.cantidad, precio: f.precio }))
     let mes = form.mes
     const partes = form.fecha.split('/')
@@ -1453,10 +1503,11 @@ function ModalEditarEsqueje({ esqueje, onGuardar, onEliminar, onCerrar }) {
                   </div>
                   <div className="form-group full">
                     <label className="form-label">Cuenta</label>
-                    <select className="form-control" value={form.cuenta} disabled={form.metodoPago === 'Efectivo'} onChange={e => set('cuenta', e.target.value)}>
+                    <select className="form-control" value={form.cuenta} disabled={form.metodoPago === 'Efectivo'} onChange={e => { set('cuenta', e.target.value); setErrorCuenta(false) }}>
                       <option value="">Seleccionar...</option>
                       {(form.metodoPago === 'Efectivo' ? [CUENTA_EFECTIVO] : CUENTAS_BANCARIAS).map(c => <option key={c} value={c}>{c}</option>)}
                     </select>
+                    {errorCuenta && <div style={{ fontSize: 12, color: '#791F1F', marginTop: 4 }}>Elegí una cuenta: si no, este pago no se va a reflejar en Finanzas.</div>}
                   </div>
                 </div>
               )}
@@ -1514,6 +1565,10 @@ function FormNuevoEsqueje({ onGuardar, miembro }) {
     const sinCantidad = filasValidas.some(f => !parseFloat(f.cantidad))
     if (!form.socio.trim() || filasValidas.length === 0 || sinCantidad) {
       showToast('Completá socio, genética y cantidad')
+      return
+    }
+    if (form.pagado && !form.cuenta) {
+      showToast('Elegí una cuenta para el pago')
       return
     }
     const geneticas = filasValidas.map(f => ({ nombre: f.nombre, cantidad: f.cantidad, precio: f.precio }))
