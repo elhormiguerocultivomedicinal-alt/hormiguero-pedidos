@@ -64,6 +64,7 @@ const CATEGORIAS_GASTOS_MAP = {
 const CUENTA_EFECTIVO = 'Efectivo - Caja Hormi'
 const CUENTAS_BANCARIAS = ['NaranjaX - Nacho', 'NaranjaX - Nico', 'Lemon', 'Sincuenta']
 const CUENTAS = [...CUENTAS_BANCARIAS, CUENTA_EFECTIVO]
+const FECHA_CORTE_DEFAULT = '2026-05-31'
 
 // ─── Esquejes: constantes y color de identidad ────────────────
 const STOCK_ESQUEJES_INICIAL = {
@@ -914,7 +915,14 @@ function formatFechaISOCorta(iso) {
   return `${parseInt(d)}/${parseInt(m)}/${y}`
 }
 
-function TabFinanzas({ pedidos, esquejes }) {
+function formatFechaHoraISO(iso) {
+  if (!iso) return ''
+  const d = new Date(iso)
+  if (isNaN(d)) return ''
+  return `${d.getDate()}/${d.getMonth() + 1}/${d.getFullYear()} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
+}
+
+function TabFinanzas({ pedidos, esquejes, miembro }) {
   const [gastos, setGastos] = useState([])
   const [cuentas, setCuentas] = useState([])
   const [cargando, setCargando] = useState(true)
@@ -941,14 +949,14 @@ function TabFinanzas({ pedidos, esquejes }) {
   useEffect(() => { cargar() }, [])
 
   function cuentaInfo(nombre) {
-    return cuentas.find(c => c.nombre === nombre) || { nombre, saldo_inicial: 0, fecha_corte: '2026-05-31', validado: false }
+    return cuentas.find(c => c.nombre === nombre) || { nombre, saldo_inicial: 0, fecha_corte: FECHA_CORTE_DEFAULT, validado: false }
   }
 
   function esDesdeCorte(fechaStr, corteISO) {
     if (!fechaStr) return true            // sin fecha (imports jun-jul): se cuentan igual
     const d = parseFechaDP(fechaStr)
     if (!d) return true                   // fecha ilegible: contarla, no perder plata
-    const [y, m, dd] = (corteISO || '2026-05-31').split('-').map(Number)
+    const [y, m, dd] = (corteISO || FECHA_CORTE_DEFAULT).split('-').map(Number)
     const corte = new Date(y, m - 1, dd)  // corte como fecha LOCAL (misma base que parseFechaDP)
     return d >= corte
   }
@@ -982,13 +990,14 @@ function TabFinanzas({ pedidos, esquejes }) {
   async function guardarSaldoInicial(nombre) {
     const valor = parseFloat(inputSaldo)
     if (isNaN(valor)) { showToast('Ingresá un número válido'); return }
+    const ahora = new Date().toISOString()
     const existente = cuentas.find(c => c.nombre === nombre)
     if (existente) {
-      const { error } = await supabase.from('cuentas').update({ saldo_inicial: valor, validado: true }).eq('nombre', nombre)
-      if (!error) { setCuentas(prev => prev.map(c => c.nombre === nombre ? { ...c, saldo_inicial: valor, validado: true } : c)); showToast('Saldo inicial validado ✓') }
+      const { error } = await supabase.from('cuentas').update({ saldo_inicial: valor, validado: true, actualizado_por: miembro || null, actualizado_en: ahora }).eq('nombre', nombre)
+      if (!error) { setCuentas(prev => prev.map(c => c.nombre === nombre ? { ...c, saldo_inicial: valor, validado: true, actualizado_por: miembro || null, actualizado_en: ahora } : c)); showToast('Saldo inicial validado ✓') }
       else showToast('Error al guardar')
     } else {
-      const { data, error } = await supabase.from('cuentas').insert({ nombre, saldo_inicial: valor, fecha_corte: '2026-05-31', validado: true }).select().single()
+      const { data, error } = await supabase.from('cuentas').insert({ nombre, saldo_inicial: valor, fecha_corte: FECHA_CORTE_DEFAULT, validado: true, actualizado_por: miembro || null, actualizado_en: ahora }).select().single()
       if (!error && data) { setCuentas(prev => [...prev, data]); showToast('Saldo inicial validado ✓') }
       else showToast('Error al guardar')
     }
@@ -1051,6 +1060,11 @@ function TabFinanzas({ pedidos, esquejes }) {
                 <div style={{ fontSize: 11, color: 'var(--text-secondary)', marginTop: 2 }}>
                   {r.info.validado ? 'Saldo actual' : `Movimiento neto desde ${formatFechaISOCorta(r.info.fecha_corte)}`}
                 </div>
+                {r.info.actualizado_por && (
+                  <div style={{ fontSize: 10, color: 'var(--text-secondary)', marginTop: 1 }}>
+                    Último cambio: {r.info.actualizado_por} · {formatFechaHoraISO(r.info.actualizado_en)}
+                  </div>
+                )}
               </div>
               <div style={{ fontSize: 18, fontWeight: 700, color: r.saldo < 0 ? '#791F1F' : 'var(--green-dark)' }}>{formatPesos(r.saldo)}</div>
             </div>
@@ -2190,7 +2204,7 @@ export default function App() {
         />
       )}
       {tab === 'gastos' && <TabGastos miembro={miembro} />}
-      {tab === 'finanzas' && <TabFinanzas pedidos={pedidos} esquejes={esquejes} />}
+      {tab === 'finanzas' && <TabFinanzas pedidos={pedidos} esquejes={esquejes} miembro={miembro} />}
       {tab === 'esquejes' && (
         <TabEsquejes
           esquejes={esquejes}
