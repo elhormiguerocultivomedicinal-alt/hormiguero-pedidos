@@ -922,11 +922,11 @@ function formatFechaHoraISO(iso) {
   return `${d.getDate()}/${d.getMonth() + 1}/${d.getFullYear()} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
 }
 
-function TabFinanzas({ pedidos, esquejes, miembro }) {
-  const [gastos, setGastos] = useState([])
+function TabFinanzas({ pedidos, esquejes, miembro, gastos }) {
   const [cuentas, setCuentas] = useState([])
   const [cargando, setCargando] = useState(true)
   const [errorCarga, setErrorCarga] = useState(false)
+  const [intento, setIntento] = useState(0)
   const [editandoSaldo, setEditandoSaldo] = useState(null)
   const [inputSaldo, setInputSaldo] = useState('')
   const [toast, setToast] = useState({ show: false, msg: '' })
@@ -936,17 +936,21 @@ function TabFinanzas({ pedidos, esquejes, miembro }) {
     setTimeout(() => setToast({ show: false, msg: '' }), 2500)
   }
 
-  async function cargar() {
-    setCargando(true)
-    const { data: gastosData, error: errGastos } = await supabase.from('gastos').select('*')
-    if (gastosData) setGastos(gastosData)
-    const { data: cuentasData, error: errCuentas } = await supabase.from('cuentas').select('*')
-    if (cuentasData) setCuentas(cuentasData)
-    setErrorCarga(Boolean(errGastos || errCuentas))
-    setCargando(false)
-  }
+  useEffect(() => {
+    async function cargar() {
+      const { data: cuentasData, error: errCuentas } = await supabase.from('cuentas').select('*')
+      if (cuentasData) setCuentas(cuentasData)
+      setErrorCarga(Boolean(errCuentas))
+      setCargando(false)
+    }
+    cargar()
+  }, [intento])
 
-  useEffect(() => { cargar() }, [])
+  function reintentar() {
+    setCargando(true)
+    setErrorCarga(false)
+    setIntento(n => n + 1)
+  }
 
   function cuentaInfo(nombre) {
     return cuentas.find(c => c.nombre === nombre) || { nombre, saldo_inicial: 0, fecha_corte: FECHA_CORTE_DEFAULT, validado: false }
@@ -1014,7 +1018,7 @@ function TabFinanzas({ pedidos, esquejes, miembro }) {
           <div style={{ fontSize: 13, color: '#791F1F', fontWeight: 500, marginBottom: 10 }}>
             No se pudieron cargar los datos financieros. Los saldos NO se muestran para evitar mostrar números incorrectos.
           </div>
-          <button className="btn-submit" onClick={cargar}>Reintentar</button>
+          <button className="btn-submit" onClick={reintentar}>Reintentar</button>
         </div>
       </div>
     )
@@ -1100,13 +1104,8 @@ function TabFinanzas({ pedidos, esquejes, miembro }) {
   )
 }
 
-function TabGastos({ miembro }) {
-  const [gastos, setGastos] = useState([])
+function TabGastos({ miembro, gastos, setGastos }) {
   const [locacion, setLocacion] = useState('Hormi 1.0')
-  useEffect(() => {
-    supabase.from('gastos').select('*').order('created_at', { ascending: false })
-      .then(({ data }) => { if (data) setGastos(data) })
-  }, [])
   const gastosFiltrados = gastos.filter(g => g.locacion === locacion)
   return (
     <div className="content">
@@ -1997,6 +1996,7 @@ export default function App() {
   const [pedidos, setPedidos] = useState([])
   const [stock, setStock] = useState(STOCK_INICIAL)
   const [esquejes, setEsquejes] = useState([])
+  const [gastos, setGastos] = useState([])
   const [stockEsquejes, setStockEsquejes] = useState(STOCK_ESQUEJES_INICIAL)
   const [riegoPromediosVege, setRiegoPromediosVege] = useState({})
   const [riegoPromediosFlora, setRiegoPromediosFlora] = useState({})
@@ -2041,6 +2041,8 @@ export default function App() {
         stockEsquejesData.forEach(s => { obj[s.genetica] = s.unidades })
         setStockEsquejes(obj)
       }
+      const { data: gastosData } = await supabase.from('gastos').select('*').order('created_at', { ascending: false })
+      if (gastosData) setGastos(gastosData)
       setCargando(false)
     }
     cargarDatos()
@@ -2203,8 +2205,8 @@ export default function App() {
           onEliminarPedido={eliminarPedido}
         />
       )}
-      {tab === 'gastos' && <TabGastos miembro={miembro} />}
-      {tab === 'finanzas' && <TabFinanzas pedidos={pedidos} esquejes={esquejes} miembro={miembro} />}
+      {tab === 'gastos' && <TabGastos miembro={miembro} gastos={gastos} setGastos={setGastos} />}
+      {tab === 'finanzas' && <TabFinanzas pedidos={pedidos} esquejes={esquejes} miembro={miembro} gastos={gastos} />}
       {tab === 'esquejes' && (
         <TabEsquejes
           esquejes={esquejes}
