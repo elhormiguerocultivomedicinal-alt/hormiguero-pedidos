@@ -75,7 +75,7 @@ const CATEGORIAS_GASTOS_MAP = {
 
 // ─── Finanzas: cuentas ──────────────────────────────────────────
 const CUENTA_EFECTIVO = 'Efectivo - Caja Hormi'
-const CUENTAS_BANCARIAS = ['NaranjaX - Nacho', 'NaranjaX - Nico', 'Lemon', 'NaranjaX-Bruno', 'Lemon-Checho']
+const CUENTAS_BANCARIAS = ['NaranjaX - Nacho', 'NaranjaX - Nico', 'NaranjaX - Bruno', 'Lemon - Checho']
 const CUENTAS = [...CUENTAS_BANCARIAS, CUENTA_EFECTIVO]
 const FECHA_CORTE_DEFAULT = '2026-05-31'
 
