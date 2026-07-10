@@ -226,6 +226,35 @@ function DatePicker({ value, onChange, placeholder = 'Seleccionar fecha' }) {
   )
 }
 
+// ─── Input de plata: $ + separador de miles mientras se escribe, sin centavos ───
+function InputMonto({ value, onChange, placeholder, disabled, className = 'form-control', style, permiteNegativo }) {
+  function formatDisplay(v) {
+    const str = String(v ?? '')
+    const neg = permiteNegativo && str.trim().startsWith('-')
+    const digits = str.replace(/\D/g, '')
+    if (!digits) return neg ? '-' : ''
+    return (neg ? '-$' : '$') + Number(digits).toLocaleString('es-AR')
+  }
+  function handleChange(e) {
+    const raw = e.target.value
+    const neg = permiteNegativo && raw.trim().startsWith('-')
+    const digits = raw.replace(/\D/g, '')
+    onChange((neg ? '-' : '') + digits)
+  }
+  return (
+    <input
+      className={className}
+      type="text"
+      inputMode={permiteNegativo ? 'text' : 'numeric'}
+      placeholder={placeholder}
+      value={formatDisplay(value)}
+      disabled={disabled}
+      style={style}
+      onChange={handleChange}
+    />
+  )
+}
+
 // ─── Divisiones de pago/gasto entre varias cuentas (compartido) ───
 function validarDivisiones(divisiones, total) {
   const filas = divisiones.filter(d => d.cuenta && parseFloat(d.monto) > 0)
@@ -254,7 +283,7 @@ function FilasDivision({ divisiones, onChange, total, conMetodo }) {
       <div className="filas-genetica">
         {divisiones.map(d => (
           <div key={d.id} className="fila-genetica">
-            <input className="form-control fila-cantidad" type="number" placeholder="Monto" min="0" value={d.monto} onChange={e => setDiv(d.id, 'monto', e.target.value)} />
+            <InputMonto className="form-control fila-cantidad" placeholder="Monto" value={d.monto} onChange={v => setDiv(d.id, 'monto', v)} />
             {conMetodo && (
               <select className="form-control" value={d.metodoPago} onChange={e => setDiv(d.id, 'metodoPago', e.target.value)}>
                 <option>Transferencia</option>
@@ -380,7 +409,7 @@ function ModalEditarRegistro({ cfg, registro, onGuardar, onEliminar, onCerrar })
                 </select>
                 <input className="form-control fila-cantidad" type="number" placeholder={cfg.unidad} min="0" value={fila.cantidad} onChange={e => setFila(fila.id, 'cantidad', e.target.value)} />
                 {tienePrecioPorFila && (
-                  <input className="form-control fila-cantidad" type="number" placeholder={`$/${cfg.unidad}`} min="0" value={fila.precio} disabled={form.propio} onChange={e => setFila(fila.id, 'precio', e.target.value)} />
+                  <InputMonto className="form-control fila-cantidad" placeholder={`$/${cfg.unidad}`} value={fila.precio} disabled={form.propio} onChange={v => setFila(fila.id, 'precio', v)} />
                 )}
                 {form.filas.length > 1 && <button className="btn-eliminar-fila" onClick={() => eliminarFila(fila.id)}>✕</button>}
               </div>
@@ -392,7 +421,7 @@ function ModalEditarRegistro({ cfg, registro, onGuardar, onEliminar, onCerrar })
           {!tienePrecioPorFila && (
             <div className="form-group">
               <label className="form-label">Precio por {cfg.unidad} ($)</label>
-              <input className="form-control" type="number" value={form.precio} onChange={e => set('precio', e.target.value)} disabled={form.propio} />
+              <InputMonto value={form.precio} onChange={v => set('precio', v)} disabled={form.propio} />
             </div>
           )}
           <div className="form-group">
@@ -551,7 +580,7 @@ function ModalEditarGasto({ gasto, categorias, presupuestos, onGuardar, onElimin
           </div>
           <div className="form-group">
             <label className="form-label">Monto ($)</label>
-            <input className="form-control" type="number" min="0" value={form.monto} onChange={e => set('monto', e.target.value)} />
+            <InputMonto value={form.monto} onChange={v => set('monto', v)} />
           </div>
           <div className="form-group">
             <label className="form-label">Fecha</label>
@@ -685,7 +714,7 @@ function FormRegistro({ cfg, onGuardar, miembro }) {
                     {GENETICAS.map(g => <option key={g} value={g}>{g}</option>)}
                   </select>
                   <input className="form-control fila-cantidad" type="number" placeholder={cfg.unidad} min="0" value={fila.cantidad} onChange={e => setFila(fila.id, 'cantidad', e.target.value)} />
-                  <input className="form-control fila-cantidad" type="number" placeholder={`$/${cfg.unidad}`} min="0" value={fila.precio} disabled={form.propio} onChange={e => setFila(fila.id, 'precio', e.target.value)} />
+                  <InputMonto className="form-control fila-cantidad" placeholder={`$/${cfg.unidad}`} value={fila.precio} disabled={form.propio} onChange={v => setFila(fila.id, 'precio', v)} />
                   {form.filas.length > 1 && <button className="btn-eliminar-fila" onClick={() => eliminarFila(fila.id)}>✕</button>}
                 </div>
               ))}
@@ -1031,7 +1060,7 @@ function PanelGastos({ locacion, gastos, miembro, presupuestos, onNuevoGasto, on
             </div>
             <div className="form-group">
               <label className="form-label">Monto ($)</label>
-              <input className="form-control" type="number" placeholder="0" min="0" value={form.monto} onChange={e => set('monto', e.target.value)} />
+              <InputMonto value={form.monto} onChange={v => set('monto', v)} />
             </div>
             <div className="form-group">
               <label className="form-label">Fecha</label>
@@ -1339,7 +1368,7 @@ function TabFinanzas({ pedidos, esquejes, miembro, gastos, presupuestos, setPres
             {editandoSaldo === r.nombre ? (
               <div style={{ marginTop: 10 }}>
                 <div style={{ display: 'flex', gap: 8 }}>
-                  <input className="form-control" type="number" placeholder="Saldo real validado" value={inputSaldo} onChange={e => setInputSaldo(e.target.value)} style={{ flex: 1 }} />
+                  <InputMonto placeholder="Saldo real validado" value={inputSaldo} onChange={setInputSaldo} permiteNegativo style={{ flex: 1 }} />
                   <input className="form-control" type="date" value={inputCorte} onChange={e => setInputCorte(e.target.value)} style={{ flex: 1 }} />
                 </div>
                 <div style={{ fontSize: 11, color: 'var(--text-secondary)', marginTop: 6 }}>
@@ -1482,7 +1511,7 @@ function PanelFinanzasHormi({ locacion, gastos, presupuestos, setPresupuestos, m
             </div>
             <div className="form-group">
               <label className="form-label">Monto asignado ($)</label>
-              <input className="form-control" type="number" min="0" value={form.monto_asignado} onChange={e => setForm(f => ({ ...f, monto_asignado: e.target.value }))} />
+              <InputMonto value={form.monto_asignado} onChange={v => setForm(f => ({ ...f, monto_asignado: v }))} />
             </div>
             <div className="form-group">
               <label className="form-label">Fecha asignación</label>
