@@ -226,6 +226,58 @@ function DatePicker({ value, onChange, placeholder = 'Seleccionar fecha' }) {
   )
 }
 
+// ─── Divisiones de pago/gasto entre varias cuentas (compartido) ───
+function validarDivisiones(divisiones, total) {
+  const filas = divisiones.filter(d => d.cuenta && parseFloat(d.monto) > 0)
+  if (filas.length < 2) return { ok: false, msg: 'Agregá al menos 2 cuentas, o cancelá la división.' }
+  const suma = filas.reduce((s, d) => s + parseFloat(d.monto), 0)
+  if (Math.abs(suma - total) >= 0.5) return { ok: false, msg: `La suma de las cuentas (${formatPesos(suma)}) no coincide con el total (${formatPesos(total)}).` }
+  return { ok: true, filas }
+}
+
+function FilasDivision({ divisiones, onChange, total, conMetodo }) {
+  function setDiv(id, key, val) {
+    onChange(divisiones.map(d => {
+      if (d.id !== id) return d
+      if (key === 'metodoPago') return { ...d, metodoPago: val, cuenta: val === 'Efectivo' ? CUENTA_EFECTIVO : (d.cuenta === CUENTA_EFECTIVO ? '' : d.cuenta) }
+      return { ...d, [key]: val }
+    }))
+  }
+  function agregar() { onChange([...divisiones, { id: Math.random(), monto: '', metodoPago: 'Transferencia', cuenta: '' }]) }
+  function eliminar(id) { if (divisiones.length > 1) onChange(divisiones.filter(d => d.id !== id)) }
+  const asignado = divisiones.reduce((s, d) => s + (parseFloat(d.monto) || 0), 0)
+  const cierra = Math.abs(asignado - total) < 0.5
+
+  return (
+    <>
+      <label className="form-label">Cuentas</label>
+      <div className="filas-genetica">
+        {divisiones.map(d => (
+          <div key={d.id} className="fila-genetica">
+            <input className="form-control fila-cantidad" type="number" placeholder="Monto" min="0" value={d.monto} onChange={e => setDiv(d.id, 'monto', e.target.value)} />
+            {conMetodo && (
+              <select className="form-control" value={d.metodoPago} onChange={e => setDiv(d.id, 'metodoPago', e.target.value)}>
+                <option>Transferencia</option>
+                <option>Efectivo</option>
+              </select>
+            )}
+            <select className="form-control" value={d.cuenta} disabled={conMetodo && d.metodoPago === 'Efectivo'} onChange={e => setDiv(d.id, 'cuenta', e.target.value)}>
+              <option value="">Seleccionar...</option>
+              {(conMetodo ? (d.metodoPago === 'Efectivo' ? [CUENTA_EFECTIVO] : CUENTAS_BANCARIAS) : CUENTAS).map(c => <option key={c} value={c}>{c}</option>)}
+            </select>
+            {divisiones.length > 1 && <button className="btn-eliminar-fila" onClick={() => eliminar(d.id)}>✕</button>}
+          </div>
+        ))}
+      </div>
+      <button className="btn-agregar-fila" onClick={agregar}>+ Agregar cuenta</button>
+      <div className="total-row">
+        <span className="total-label">Asignado</span>
+        <span className="total-value" style={{ color: cierra ? undefined : '#791F1F' }}>{formatPesos(asignado)} de {formatPesos(total)}</span>
+      </div>
+    </>
+  )
+}
+
 // ─── Modal edición completa (genérico: pedido o esqueje) ───────
 function ModalEditarRegistro({ cfg, registro, onGuardar, onEliminar, onCerrar }) {
   useEscape(onCerrar)
@@ -242,10 +294,12 @@ function ModalEditarRegistro({ cfg, registro, onGuardar, onEliminar, onCerrar })
     metodoPago: registro.metodoPago || registro.metodo_pago || 'Transferencia',
     fechaCobro: registro.fechaCobro || registro.fecha_cobro || '',
     cuenta: registro.cuenta || '',
+    dividido: Array.isArray(registro.divisiones) && registro.divisiones.length > 0,
+    divisiones: (registro.divisiones || []).map((d, i) => ({ id: i, monto: String(d.monto), metodoPago: d.metodoPago || 'Transferencia', cuenta: d.cuenta || '' })),
     entregado: registro.entregado,
   })
   const [confirmando, setConfirmando] = useState(false)
-  const [errorCuenta, setErrorCuenta] = useState(false)
+  const [errorCuenta, setErrorCuenta] = useState('')
 
   const set = (k, v) => setForm(f => ({ ...f, [k]: v }))
   const total = form.propio ? 0 : form.filas.reduce((s, f) => {
@@ -259,13 +313,25 @@ function ModalEditarRegistro({ cfg, registro, onGuardar, onEliminar, onCerrar })
   function handlePropio(val) { setForm(f => ({ ...f, propio: val, precio: val ? 0 : PRECIO_DEFAULT, pagado: false, fechaCobro: '', cuenta: '' })) }
   function handlePagado(val) { setForm(f => ({ ...f, pagado: val, fechaCobro: val ? (form.fechaCobro || hoyCompleto()) : '' })) }
   function handleMetodoPago(val) { setForm(f => ({ ...f, metodoPago: val, cuenta: val === 'Efectivo' ? CUENTA_EFECTIVO : (f.cuenta === CUENTA_EFECTIVO ? '' : f.cuenta) })) }
+  function activarDivision() {
+    setForm(f => ({ ...f, dividido: true, divisiones: f.divisiones.length ? f.divisiones : [{ id: Math.random(), monto: total ? String(total) : '', metodoPago: f.metodoPago, cuenta: f.cuenta }] }))
+  }
+  function cancelarDivision() { setForm(f => ({ ...f, dividido: false })); setErrorCuenta('') }
 
   function guardar() {
     const filasValidas = form.filas.filter(f => f.nombre)
     const sinCantidad = filasValidas.some(f => !parseFloat(f.cantidad))
     if (!form.socio.trim() || filasValidas.length === 0 || sinCantidad) return
-    if (form.pagado && !form.cuenta) { setErrorCuenta(true); return }
-    setErrorCuenta(false)
+    let divisionesFinal = null
+    if (form.pagado && form.dividido) {
+      const v = validarDivisiones(form.divisiones, total)
+      if (!v.ok) { setErrorCuenta(v.msg); return }
+      divisionesFinal = v.filas.map(d => ({ monto: parseFloat(d.monto), metodoPago: d.metodoPago, cuenta: d.cuenta }))
+    } else if (form.pagado && !form.cuenta) {
+      setErrorCuenta('Elegí una cuenta: si no, este pago no se va a reflejar en Finanzas.')
+      return
+    }
+    setErrorCuenta('')
     const geneticas = filasValidas.map(f => tienePrecioPorFila
       ? { nombre: f.nombre, cantidad: f.cantidad, precio: f.precio }
       : { nombre: f.nombre, cantidad: f.cantidad })
@@ -274,8 +340,9 @@ function ModalEditarRegistro({ cfg, registro, onGuardar, onEliminar, onCerrar })
     if (partes.length === 3) mes = `${parseInt(partes[1])}/${partes[2]}`
     onGuardar({
       ...registro, ...form, mes, geneticas, total, precio: form.precio,
-      metodo_pago: form.metodoPago, fecha_cobro: form.fechaCobro,
-      cuenta: form.pagado ? (form.cuenta || null) : null,
+      metodo_pago: (form.pagado && form.dividido) ? 'Dividido' : form.metodoPago, fecha_cobro: form.fechaCobro,
+      cuenta: (form.pagado && !form.dividido) ? (form.cuenta || null) : null,
+      divisiones: divisionesFinal,
       cuentaEstimada: false,
     })
   }
@@ -354,25 +421,36 @@ function ModalEditarRegistro({ cfg, registro, onGuardar, onEliminar, onCerrar })
               </div>
               {form.pagado && (
                 <div className="pago-extra">
-                  <div className="form-group">
-                    <label className="form-label">Método</label>
-                    <select className="form-control" value={form.metodoPago} onChange={e => handleMetodoPago(e.target.value)}>
-                      <option>Transferencia</option>
-                      <option>Efectivo</option>
-                    </select>
-                  </div>
+                  {!form.dividido && (
+                    <div className="form-group">
+                      <label className="form-label">Método</label>
+                      <select className="form-control" value={form.metodoPago} onChange={e => handleMetodoPago(e.target.value)}>
+                        <option>Transferencia</option>
+                        <option>Efectivo</option>
+                      </select>
+                    </div>
+                  )}
                   <div className="form-group">
                     <label className="form-label">Fecha cobro</label>
                     <DatePicker value={form.fechaCobro} onChange={v => set('fechaCobro', v)} />
                   </div>
-                  <div className="form-group full">
-                    <label className="form-label">Cuenta</label>
-                    <select className="form-control" value={form.cuenta} disabled={form.metodoPago === 'Efectivo'} onChange={e => { set('cuenta', e.target.value); setErrorCuenta(false) }}>
-                      <option value="">Seleccionar...</option>
-                      {(form.metodoPago === 'Efectivo' ? [CUENTA_EFECTIVO] : CUENTAS_BANCARIAS).map(c => <option key={c} value={c}>{c}</option>)}
-                    </select>
-                    {errorCuenta && <div style={{ fontSize: 12, color: '#791F1F', marginTop: 4 }}>Elegí una cuenta: si no, este pago no se va a reflejar en Finanzas.</div>}
-                  </div>
+                  {!form.dividido ? (
+                    <div className="form-group full">
+                      <label className="form-label">Cuenta</label>
+                      <select className="form-control" value={form.cuenta} disabled={form.metodoPago === 'Efectivo'} onChange={e => { set('cuenta', e.target.value); setErrorCuenta('') }}>
+                        <option value="">Seleccionar...</option>
+                        {(form.metodoPago === 'Efectivo' ? [CUENTA_EFECTIVO] : CUENTAS_BANCARIAS).map(c => <option key={c} value={c}>{c}</option>)}
+                      </select>
+                      {errorCuenta && <div style={{ fontSize: 12, color: '#791F1F', marginTop: 4 }}>{errorCuenta}</div>}
+                      <button className="btn-agregar-fila" onClick={activarDivision} style={{ marginTop: 8 }}>+ Dividir entre varias cuentas</button>
+                    </div>
+                  ) : (
+                    <div className="form-group full">
+                      <FilasDivision divisiones={form.divisiones} onChange={d => { set('divisiones', d); setErrorCuenta('') }} total={total} conMetodo />
+                      {errorCuenta && <div style={{ fontSize: 12, color: '#791F1F', marginTop: 4 }}>{errorCuenta}</div>}
+                      <button onClick={cancelarDivision} style={{ marginTop: 8, background: 'none', border: 'none', padding: 0, fontSize: 12, color: 'var(--green-dark)', fontWeight: 500, cursor: 'pointer' }}>Cancelar división (volver a una sola cuenta)</button>
+                    </div>
+                  )}
                 </div>
               )}
             </>
@@ -415,19 +493,36 @@ function ModalEditarGasto({ gasto, categorias, presupuestos, onGuardar, onElimin
     miembro: gasto.miembro || '',
     cuenta: gasto.cuenta || '',
     presupuesto_id: gasto.presupuesto_id || '',
+    dividido: Array.isArray(gasto.divisiones) && gasto.divisiones.length > 0,
+    divisiones: (gasto.divisiones || []).map((d, i) => ({ id: i, monto: String(d.monto), cuenta: d.cuenta || '' })),
   })
   const [confirmando, setConfirmando] = useState(false)
-  const [errorCuenta, setErrorCuenta] = useState(false)
+  const [errorCuenta, setErrorCuenta] = useState('')
   const set = (k, v) => setForm(f => ({ ...f, [k]: v }))
   const presupuestosDisponibles = (presupuestos || []).filter(p => p.locacion === gasto.locacion && (!p.cerrado || p.id === gasto.presupuesto_id))
 
+  function activarDivision() {
+    const montoTotal = parseFloat(form.monto)
+    setForm(f => ({ ...f, dividido: true, divisiones: f.divisiones.length ? f.divisiones : [{ id: Math.random(), monto: montoTotal ? String(montoTotal) : '', cuenta: f.cuenta }] }))
+  }
+  function cancelarDivision() { setForm(f => ({ ...f, dividido: false })); setErrorCuenta('') }
+
   function guardar() {
     if (!form.descripcion.trim() || !form.categoria || !parseFloat(form.monto)) return
-    if (!form.cuenta) { setErrorCuenta(true); return }
-    setErrorCuenta(false)
+    const montoTotal = parseFloat(form.monto)
+    let divisionesFinal = null
+    if (form.dividido) {
+      const v = validarDivisiones(form.divisiones, montoTotal)
+      if (!v.ok) { setErrorCuenta(v.msg); return }
+      divisionesFinal = v.filas.map(d => ({ monto: parseFloat(d.monto), cuenta: d.cuenta }))
+    } else if (!form.cuenta) {
+      setErrorCuenta('Elegí una cuenta: si no, este gasto no se va a descontar en Finanzas.')
+      return
+    }
+    setErrorCuenta('')
     const partes = form.fecha.split('/')
     const mes = partes.length === 3 ? `${parseInt(partes[1])}/${partes[2]}` : gasto.mes
-    onGuardar({ ...gasto, ...form, monto: parseFloat(form.monto), mes, cuenta: form.cuenta || null, presupuesto_id: form.presupuesto_id ? Number(form.presupuesto_id) : null, cuentaEstimada: false })
+    onGuardar({ ...gasto, ...form, monto: montoTotal, mes, cuenta: form.dividido ? null : (form.cuenta || null), divisiones: divisionesFinal, presupuesto_id: form.presupuesto_id ? Number(form.presupuesto_id) : null, cuentaEstimada: false })
   }
 
   return (
@@ -462,14 +557,23 @@ function ModalEditarGasto({ gasto, categorias, presupuestos, onGuardar, onElimin
             <label className="form-label">Fecha</label>
             <DatePicker value={form.fecha} onChange={v => set('fecha', v)} />
           </div>
-          <div className="form-group full">
-            <label className="form-label">Cuenta de la que salió</label>
-            <select className="form-control" value={form.cuenta} onChange={e => { set('cuenta', e.target.value); setErrorCuenta(false) }}>
-              <option value="">Seleccionar...</option>
-              {CUENTAS.map(c => <option key={c} value={c}>{c}</option>)}
-            </select>
-            {errorCuenta && <div style={{ fontSize: 12, color: '#791F1F', marginTop: 4 }}>Elegí una cuenta: si no, este gasto no se va a descontar en Finanzas.</div>}
-          </div>
+          {!form.dividido ? (
+            <div className="form-group full">
+              <label className="form-label">Cuenta de la que salió</label>
+              <select className="form-control" value={form.cuenta} onChange={e => { set('cuenta', e.target.value); setErrorCuenta('') }}>
+                <option value="">Seleccionar...</option>
+                {CUENTAS.map(c => <option key={c} value={c}>{c}</option>)}
+              </select>
+              {errorCuenta && <div style={{ fontSize: 12, color: '#791F1F', marginTop: 4 }}>{errorCuenta}</div>}
+              <button className="btn-agregar-fila" onClick={activarDivision} style={{ marginTop: 8 }}>+ Dividir entre varias cuentas</button>
+            </div>
+          ) : (
+            <div className="form-group full">
+              <FilasDivision divisiones={form.divisiones} onChange={d => { set('divisiones', d); setErrorCuenta('') }} total={parseFloat(form.monto) || 0} />
+              {errorCuenta && <div style={{ fontSize: 12, color: '#791F1F', marginTop: 4 }}>{errorCuenta}</div>}
+              <button onClick={cancelarDivision} style={{ marginTop: 8, background: 'none', border: 'none', padding: 0, fontSize: 12, color: 'var(--green-dark)', fontWeight: 500, cursor: 'pointer' }}>Cancelar división (volver a una sola cuenta)</button>
+            </div>
+          )}
           <div className="form-group full">
             <label className="form-label">Presupuesto (opcional)</label>
             <select className="form-control" value={form.presupuesto_id} onChange={e => set('presupuesto_id', e.target.value)}>
@@ -499,7 +603,7 @@ function ModalEditarGasto({ gasto, categorias, presupuestos, onGuardar, onElimin
 
 // ─── Formulario nuevo registro (genérico: pedido o esqueje) ───
 function FormRegistro({ cfg, onGuardar, miembro }) {
-  const initial = () => ({ socio: '', propio: false, pagado: false, metodoPago: 'Transferencia', fechaCobro: '', cuenta: '', entregado: false, filas: [cfg.nuevaFila()] })
+  const initial = () => ({ socio: '', propio: false, pagado: false, metodoPago: 'Transferencia', fechaCobro: '', cuenta: '', dividido: false, divisiones: [], entregado: false, filas: [cfg.nuevaFila()] })
   const [form, setForm] = useState(initial)
   const [toast, showToast] = useToast()
 
@@ -512,7 +616,10 @@ function FormRegistro({ cfg, onGuardar, miembro }) {
   function handlePropio(val) { setForm(f => ({ ...f, propio: val, pagado: false, fechaCobro: '', cuenta: '' })) }
   function handlePagado(val) { setForm(f => ({ ...f, pagado: val, fechaCobro: val ? hoyCompleto() : '' })) }
   function handleMetodoPago(val) { setForm(f => ({ ...f, metodoPago: val, cuenta: val === 'Efectivo' ? CUENTA_EFECTIVO : (f.cuenta === CUENTA_EFECTIVO ? '' : f.cuenta) })) }
-
+  function activarDivision() {
+    setForm(f => ({ ...f, dividido: true, divisiones: f.divisiones.length ? f.divisiones : [{ id: Math.random(), monto: total ? String(total) : '', metodoPago: f.metodoPago, cuenta: f.cuenta }] }))
+  }
+  function cancelarDivision() { set('dividido', false) }
 
   async function guardar() {
     const filasValidas = form.filas.filter(f => f.nombre)
@@ -521,7 +628,12 @@ function FormRegistro({ cfg, onGuardar, miembro }) {
       showToast('Completá socio, genética y cantidad')
       return
     }
-    if (form.pagado && !form.cuenta) {
+    let divisionesFinal = null
+    if (form.pagado && form.dividido) {
+      const v = validarDivisiones(form.divisiones, total)
+      if (!v.ok) { showToast(v.msg); return }
+      divisionesFinal = v.filas.map(d => ({ monto: parseFloat(d.monto), metodoPago: d.metodoPago, cuenta: d.cuenta }))
+    } else if (form.pagado && !form.cuenta) {
       showToast('Elegí una cuenta para el pago')
       return
     }
@@ -536,9 +648,10 @@ function FormRegistro({ cfg, onGuardar, miembro }) {
       total,
       propio: form.propio,
       pagado: form.pagado,
-      metodoPago: form.metodoPago,
+      metodoPago: (form.pagado && form.dividido) ? 'Dividido' : form.metodoPago,
       fechaCobro: form.fechaCobro,
-      cuenta: form.pagado ? (form.cuenta || null) : null,
+      cuenta: (form.pagado && !form.dividido) ? (form.cuenta || null) : null,
+      divisiones: divisionesFinal,
       cuentaEstimada: false,
       entregado: form.entregado,
     }
@@ -607,24 +720,34 @@ function FormRegistro({ cfg, onGuardar, miembro }) {
               </div>
               {form.pagado && (
                 <div className="pago-extra">
-                  <div className="form-group">
-                    <label className="form-label">Método</label>
-                    <select className="form-control" value={form.metodoPago} onChange={e => handleMetodoPago(e.target.value)}>
-                      <option>Transferencia</option>
-                      <option>Efectivo</option>
-                    </select>
-                  </div>
+                  {!form.dividido && (
+                    <div className="form-group">
+                      <label className="form-label">Método</label>
+                      <select className="form-control" value={form.metodoPago} onChange={e => handleMetodoPago(e.target.value)}>
+                        <option>Transferencia</option>
+                        <option>Efectivo</option>
+                      </select>
+                    </div>
+                  )}
                   <div className="form-group">
                     <label className="form-label">Fecha cobro</label>
                     <DatePicker value={form.fechaCobro} onChange={v => set('fechaCobro', v)} />
                   </div>
-                  <div className="form-group full">
-                    <label className="form-label">Cuenta</label>
-                    <select className="form-control" value={form.cuenta} disabled={form.metodoPago === 'Efectivo'} onChange={e => set('cuenta', e.target.value)}>
-                      <option value="">Seleccionar...</option>
-                      {(form.metodoPago === 'Efectivo' ? [CUENTA_EFECTIVO] : CUENTAS_BANCARIAS).map(c => <option key={c} value={c}>{c}</option>)}
-                    </select>
-                  </div>
+                  {!form.dividido ? (
+                    <div className="form-group full">
+                      <label className="form-label">Cuenta</label>
+                      <select className="form-control" value={form.cuenta} disabled={form.metodoPago === 'Efectivo'} onChange={e => set('cuenta', e.target.value)}>
+                        <option value="">Seleccionar...</option>
+                        {(form.metodoPago === 'Efectivo' ? [CUENTA_EFECTIVO] : CUENTAS_BANCARIAS).map(c => <option key={c} value={c}>{c}</option>)}
+                      </select>
+                      <button className="btn-agregar-fila" onClick={activarDivision} style={{ marginTop: 8 }}>+ Dividir entre varias cuentas</button>
+                    </div>
+                  ) : (
+                    <div className="form-group full">
+                      <FilasDivision divisiones={form.divisiones} onChange={d => set('divisiones', d)} total={total} conMetodo />
+                      <button onClick={cancelarDivision} style={{ marginTop: 8, background: 'none', border: 'none', padding: 0, fontSize: 12, color: 'var(--green-dark)', fontWeight: 500, cursor: 'pointer' }}>Cancelar división (volver a una sola cuenta)</button>
+                    </div>
+                  )}
                 </div>
               )}
             </>
@@ -709,7 +832,17 @@ function ListaRegistros({ cfg, registros, onActualizar, onEliminar }) {
               </div>
               <div className="pedido-right">
                 <span className="pedido-total">{p.propio ? '—' : formatPesos(p.total)}</span>
-                {p.pagado && <span className="pedido-metodo">{p.metodoPago || p.metodo_pago}{p.cuenta ? ` · ${p.cuenta}` : ''}{p.cuenta_estimada ? ' (estimada)' : ''}</span>}
+                {p.pagado && (
+                  <span
+                    className="pedido-metodo"
+                    title={Array.isArray(p.divisiones) && p.divisiones.length > 0 ? p.divisiones.map(d => `${d.cuenta}: ${formatPesos(d.monto)}`).join(' · ') : undefined}
+                  >
+                    {Array.isArray(p.divisiones) && p.divisiones.length > 0
+                      ? `${p.divisiones.length} cuentas (${p.divisiones.map(d => formatPesos(d.monto)).join(' + ')})`
+                      : `${p.metodoPago || p.metodo_pago}${p.cuenta ? ` · ${p.cuenta}` : ''}`}
+                    {p.cuenta_estimada ? ' (estimada)' : ''}
+                  </span>
+                )}
                 <span className="pedido-editar-hint">Tocar para editar</span>
               </div>
             </div>
@@ -791,7 +924,7 @@ function TabCosecha({ pedidos, stock, miembro, onGuardarPedido, onActualizarPedi
 // ─── Tab Gastos ───────────────────────────────────────────────
 function PanelGastos({ locacion, gastos, miembro, presupuestos, onNuevoGasto, onActualizarGasto, onEliminarGasto }) {
   const [mostrarForm, setMostrarForm] = useState(false)
-  const [form, setForm] = useState({ descripcion: '', categoria: '', monto: '', fecha: '', cuenta: '', presupuesto_id: '' })
+  const [form, setForm] = useState({ descripcion: '', categoria: '', monto: '', fecha: '', cuenta: '', presupuesto_id: '', dividido: false, divisiones: [] })
   const [toast, showToast] = useToast()
   const [filtroMes, setFiltroMes] = useState('todos')
   const [filtrocat, setFiltrocat] = useState('todas')
@@ -800,22 +933,33 @@ function PanelGastos({ locacion, gastos, miembro, presupuestos, onNuevoGasto, on
   const categorias = CATEGORIAS_GASTOS_MAP[locacion] || CATEGORIAS_GASTOS
   const presupuestosActivos = (presupuestos || []).filter(p => p.locacion === locacion && !p.cerrado)
 
+  function activarDivision() {
+    const montoTotal = parseFloat(form.monto)
+    setForm(f => ({ ...f, dividido: true, divisiones: f.divisiones.length ? f.divisiones : [{ id: Math.random(), monto: montoTotal ? String(montoTotal) : '', cuenta: f.cuenta }] }))
+  }
+  function cancelarDivision() { set('dividido', false) }
 
   async function guardarGasto() {
     if (!form.descripcion.trim() || !form.categoria || !parseFloat(form.monto)) {
       showToast('Completá descripción, categoría y monto')
       return
     }
-    if (!form.cuenta) {
+    const montoTotal = parseFloat(form.monto)
+    let divisionesFinal = null
+    if (form.dividido) {
+      const v = validarDivisiones(form.divisiones, montoTotal)
+      if (!v.ok) { showToast(v.msg); return }
+      divisionesFinal = v.filas.map(d => ({ monto: parseFloat(d.monto), cuenta: d.cuenta }))
+    } else if (!form.cuenta) {
       showToast('Elegí la cuenta de la que salió el gasto')
       return
     }
     const partes = (form.fecha || '').split('/')
     const mes = partes.length === 3 ? `${parseInt(partes[1])}/${partes[2]}` : mesActual()
-    const nuevoGasto = { descripcion: form.descripcion.trim(), categoria: form.categoria, monto: parseFloat(form.monto), fecha: form.fecha, mes, locacion, miembro: miembro || null, cuenta: form.cuenta || null, presupuesto_id: form.presupuesto_id ? Number(form.presupuesto_id) : null, cuenta_estimada: false }
+    const nuevoGasto = { descripcion: form.descripcion.trim(), categoria: form.categoria, monto: montoTotal, fecha: form.fecha, mes, locacion, miembro: miembro || null, cuenta: form.dividido ? null : (form.cuenta || null), divisiones: divisionesFinal, presupuesto_id: form.presupuesto_id ? Number(form.presupuesto_id) : null, cuenta_estimada: false }
     const res = await onNuevoGasto(nuevoGasto)
     if (res?.ok) {
-      setForm({ descripcion: '', categoria: '', monto: '', fecha: '', cuenta: '', presupuesto_id: '' })
+      setForm({ descripcion: '', categoria: '', monto: '', fecha: '', cuenta: '', presupuesto_id: '', dividido: false, divisiones: [] })
       setMostrarForm(false)
       showToast('Gasto registrado ✓')
     } else showToast('Error al guardar')
@@ -893,13 +1037,21 @@ function PanelGastos({ locacion, gastos, miembro, presupuestos, onNuevoGasto, on
               <label className="form-label">Fecha</label>
               <DatePicker value={form.fecha} onChange={v => set('fecha', v)} />
             </div>
-            <div className="form-group full">
-              <label className="form-label">Cuenta de la que sale</label>
-              <select className="form-control" value={form.cuenta} onChange={e => set('cuenta', e.target.value)}>
-                <option value="">Seleccionar...</option>
-                {CUENTAS.map(c => <option key={c} value={c}>{c}</option>)}
-              </select>
-            </div>
+            {!form.dividido ? (
+              <div className="form-group full">
+                <label className="form-label">Cuenta de la que sale</label>
+                <select className="form-control" value={form.cuenta} onChange={e => set('cuenta', e.target.value)}>
+                  <option value="">Seleccionar...</option>
+                  {CUENTAS.map(c => <option key={c} value={c}>{c}</option>)}
+                </select>
+                <button className="btn-agregar-fila" onClick={activarDivision} style={{ marginTop: 8 }}>+ Dividir entre varias cuentas</button>
+              </div>
+            ) : (
+              <div className="form-group full">
+                <FilasDivision divisiones={form.divisiones} onChange={d => set('divisiones', d)} total={parseFloat(form.monto) || 0} />
+                <button onClick={cancelarDivision} style={{ marginTop: 8, background: 'none', border: 'none', padding: 0, fontSize: 12, color: 'var(--green-dark)', fontWeight: 500, cursor: 'pointer' }}>Cancelar división (volver a una sola cuenta)</button>
+              </div>
+            )}
             <div className="form-group full">
               <label className="form-label">Presupuesto (opcional)</label>
               <select className="form-control" value={form.presupuesto_id} onChange={e => set('presupuesto_id', e.target.value)}>
@@ -924,7 +1076,16 @@ function PanelGastos({ locacion, gastos, miembro, presupuestos, onNuevoGasto, on
             <div className="pedido-card" key={g.id} onClick={() => setEditando(g)} style={{ cursor: 'pointer' }}>
               <div>
                 <div className="pedido-nombre">{g.descripcion}</div>
-                <div className="pedido-sub">{g.fecha} · {g.categoria}{g.miembro ? ` · ${g.miembro}` : ''}{g.cuenta ? ` · ${g.cuenta}` : ''}{g.cuenta_estimada ? ' · estimada' : ''}</div>
+                <div
+                  className="pedido-sub"
+                  title={Array.isArray(g.divisiones) && g.divisiones.length > 0 ? g.divisiones.map(d => `${d.cuenta}: ${formatPesos(d.monto)}`).join(' · ') : undefined}
+                >
+                  {g.fecha} · {g.categoria}{g.miembro ? ` · ${g.miembro}` : ''}
+                  {Array.isArray(g.divisiones) && g.divisiones.length > 0
+                    ? ` · ${g.divisiones.length} cuentas (${g.divisiones.map(d => formatPesos(d.monto)).join(' + ')})`
+                    : (g.cuenta ? ` · ${g.cuenta}` : '')}
+                  {g.cuenta_estimada ? ' · estimada' : ''}
+                </div>
               </div>
               <div className="pedido-right">
                 <span className="pedido-total" style={{ color: '#791F1F' }}>{formatPesos(g.monto)}</span>
@@ -985,6 +1146,23 @@ function estadoPresupuesto(p, gastos) {
   return 'Activo'
 }
 
+// Devuelve [{cuenta, monto}] tanto para un registro simple (una sola cuenta) como
+// para uno dividido entre varias — así el resto del código no distingue los dos casos.
+function montosPorCuenta(registro, campoMonto) {
+  if (Array.isArray(registro.divisiones) && registro.divisiones.length > 0) {
+    return registro.divisiones.filter(d => d && d.cuenta).map(d => ({ cuenta: d.cuenta, monto: parseFloat(d.monto) || 0 }))
+  }
+  return registro.cuenta ? [{ cuenta: registro.cuenta, monto: registro[campoMonto] || 0 }] : []
+}
+
+function tieneAsignacionValida(registro, campoMonto) {
+  if (registro.cuenta) return true
+  if (!Array.isArray(registro.divisiones) || registro.divisiones.length === 0) return false
+  if (!registro.divisiones.every(d => d && d.cuenta)) return false
+  const suma = registro.divisiones.reduce((s, d) => s + (parseFloat(d?.monto) || 0), 0)
+  return Math.abs(suma - (registro[campoMonto] || 0)) < 0.5
+}
+
 function TabFinanzas({ pedidos, esquejes, miembro, gastos, presupuestos, setPresupuestos }) {
   const [subTab, setSubTab] = useState('general')
   const [cuentas, setCuentas] = useState([])
@@ -1023,9 +1201,12 @@ function TabFinanzas({ pedidos, esquejes, miembro, gastos, presupuestos, setPres
 
   const resumen = useMemo(() => CUENTAS.map(nombre => {
     const info = cuentas.find(c => c.nombre === nombre) || { nombre, saldo_inicial: 0, fecha_corte: FECHA_CORTE_DEFAULT, validado: false }
-    const ingresosPedidos = pedidos.filter(p => p.pagado && p.cuenta === nombre && esDesdeCorte(p.fecha, info.fecha_corte)).reduce((s, p) => s + (p.total || 0), 0)
-    const ingresosEsquejes = esquejes.filter(e => e.pagado && e.cuenta === nombre && esDesdeCorte(e.fecha, info.fecha_corte)).reduce((s, e) => s + (e.total || 0), 0)
-    const egresos = gastos.filter(g => g.cuenta === nombre && esDesdeCorte(g.fecha, info.fecha_corte)).reduce((s, g) => s + (g.monto || 0), 0)
+    const ingresosPedidos = pedidos.filter(p => p.pagado && esDesdeCorte(p.fecha, info.fecha_corte))
+      .flatMap(p => montosPorCuenta(p, 'total')).filter(m => m.cuenta === nombre).reduce((s, m) => s + m.monto, 0)
+    const ingresosEsquejes = esquejes.filter(e => e.pagado && esDesdeCorte(e.fecha, info.fecha_corte))
+      .flatMap(e => montosPorCuenta(e, 'total')).filter(m => m.cuenta === nombre).reduce((s, m) => s + m.monto, 0)
+    const egresos = gastos.filter(g => esDesdeCorte(g.fecha, info.fecha_corte))
+      .flatMap(g => montosPorCuenta(g, 'monto')).filter(m => m.cuenta === nombre).reduce((s, m) => s + m.monto, 0)
     const ingresos = ingresosPedidos + ingresosEsquejes
     const saldo = (info.saldo_inicial || 0) + ingresos - egresos
     const estimados =
@@ -1038,11 +1219,12 @@ function TabFinanzas({ pedidos, esquejes, miembro, gastos, presupuestos, setPres
   const totalGeneral = resumen.reduce((s, r) => s + r.saldo, 0)
   const totalEstimados = resumen.reduce((s, r) => s + r.estimados, 0)
 
-  // Registros pagados/con egreso pero sin cuenta asignada: no entran en ningún saldo de arriba
-  // y por eso no deben quedar invisibles — se muestran aparte para que se corrijan.
-  const pedidosSinCuenta = pedidos.filter(p => p.pagado && !p.cuenta)
-  const esquejesSinCuenta = esquejes.filter(e => e.pagado && !e.cuenta)
-  const gastosSinCuenta = gastos.filter(g => !g.cuenta)
+  // Registros pagados/con egreso pero sin cuenta asignada (o con una división que no suma
+  // el total) no entran en ningún saldo de arriba y por eso no deben quedar invisibles —
+  // se muestran aparte para que se corrijan.
+  const pedidosSinCuenta = pedidos.filter(p => p.pagado && !tieneAsignacionValida(p, 'total'))
+  const esquejesSinCuenta = esquejes.filter(e => e.pagado && !tieneAsignacionValida(e, 'total'))
+  const gastosSinCuenta = gastos.filter(g => !tieneAsignacionValida(g, 'monto'))
   const ingresosSinCuenta = pedidosSinCuenta.reduce((s, p) => s + (p.total || 0), 0) + esquejesSinCuenta.reduce((s, e) => s + (e.total || 0), 0)
   const egresosSinCuenta = gastosSinCuenta.reduce((s, g) => s + (g.monto || 0), 0)
   const cantidadSinCuenta = pedidosSinCuenta.length + esquejesSinCuenta.length + gastosSinCuenta.length
@@ -1117,7 +1299,7 @@ function TabFinanzas({ pedidos, esquejes, miembro, gastos, presupuestos, setPres
       {cantidadSinCuenta > 0 && (
         <div className="card" style={{ marginBottom: 14, background: '#FCEBEB', borderColor: '#791F1F' }}>
           <div style={{ fontSize: 12, color: '#791F1F', lineHeight: 1.5 }}>
-            <strong>Atención:</strong> hay <strong>{cantidadSinCuenta}</strong> registro(s) pagado(s)/con gasto SIN cuenta asignada, por eso <strong>no están sumados en ningún total de arriba</strong> (ingresos sin contar: {formatPesos(ingresosSinCuenta)} · gastos sin contar: {formatPesos(egresosSinCuenta)}). Corregilos desde Cosecha, Esquejes o Gastos → Lista, abriendo cada registro y eligiendo su cuenta.
+            <strong>Atención:</strong> hay <strong>{cantidadSinCuenta}</strong> registro(s) pagado(s)/con gasto SIN cuenta asignada o con una división de cuentas inválida, por eso <strong>no están sumados en ningún total de arriba</strong> (ingresos sin contar: {formatPesos(ingresosSinCuenta)} · gastos sin contar: {formatPesos(egresosSinCuenta)}). Corregilos desde Cosecha, Esquejes o Gastos → Lista, abriendo cada registro y eligiendo su cuenta.
           </div>
         </div>
       )}
@@ -1820,6 +2002,7 @@ const pedidoToDB = p => ({
   geneticas: p.geneticas, precio: p.precio, total: p.total, propio: p.propio,
   pagado: p.pagado, metodo_pago: p.metodo_pago || p.metodoPago, fecha_cobro: p.fecha_cobro || p.fechaCobro,
   cuenta: p.cuenta || null, cuenta_estimada: p.cuentaEstimada ?? false, entregado: p.entregado,
+  divisiones: p.divisiones || null,
 })
 
 const esquejeToDB = e => ({
@@ -1827,12 +2010,14 @@ const esquejeToDB = e => ({
   geneticas: e.geneticas, total: e.total, propio: e.propio,
   pagado: e.pagado, metodo_pago: e.metodo_pago || e.metodoPago, fecha_cobro: e.fecha_cobro || e.fechaCobro,
   cuenta: e.cuenta || null, cuenta_estimada: e.cuentaEstimada ?? false, entregado: e.entregado,
+  divisiones: e.divisiones || null,
 })
 
 const gastoToDB = g => ({
   descripcion: g.descripcion, categoria: g.categoria, monto: g.monto,
   fecha: g.fecha, mes: g.mes, miembro: g.miembro || null,
   cuenta: g.cuenta || null, presupuesto_id: g.presupuesto_id || null, cuenta_estimada: false,
+  divisiones: g.divisiones || null,
 })
 
 // ─── App raíz ─────────────────────────────────────────────────
