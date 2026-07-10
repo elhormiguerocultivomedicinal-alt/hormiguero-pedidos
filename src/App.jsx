@@ -1002,11 +1002,11 @@ function PanelGastos({ locacion, gastos, miembro, presupuestos, onNuevoGasto, on
       )}
       {gastos.length > 0 && (
         <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-          <select className="form-control" style={{ flex: 1, height: 34, fontSize: 12 }} value={filtroMes} onChange={e => setFiltroMes(e.target.value)}>
+          <select className="form-control" style={{ flex: 1, height: 34 }} value={filtroMes} onChange={e => setFiltroMes(e.target.value)}>
             <option value="todos">Todos los meses</option>
             {meses.map(m => <option key={m} value={m}>{m}</option>)}
           </select>
-          <select className="form-control" style={{ flex: 1, height: 34, fontSize: 12 }} value={filtrocat} onChange={e => setFiltrocat(e.target.value)}>
+          <select className="form-control" style={{ flex: 1, height: 34 }} value={filtrocat} onChange={e => setFiltrocat(e.target.value)}>
             <option value="todas">Todas las categorías</option>
             {categorias.map(c => <option key={c} value={c}>{c}</option>)}
           </select>

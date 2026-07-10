@@ -55,7 +55,8 @@
   height: 40px; padding: 0 10px;
   border: 0.5px solid var(--border-mid);
   border-radius: var(--radius-md);
-  font-size: 14px; color: var(--text-primary);
+  /* 16px minimo: por debajo de esto, Safari/Chrome mobile hacen zoom automatico al enfocar */
+  font-size: 16px; color: var(--text-primary);
   background: var(--bg); width: 100%; transition: border-color 0.15s;
 }
 .form-control:focus { outline: none; border-color: var(--green-mid); }
