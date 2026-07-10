@@ -1171,6 +1171,7 @@ function TabFinanzas({ pedidos, esquejes, miembro, gastos, presupuestos, setPres
   const [intento, setIntento] = useState(0)
   const [editandoSaldo, setEditandoSaldo] = useState(null)
   const [inputSaldo, setInputSaldo] = useState('')
+  const [inputCorte, setInputCorte] = useState('')
   const [toast, showToast] = useToast()
 
 
@@ -1232,19 +1233,21 @@ function TabFinanzas({ pedidos, esquejes, miembro, gastos, presupuestos, setPres
   async function guardarSaldoInicial(nombre) {
     const valor = parseFloat(inputSaldo)
     if (isNaN(valor)) { showToast('Ingresá un número válido'); return }
+    if (!inputCorte) { showToast('Elegí una fecha de corte'); return }
     const ahora = new Date().toISOString()
     const existente = cuentas.find(c => c.nombre === nombre)
     if (existente) {
-      const { error } = await supabase.from('cuentas').update({ saldo_inicial: valor, validado: true, actualizado_por: miembro || null, actualizado_en: ahora }).eq('nombre', nombre)
-      if (!error) { setCuentas(prev => prev.map(c => c.nombre === nombre ? { ...c, saldo_inicial: valor, validado: true, actualizado_por: miembro || null, actualizado_en: ahora } : c)); showToast('Saldo inicial validado ✓') }
+      const { error } = await supabase.from('cuentas').update({ saldo_inicial: valor, fecha_corte: inputCorte, validado: true, actualizado_por: miembro || null, actualizado_en: ahora }).eq('nombre', nombre)
+      if (!error) { setCuentas(prev => prev.map(c => c.nombre === nombre ? { ...c, saldo_inicial: valor, fecha_corte: inputCorte, validado: true, actualizado_por: miembro || null, actualizado_en: ahora } : c)); showToast('Saldo inicial validado ✓') }
       else showToast('Error al guardar')
     } else {
-      const { data, error } = await supabase.from('cuentas').insert({ nombre, saldo_inicial: valor, fecha_corte: FECHA_CORTE_DEFAULT, validado: true, actualizado_por: miembro || null, actualizado_en: ahora }).select().single()
+      const { data, error } = await supabase.from('cuentas').insert({ nombre, saldo_inicial: valor, fecha_corte: inputCorte, validado: true, actualizado_por: miembro || null, actualizado_en: ahora }).select().single()
       if (!error && data) { setCuentas(prev => [...prev, data]); showToast('Saldo inicial validado ✓') }
       else showToast('Error al guardar')
     }
     setEditandoSaldo(null)
     setInputSaldo('')
+    setInputCorte('')
   }
 
   if (cargando) return <div className="content"><div className="empty-state">Cargando Finanzas...</div></div>
@@ -1334,13 +1337,21 @@ function TabFinanzas({ pedidos, esquejes, miembro, gastos, presupuestos, setPres
               <div style={{ fontSize: 11, color: '#854F0B', marginTop: 8 }}>{r.estimados} registro(s) estimado(s) en esta cuenta</div>
             )}
             {editandoSaldo === r.nombre ? (
-              <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
-                <input className="form-control" type="number" placeholder="Saldo real validado" value={inputSaldo} onChange={e => setInputSaldo(e.target.value)} style={{ flex: 1 }} />
-                <button className="btn-submit" style={{ width: 'auto', padding: '0 14px' }} onClick={() => guardarSaldoInicial(r.nombre)}>Guardar</button>
-                <button onClick={() => { setEditandoSaldo(null); setInputSaldo('') }} style={{ padding: '0 12px', border: '0.5px solid var(--border-mid)', borderRadius: 'var(--radius-md)', background: 'transparent', cursor: 'pointer', fontSize: 13, color: 'var(--text-secondary)' }}>Cancelar</button>
+              <div style={{ marginTop: 10 }}>
+                <div style={{ display: 'flex', gap: 8 }}>
+                  <input className="form-control" type="number" placeholder="Saldo real validado" value={inputSaldo} onChange={e => setInputSaldo(e.target.value)} style={{ flex: 1 }} />
+                  <input className="form-control" type="date" value={inputCorte} onChange={e => setInputCorte(e.target.value)} style={{ flex: 1 }} />
+                </div>
+                <div style={{ fontSize: 11, color: 'var(--text-secondary)', marginTop: 6 }}>
+                  Desde esta fecha se cuentan los movimientos nuevos — todo lo anterior queda afuera del saldo (sigue disponible en Cosecha/Esquejes/Gastos).
+                </div>
+                <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
+                  <button className="btn-submit" style={{ width: 'auto', padding: '0 14px' }} onClick={() => guardarSaldoInicial(r.nombre)}>Guardar</button>
+                  <button onClick={() => { setEditandoSaldo(null); setInputSaldo(''); setInputCorte('') }} style={{ padding: '0 12px', border: '0.5px solid var(--border-mid)', borderRadius: 'var(--radius-md)', background: 'transparent', cursor: 'pointer', fontSize: 13, color: 'var(--text-secondary)' }}>Cancelar</button>
+                </div>
               </div>
             ) : (
-              <button onClick={() => { setEditandoSaldo(r.nombre); setInputSaldo(String(r.info.saldo_inicial || 0)) }} style={{ marginTop: 10, background: 'none', border: 'none', padding: 0, fontSize: 12, color: 'var(--green-dark)', fontWeight: 500, cursor: 'pointer' }}>
+              <button onClick={() => { setEditandoSaldo(r.nombre); setInputSaldo(String(r.info.saldo_inicial || 0)); setInputCorte(new Date().toISOString().slice(0, 10)) }} style={{ marginTop: 10, background: 'none', border: 'none', padding: 0, fontSize: 12, color: 'var(--green-dark)', fontWeight: 500, cursor: 'pointer' }}>
                 {r.info.validado ? 'Corregir saldo validado' : 'Validar saldo inicial con el equipo'}
               </button>
             )}
