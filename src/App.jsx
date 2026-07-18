@@ -330,6 +330,7 @@ function ModalEditarRegistro({ cfg, registro, onGuardar, onEliminar, onCerrar })
   const [confirmando, setConfirmando] = useState(false)
   const [errorCuenta, setErrorCuenta] = useState('')
   const [confirmarTotal, setConfirmarTotal] = useState(false)
+  const [errorMonto, setErrorMonto] = useState('')
 
   const set = (k, v) => setForm(f => ({ ...f, [k]: v }))
   const total = form.propio ? 0 : form.filas.reduce((s, f) => {
@@ -356,6 +357,8 @@ function ModalEditarRegistro({ cfg, registro, onGuardar, onEliminar, onCerrar })
     const filasValidas = form.filas.filter(f => f.nombre)
     const sinCantidad = filasValidas.some(f => !parseFloat(f.cantidad))
     if (!form.socio.trim() || filasValidas.length === 0 || sinCantidad) return
+    if (!form.propio && total <= 0) { setErrorMonto('El total no puede ser $0 — revisá el precio cargado.'); return }
+    setErrorMonto('')
     if (totalDifiere && !confirmarCambioTotal) { setConfirmarTotal(true); return }
     let divisionesFinal = null
     if (form.pagado && form.dividido) {
@@ -438,6 +441,11 @@ function ModalEditarRegistro({ cfg, registro, onGuardar, onEliminar, onCerrar })
             </div>
           </div>
         </div>
+        {errorMonto && (
+          <div style={{ fontSize: 12, color: '#791F1F', background: '#FCEBEB', border: '0.5px solid #791F1F', borderRadius: 'var(--radius-md)', padding: '10px 12px' }}>
+            {errorMonto}
+          </div>
+        )}
         {totalDifiere && (
           <div style={{ fontSize: 12, color: '#854F0B', background: '#FAEEDA', border: '0.5px solid #E8C77E', borderRadius: 'var(--radius-md)', padding: '10px 12px' }}>
             ⚠ Este {cfg.singular} es histórico (sin precio por genética) y el total no coincide con precio × cantidad. Si guardás, el total pasa de {formatPesos(registro.total)} a {formatPesos(total)}.
@@ -675,6 +683,10 @@ function FormRegistro({ cfg, onGuardar, miembro }) {
       showToast('Completá socio, genética y cantidad')
       return
     }
+    if (!form.propio && total <= 0) {
+      showToast('El total no puede ser $0 — revisá el precio cargado')
+      return
+    }
     let divisionesFinal = null
     if (form.pagado && form.dividido) {
       const v = validarDivisiones(form.divisiones, total)
@@ -737,7 +749,7 @@ function FormRegistro({ cfg, onGuardar, miembro }) {
                 </div>
               ))}
             </div>
-            <button className="btn-agregar-fila" onClick={agregarFila}>+ Agregar genética al pedido</button>
+            <button className="btn-agregar-fila" onClick={agregarFila}>+ Agregar genética al {cfg.singular}</button>
           </div>
           <div className="form-group full">
             <div className="total-row">
@@ -844,7 +856,7 @@ function ListaRegistros({ cfg, registros, onActualizar, onEliminar }) {
   return (
     <div>
       <div className="stats-row">
-        <div className="stat-card"><div className="stat-num">{filtrados.length}</div><div className="stat-lbl">Pedidos</div></div>
+        <div className="stat-card"><div className="stat-num">{filtrados.length}</div><div className="stat-lbl">{cfg.plural[0].toUpperCase() + cfg.plural.slice(1)}</div></div>
         <div className="stat-card"><div className="stat-num" style={{ fontSize: 16 }}>{formatPesos(totalVendido)}</div><div className="stat-lbl">Vendido</div></div>
         <div className="stat-card"><div className="stat-num" style={{ color: sinEntregar > 0 ? '#854F0B' : undefined }}>{sinEntregar}</div><div className="stat-lbl">Sin entregar</div></div>
       </div>
