@@ -1297,11 +1297,20 @@ function TabFinanzas({ pedidos, esquejes, miembro, gastos, presupuestos, setPres
     return !esDesdeCorte(fechaStr, corteMinimo)
   }
 
+  // Para decidir si un pedido/esqueje cuenta desde el corte de una cuenta bancaria, lo que
+  // importa es cuándo entró la plata (fecha_cobro), no cuándo se hizo el pedido (fecha) — se
+  // puede pedir un día y cobrar semanas después. Si fecha_cobro no es una fecha completa y
+  // válida (vacía, o formato viejo sin año), se usa fecha como antes. Ver auditoria-salud.md,
+  // incidente "NaranjaX-Nacho no coincidía con el banco real" (2026-07-18).
+  function fechaEfectiva(fecha, fechaCobro) {
+    return parseFechaDP(fechaCobro) ? fechaCobro : fecha
+  }
+
   const resumen = useMemo(() => CUENTAS.map(nombre => {
     const info = cuentas.find(c => c.nombre === nombre) || { nombre, saldo_inicial: 0, fecha_corte: FECHA_CORTE_DEFAULT, validado: false }
-    const ingresosPedidos = pedidos.filter(p => p.pagado && esDesdeCorte(p.fecha, info.fecha_corte))
+    const ingresosPedidos = pedidos.filter(p => p.pagado && esDesdeCorte(fechaEfectiva(p.fecha, p.fecha_cobro), info.fecha_corte))
       .flatMap(p => montosPorCuenta(p, 'total')).filter(m => m.cuenta === nombre).reduce((s, m) => s + m.monto, 0)
-    const ingresosEsquejes = esquejes.filter(e => e.pagado && esDesdeCorte(e.fecha, info.fecha_corte))
+    const ingresosEsquejes = esquejes.filter(e => e.pagado && esDesdeCorte(fechaEfectiva(e.fecha, e.fecha_cobro), info.fecha_corte))
       .flatMap(e => montosPorCuenta(e, 'total')).filter(m => m.cuenta === nombre).reduce((s, m) => s + m.monto, 0)
     const egresos = gastos.filter(g => esDesdeCorte(g.fecha, info.fecha_corte))
       .flatMap(g => montosPorCuenta(g, 'monto')).filter(m => m.cuenta === nombre).reduce((s, m) => s + m.monto, 0)
