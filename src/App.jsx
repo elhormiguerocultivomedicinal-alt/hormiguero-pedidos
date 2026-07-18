@@ -20,7 +20,8 @@ function miembroDeSesion(sesion) {
 
 function formatPesos(n) {
   const v = Number(n)
-  return '$' + Math.round(isFinite(v) ? v : 0).toLocaleString('es-AR')
+  const r = Math.round(isFinite(v) ? v : 0)
+  return (r < 0 ? '-$' : '$') + Math.abs(r).toLocaleString('es-AR')
 }
 
 function hoyCompleto() {
@@ -1451,7 +1452,7 @@ function TabFinanzas({ pedidos, esquejes, miembro, gastos, presupuestos, setPres
                 </div>
               </div>
             ) : (
-              <button onClick={() => { setEditandoSaldo(r.nombre); setInputSaldo(String(r.info.saldo_inicial || 0)); setInputCorte(new Date().toISOString().slice(0, 10)) }} style={{ marginTop: 10, background: 'none', border: 'none', padding: 0, fontSize: 12, color: 'var(--green-dark)', fontWeight: 500, cursor: 'pointer' }}>
+              <button onClick={() => { setEditandoSaldo(r.nombre); setInputSaldo(String(r.info.saldo_inicial || 0)); setInputCorte(r.info.validado ? r.info.fecha_corte : new Date().toISOString().slice(0, 10)) }} style={{ marginTop: 10, background: 'none', border: 'none', padding: 0, fontSize: 12, color: 'var(--green-dark)', fontWeight: 500, cursor: 'pointer' }}>
                 {r.info.validado ? 'Corregir saldo validado' : 'Validar saldo inicial con el equipo'}
               </button>
             )}
