@@ -96,13 +96,13 @@ const filaEsquejeVacia = () => ({ id: Date.now() + Math.random(), nombre: '', ca
 // Todo lo que difiere entre pedidos y esquejes vive acá; los componentes
 // (FormRegistro, ModalEditarRegistro, ListaRegistros, PanelStock) son únicos.
 const CFG_COSECHA = {
-  unidad: 'g', stockInicial: STOCK_INICIAL, stockLow: 50,
+  unidad: 'g', stockInicial: STOCK_INICIAL, stockLow: 50, rpcStock: 'ajustar_stock',
   color: 'var(--green-dark)', colorBorde: null, btnBg: null,
   nuevaFila: filaVacia, precioDefaultFila: PRECIO_DEFAULT,
   singular: 'pedido', plural: 'pedidos', labelEntregado: 'Pedido entregado', txtEliminar: 'Eliminar pedido',
 }
 const CFG_ESQUEJES = {
-  unidad: 'u', stockInicial: STOCK_ESQUEJES_INICIAL, stockLow: 20,
+  unidad: 'u', stockInicial: STOCK_ESQUEJES_INICIAL, stockLow: 20, rpcStock: 'ajustar_stock_esquejes',
   color: COLOR_ESQUEJES, colorBorde: COLOR_ESQUEJES_BORDER, btnBg: COLOR_ESQUEJES,
   nuevaFila: filaEsquejeVacia, precioDefaultFila: '',
   singular: 'esqueje', plural: 'esquejes', labelEntregado: 'Entregado', txtEliminar: 'Eliminar',
@@ -329,12 +329,17 @@ function ModalEditarRegistro({ cfg, registro, onGuardar, onEliminar, onCerrar })
   })
   const [confirmando, setConfirmando] = useState(false)
   const [errorCuenta, setErrorCuenta] = useState('')
+  const [confirmarTotal, setConfirmarTotal] = useState(false)
 
   const set = (k, v) => setForm(f => ({ ...f, [k]: v }))
   const total = form.propio ? 0 : form.filas.reduce((s, f) => {
     const precioFila = tienePrecioPorFila ? (parseFloat(f.precio) || 0) : (parseFloat(form.precio) || 0)
     return s + (parseFloat(f.cantidad) || 0) * precioFila
   }, 0)
+  // Pedidos migrados del historial (sin precio por genética) guardan un total real que no
+  // necesariamente coincide con cantidad × precio único — recalcular y pisarlo sin avisar
+  // puede cambiar plata real sin que nadie se dé cuenta. Ver auditoria-salud.md punto 1.
+  const totalDifiere = !form.propio && !tienePrecioPorFila && Math.abs(total - (registro.total || 0)) >= 1
 
   function setFila(id, key, val) { set('filas', form.filas.map(f => f.id === id ? { ...f, [key]: val } : f)) }
   function agregarFila() { set('filas', [...form.filas, { id: Math.random(), nombre: '', cantidad: '', precio: tienePrecioPorFila ? cfg.precioDefaultFila : '' }]) }
@@ -347,10 +352,11 @@ function ModalEditarRegistro({ cfg, registro, onGuardar, onEliminar, onCerrar })
   }
   function cancelarDivision() { setForm(f => ({ ...f, dividido: false })); setErrorCuenta('') }
 
-  function guardar() {
+  function guardar(confirmarCambioTotal = false) {
     const filasValidas = form.filas.filter(f => f.nombre)
     const sinCantidad = filasValidas.some(f => !parseFloat(f.cantidad))
     if (!form.socio.trim() || filasValidas.length === 0 || sinCantidad) return
+    if (totalDifiere && !confirmarCambioTotal) { setConfirmarTotal(true); return }
     let divisionesFinal = null
     if (form.pagado && form.dividido) {
       const v = validarDivisiones(form.divisiones, total)
@@ -406,6 +412,7 @@ function ModalEditarRegistro({ cfg, registro, onGuardar, onEliminar, onCerrar })
                 <select className="form-control" value={fila.nombre} onChange={e => setFila(fila.id, 'nombre', e.target.value)}>
                   <option value="">Seleccionar...</option>
                   {GENETICAS.map(g => <option key={g} value={g}>{g}</option>)}
+                  {fila.nombre && !GENETICAS.includes(fila.nombre) && <option value={fila.nombre}>{fila.nombre} (fuera de catálogo)</option>}
                 </select>
                 <input className="form-control fila-cantidad" type="number" placeholder={cfg.unidad} min="0" value={fila.cantidad} onChange={e => setFila(fila.id, 'cantidad', e.target.value)} />
                 {tienePrecioPorFila && (
@@ -431,6 +438,17 @@ function ModalEditarRegistro({ cfg, registro, onGuardar, onEliminar, onCerrar })
             </div>
           </div>
         </div>
+        {totalDifiere && (
+          <div style={{ fontSize: 12, color: '#854F0B', background: '#FAEEDA', border: '0.5px solid #E8C77E', borderRadius: 'var(--radius-md)', padding: '10px 12px' }}>
+            ⚠ Este {cfg.singular} es histórico (sin precio por genética) y el total no coincide con precio × cantidad. Si guardás, el total pasa de {formatPesos(registro.total)} a {formatPesos(total)}.
+            {confirmarTotal && (
+              <div style={{ marginTop: 8, display: 'flex', gap: 8 }}>
+                <button onClick={() => guardar(true)} style={{ flex: 1, padding: '7px', background: '#854F0B', color: 'white', border: 'none', borderRadius: 'var(--radius-md)', fontSize: 12, fontWeight: 600, cursor: 'pointer' }}>Sí, actualizar el total</button>
+                <button onClick={() => setConfirmarTotal(false)} style={{ flex: 1, padding: '7px', border: '0.5px solid var(--border-mid)', borderRadius: 'var(--radius-md)', background: 'transparent', fontSize: 12, cursor: 'pointer' }}>Cancelar</button>
+              </div>
+            )}
+          </div>
+        )}
         <div className="toggle-group">
           <div className="toggle-row">
             <span className="toggle-label">Consumo propio</span>
@@ -492,7 +510,7 @@ function ModalEditarRegistro({ cfg, registro, onGuardar, onEliminar, onCerrar })
             </label>
           </div>
         </div>
-        <button className="btn-submit" style={{ marginTop: 16, ...(cfg.btnBg ? { background: cfg.btnBg } : {}) }} onClick={guardar}>Guardar cambios</button>
+        <button className="btn-submit" style={{ marginTop: 16, ...(cfg.btnBg ? { background: cfg.btnBg } : {}) }} onClick={() => guardar()}>Guardar cambios</button>
         {!confirmando ? (
           <button onClick={() => setConfirmando(true)} style={{ width: '100%', marginTop: 8, padding: '10px', border: '0.5px solid #791F1F', borderRadius: 'var(--radius-md)', background: 'transparent', color: '#791F1F', fontSize: 14, fontWeight: 500, cursor: 'pointer' }}>
             {cfg.txtEliminar}
@@ -892,11 +910,17 @@ function ListaRegistros({ cfg, registros, onActualizar, onEliminar }) {
 }
 
 // ─── Panel de Stock (genérico: producción o esquejes) ─────────
-function PanelStock({ stock, cfg }) {
+function PanelStock({ stock, cfg, ajustesFallidos }) {
   const totalActual = Object.values(stock).reduce((s, v) => s + v, 0)
   const totalInicial = Object.values(cfg.stockInicial).reduce((s, v) => s + v, 0)
+  const fallidos = (ajustesFallidos || []).filter(a => a.rpc_name === cfg.rpcStock && !a.resuelto)
   return (
     <div>
+      {fallidos.length > 0 && (
+        <div style={{ fontSize: 12, color: '#791F1F', background: '#FCEBEB', border: '0.5px solid #791F1F', borderRadius: 'var(--radius-md)', padding: '10px 12px' }}>
+          ⚠ {fallidos.length} ajuste(s) de stock fallaron y no se aplicaron: {fallidos.map(a => `${a.genetica} (${a.delta > 0 ? '+' : ''}${a.delta})`).join(', ')}. Corregí el stock manualmente y marcá el registro como resuelto en Supabase (tabla <code>stock_ajustes_fallidos</code>).
+        </div>
+      )}
       <div className="card" style={{ marginBottom: 0, ...(cfg.colorBorde ? { borderColor: cfg.colorBorde } : {}) }}>
         <div style={{ display: 'grid', gridTemplateColumns: '1fr auto auto', gap: '0 16px', alignItems: 'center', marginBottom: 14 }}>
           <span className="form-label">Genética</span>
@@ -934,7 +958,7 @@ function PanelStock({ stock, cfg }) {
 }
 
 // ─── Tab Cosecha: agrupa Nuevo / Lista / Stock de materia vegetal ──
-function TabCosecha({ pedidos, stock, miembro, onGuardarPedido, onActualizarPedido, onEliminarPedido }) {
+function TabCosecha({ pedidos, stock, miembro, onGuardarPedido, onActualizarPedido, onEliminarPedido, ajustesFallidos }) {
   const [sub, setSub] = useState('nuevo')
   return (
     <div className="content">
@@ -945,7 +969,7 @@ function TabCosecha({ pedidos, stock, miembro, onGuardarPedido, onActualizarPedi
       </div>
       {sub === 'nuevo' && <FormRegistro cfg={CFG_COSECHA} onGuardar={async p => { const res = await onGuardarPedido(p); if (res?.ok) setSub('lista'); return res }} miembro={miembro} />}
       {sub === 'lista' && <ListaRegistros cfg={CFG_COSECHA} registros={pedidos} onActualizar={onActualizarPedido} onEliminar={onEliminarPedido} />}
-      {sub === 'stock' && <PanelStock stock={stock} cfg={CFG_COSECHA} />}
+      {sub === 'stock' && <PanelStock stock={stock} cfg={CFG_COSECHA} ajustesFallidos={ajustesFallidos} />}
     </div>
   )
 }
@@ -1229,6 +1253,17 @@ function TabFinanzas({ pedidos, esquejes, miembro, gastos, presupuestos, setPres
     return d >= corte
   }
 
+  // Para la alerta de "sin cuenta" el criterio es al revés que en esDesdeCorte: ahí una fecha
+  // ilegible (imports viejos tipo "06/08" sin año) se cuenta como plata igual para no perderla
+  // del saldo. Acá, en cambio, una fecha ilegible o anterior al corte más viejo configurado es
+  // exactamente lo que identifica a un registro migrado del historial (nunca va a tener cuenta
+  // asignada) — y no tiene sentido reclamarlo para siempre. Ver auditoria-salud.md punto 2.
+  function esLegado(fechaStr, corteMinimo) {
+    const d = parseFechaDP(fechaStr)
+    if (!d) return true
+    return !esDesdeCorte(fechaStr, corteMinimo)
+  }
+
   const resumen = useMemo(() => CUENTAS.map(nombre => {
     const info = cuentas.find(c => c.nombre === nombre) || { nombre, saldo_inicial: 0, fecha_corte: FECHA_CORTE_DEFAULT, validado: false }
     const ingresosPedidos = pedidos.filter(p => p.pagado && esDesdeCorte(p.fecha, info.fecha_corte))
@@ -1251,10 +1286,14 @@ function TabFinanzas({ pedidos, esquejes, miembro, gastos, presupuestos, setPres
 
   // Registros pagados/con egreso pero sin cuenta asignada (o con una división que no suma
   // el total) no entran en ningún saldo de arriba y por eso no deben quedar invisibles —
-  // se muestran aparte para que se corrijan.
-  const pedidosSinCuenta = pedidos.filter(p => p.pagado && !tieneAsignacionValida(p, 'total'))
-  const esquejesSinCuenta = esquejes.filter(e => e.pagado && !tieneAsignacionValida(e, 'total'))
-  const gastosSinCuenta = gastos.filter(g => !tieneAsignacionValida(g, 'monto'))
+  // se muestran aparte para que se corrijan. Se excluye lo anterior al corte más viejo entre
+  // las cuentas configuradas: es plata migrada del historial que nunca va a tener cuenta.
+  const corteMinimo = cuentas.length > 0
+    ? cuentas.reduce((min, c) => (c.fecha_corte && c.fecha_corte < min ? c.fecha_corte : min), cuentas[0].fecha_corte || FECHA_CORTE_DEFAULT)
+    : FECHA_CORTE_DEFAULT
+  const pedidosSinCuenta = pedidos.filter(p => p.pagado && !tieneAsignacionValida(p, 'total') && !esLegado(p.fecha, corteMinimo))
+  const esquejesSinCuenta = esquejes.filter(e => e.pagado && !tieneAsignacionValida(e, 'total') && !esLegado(e.fecha, corteMinimo))
+  const gastosSinCuenta = gastos.filter(g => !tieneAsignacionValida(g, 'monto') && !esLegado(g.fecha, corteMinimo))
   const ingresosSinCuenta = pedidosSinCuenta.reduce((s, p) => s + (p.total || 0), 0) + esquejesSinCuenta.reduce((s, e) => s + (e.total || 0), 0)
   const egresosSinCuenta = gastosSinCuenta.reduce((s, g) => s + (g.monto || 0), 0)
   const cantidadSinCuenta = pedidosSinCuenta.length + esquejesSinCuenta.length + gastosSinCuenta.length
@@ -1867,7 +1906,7 @@ function TabRiegos({ onRiegosChange }) {
 }
 
 // ─── Esquejes: Tab con sub-navegación ───────────────────────────
-function TabEsquejes({ esquejes, stockEsquejes, miembro, onGuardarEsqueje, onActualizarEsqueje, onEliminarEsqueje }) {
+function TabEsquejes({ esquejes, stockEsquejes, miembro, onGuardarEsqueje, onActualizarEsqueje, onEliminarEsqueje, ajustesFallidos }) {
   const [sub, setSub] = useState('nuevo')
   const activeStyle = { background: COLOR_ESQUEJES_LIGHT, borderColor: COLOR_ESQUEJES_BORDER, color: COLOR_ESQUEJES }
   return (
@@ -1879,7 +1918,7 @@ function TabEsquejes({ esquejes, stockEsquejes, miembro, onGuardarEsqueje, onAct
       </div>
       {sub === 'nuevo' && <FormRegistro cfg={CFG_ESQUEJES} onGuardar={onGuardarEsqueje} miembro={miembro} />}
       {sub === 'lista' && <ListaRegistros cfg={CFG_ESQUEJES} registros={esquejes} onActualizar={onActualizarEsqueje} onEliminar={onEliminarEsqueje} />}
-      {sub === 'stock' && <PanelStock stock={stockEsquejes} cfg={CFG_ESQUEJES} />}
+      {sub === 'stock' && <PanelStock stock={stockEsquejes} cfg={CFG_ESQUEJES} ajustesFallidos={ajustesFallidos} />}
     </div>
   )
 }
@@ -2026,6 +2065,7 @@ async function aplicarDeltas(deltas, rpcName, setStockFn) {
     if (error) {
       console.error('Error ajustando stock', genetica, error)
       alert(`Se guardó el registro, pero no se pudo ajustar el stock de ${genetica}. Revisalo manualmente.`)
+      await supabase.from('stock_ajustes_fallidos').insert({ rpc_name: rpcName, genetica, delta, error: error.message || String(error) })
       continue
     }
     if (data != null) setStockFn(prev => ({ ...prev, [genetica]: Number(data) }))
@@ -2069,6 +2109,7 @@ export default function App() {
   const [gastos, setGastos] = useState([])
   const [presupuestos, setPresupuestos] = useState([])
   const [stockEsquejes, setStockEsquejes] = useState(STOCK_ESQUEJES_INICIAL)
+  const [stockAjustesFallidos, setStockAjustesFallidos] = useState([])
   const [riegoPromediosVege, setRiegoPromediosVege] = useState({})
   const [riegoPromediosFlora, setRiegoPromediosFlora] = useState({})
   const [cargando, setCargando] = useState(true)
@@ -2134,6 +2175,11 @@ export default function App() {
       setCargando(false)
     }
     cargarDatos()
+    // Aparte del resto: si esta tabla todavía no existe o falla, no debe bloquear la app entera
+    // (a diferencia de pedidos/stock/gastos/etc., esto es solo una señal informativa).
+    supabase.from('stock_ajustes_fallidos').select('*').eq('resuelto', false).then(({ data, error }) => {
+      if (!cancelado && !error && data) setStockAjustesFallidos(data)
+    })
     return () => { cancelado = true }
   }, [sesion?.user?.id, intentoCarga])
 
@@ -2311,6 +2357,7 @@ export default function App() {
           onGuardarPedido={guardarPedido}
           onActualizarPedido={actualizarPedido}
           onEliminarPedido={eliminarPedido}
+          ajustesFallidos={stockAjustesFallidos}
         />
       )}
       {tab === 'gastos' && <TabGastos miembro={miembro} gastos={gastos} presupuestos={presupuestos} onGuardarGasto={guardarGasto} onActualizarGasto={actualizarGasto} onEliminarGasto={eliminarGasto} />}
@@ -2323,6 +2370,7 @@ export default function App() {
           onGuardarEsqueje={guardarEsqueje}
           onActualizarEsqueje={actualizarEsqueje}
           onEliminarEsqueje={eliminarEsqueje}
+          ajustesFallidos={stockAjustesFallidos}
         />
       )}
       {tab === 'riegos' && <TabRiegos onRiegosChange={handleRiegosChange} />}
