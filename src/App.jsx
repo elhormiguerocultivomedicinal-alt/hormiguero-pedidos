@@ -331,6 +331,7 @@ function ModalEditarRegistro({ cfg, registro, onGuardar, onEliminar, onCerrar })
   const [errorCuenta, setErrorCuenta] = useState('')
   const [confirmarTotal, setConfirmarTotal] = useState(false)
   const [errorMonto, setErrorMonto] = useState('')
+  const [errorCampos, setErrorCampos] = useState('')
 
   const set = (k, v) => setForm(f => ({ ...f, [k]: v }))
   const total = form.propio ? 0 : form.filas.reduce((s, f) => {
@@ -356,7 +357,11 @@ function ModalEditarRegistro({ cfg, registro, onGuardar, onEliminar, onCerrar })
   function guardar(confirmarCambioTotal = false) {
     const filasValidas = form.filas.filter(f => f.nombre)
     const sinCantidad = filasValidas.some(f => !parseFloat(f.cantidad))
-    if (!form.socio.trim() || filasValidas.length === 0 || sinCantidad) return
+    if (!form.socio.trim() || filasValidas.length === 0 || sinCantidad) {
+      setErrorCampos('Completá socio, genética y cantidad.')
+      return
+    }
+    setErrorCampos('')
     if (!form.propio && total <= 0) { setErrorMonto('El total no puede ser $0 — revisá el precio cargado.'); return }
     setErrorMonto('')
     if (totalDifiere && !confirmarCambioTotal) { setConfirmarTotal(true); return }
@@ -518,6 +523,11 @@ function ModalEditarRegistro({ cfg, registro, onGuardar, onEliminar, onCerrar })
             </label>
           </div>
         </div>
+        {errorCampos && (
+          <div style={{ fontSize: 12, color: '#791F1F', background: '#FCEBEB', border: '0.5px solid #791F1F', borderRadius: 'var(--radius-md)', padding: '10px 12px', marginTop: 16 }}>
+            {errorCampos}
+          </div>
+        )}
         <button className="btn-submit" style={{ marginTop: 16, ...(cfg.btnBg ? { background: cfg.btnBg } : {}) }} onClick={() => guardar()}>Guardar cambios</button>
         {!confirmando ? (
           <button onClick={() => setConfirmando(true)} style={{ width: '100%', marginTop: 8, padding: '10px', border: '0.5px solid #791F1F', borderRadius: 'var(--radius-md)', background: 'transparent', color: '#791F1F', fontSize: 14, fontWeight: 500, cursor: 'pointer' }}>
@@ -553,6 +563,7 @@ function ModalEditarGasto({ gasto, categorias, presupuestos, onGuardar, onElimin
   })
   const [confirmando, setConfirmando] = useState(false)
   const [errorCuenta, setErrorCuenta] = useState('')
+  const [errorCampos, setErrorCampos] = useState('')
   const set = (k, v) => setForm(f => ({ ...f, [k]: v }))
   const presupuestosDisponibles = (presupuestos || []).filter(p => p.locacion === gasto.locacion && (!p.cerrado || p.id === gasto.presupuesto_id))
 
@@ -563,7 +574,11 @@ function ModalEditarGasto({ gasto, categorias, presupuestos, onGuardar, onElimin
   function cancelarDivision() { setForm(f => ({ ...f, dividido: false })); setErrorCuenta('') }
 
   function guardar() {
-    if (!form.descripcion.trim() || !form.categoria || !parseFloat(form.monto)) return
+    if (!form.descripcion.trim() || !form.categoria || !parseFloat(form.monto)) {
+      setErrorCampos('Completá descripción, categoría y monto.')
+      return
+    }
+    setErrorCampos('')
     const montoTotal = parseFloat(form.monto)
     let divisionesFinal = null
     if (form.dividido) {
@@ -637,6 +652,11 @@ function ModalEditarGasto({ gasto, categorias, presupuestos, onGuardar, onElimin
             </select>
           </div>
         </div>
+        {errorCampos && (
+          <div style={{ fontSize: 12, color: '#791F1F', background: '#FCEBEB', border: '0.5px solid #791F1F', borderRadius: 'var(--radius-md)', padding: '10px 12px', marginTop: 16 }}>
+            {errorCampos}
+          </div>
+        )}
         <button className="btn-submit" style={{ marginTop: 16 }} onClick={guardar}>Guardar cambios</button>
         {!confirmando ? (
           <button onClick={() => setConfirmando(true)} style={{ width: '100%', marginTop: 8, padding: '10px', border: '0.5px solid #791F1F', borderRadius: 'var(--radius-md)', background: 'transparent', color: '#791F1F', fontSize: 14, fontWeight: 500, cursor: 'pointer' }}>
