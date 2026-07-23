@@ -1,4 +1,5 @@
 import { useState, useCallback, useEffect, useRef, useMemo } from 'react'
+import { Landmark, Wallet, ChevronDown, ChevronUp, Target, TriangleAlert, Info } from 'lucide-react'
 import './App.css'
 import { supabase } from './supabase'
 
@@ -33,6 +34,13 @@ function hoyCompleto() {
 const mesActual = () => {
   const d = new Date()
   return `${d.getMonth() + 1}/${d.getFullYear()}`
+}
+
+const NOMBRES_MES = ['enero', 'febrero', 'marzo', 'abril', 'mayo', 'junio', 'julio', 'agosto', 'septiembre', 'octubre', 'noviembre', 'diciembre']
+function formatMesLabel(mesStr) {
+  const [m, y] = mesStr.split('/').map(Number)
+  const nombre = NOMBRES_MES[m - 1] || mesStr
+  return nombre.charAt(0).toUpperCase() + nombre.slice(1) + ' ' + y
 }
 
 // ─── Hooks compartidos ────────────────────────────────────────
@@ -1017,10 +1025,17 @@ function PanelGastos({ locacion, gastos, miembro, presupuestos, onNuevoGasto, on
   const [mostrarForm, setMostrarForm] = useState(false)
   const [form, setForm] = useState({ descripcion: '', categoria: '', monto: '', fecha: '', cuenta: '', presupuesto_id: '', dividido: false, divisiones: [] })
   const [toast, showToast] = useToast()
-  const [filtroMes, setFiltroMes] = useState('todos')
   const [filtrocat, setFiltrocat] = useState('todas')
   const [editando, setEditando] = useState(null)
+  const [mesesAbiertos, setMesesAbiertos] = useState(() => new Set([mesActual()]))
   const set = (k, v) => setForm(f => ({ ...f, [k]: v }))
+  function toggleMes(mes) {
+    setMesesAbiertos(prev => {
+      const next = new Set(prev)
+      next.has(mes) ? next.delete(mes) : next.add(mes)
+      return next
+    })
+  }
   const categorias = CATEGORIAS_GASTOS_MAP[locacion] || CATEGORIAS_GASTOS
   const presupuestosActivos = (presupuestos || []).filter(p => p.locacion === locacion && !p.cerrado)
 
@@ -1056,14 +1071,10 @@ function PanelGastos({ locacion, gastos, miembro, presupuestos, onNuevoGasto, on
     } else showToast('Error al guardar')
   }
 
-  const filtrados = gastos.filter(g => {
-    const mesOk = filtroMes === 'todos' || g.mes === filtroMes
-    const catOk = filtrocat === 'todas' || g.categoria === filtrocat
-    return mesOk && catOk
-  })
+  const filtrados = gastos.filter(g => filtrocat === 'todas' || g.categoria === filtrocat)
 
   const totalFiltrado = filtrados.reduce((s, g) => s + g.monto, 0)
-  const meses = [...new Set(gastos.map(g => g.mes).filter(Boolean))].sort((a, b) => {
+  const meses = [...new Set(filtrados.map(g => g.mes).filter(Boolean))].sort((a, b) => {
     const [ma, ya] = a.split('/').map(Number)
     const [mb, yb] = b.split('/').map(Number)
     return ya !== yb ? yb - ya : mb - ma
@@ -1092,16 +1103,10 @@ function PanelGastos({ locacion, gastos, miembro, presupuestos, onNuevoGasto, on
         </div>
       )}
       {gastos.length > 0 && (
-        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-          <select className="form-control" style={{ flex: 1, height: 34 }} value={filtroMes} onChange={e => setFiltroMes(e.target.value)}>
-            <option value="todos">Todos los meses</option>
-            {meses.map(m => <option key={m} value={m}>{m}</option>)}
-          </select>
-          <select className="form-control" style={{ flex: 1, height: 34 }} value={filtrocat} onChange={e => setFiltrocat(e.target.value)}>
-            <option value="todas">Todas las categorías</option>
-            {categorias.map(c => <option key={c} value={c}>{c}</option>)}
-          </select>
-        </div>
+        <select className="form-control" style={{ height: 34 }} value={filtrocat} onChange={e => setFiltrocat(e.target.value)}>
+          <option value="todas">Todas las categorías</option>
+          {categorias.map(c => <option key={c} value={c}>{c}</option>)}
+        </select>
       )}
       {mostrarForm && (
         <div className="card">
@@ -1167,28 +1172,51 @@ function PanelGastos({ locacion, gastos, miembro, presupuestos, onNuevoGasto, on
       <div className="pedidos-list">
         {filtrados.length === 0
           ? <div className="empty-state">No hay gastos registrados en {locacion}.</div>
-          : filtrados.map(g => (
-            <div className="pedido-card" key={g.id} onClick={() => setEditando(g)} style={{ cursor: 'pointer' }}>
-              <div>
-                <div className="pedido-nombre">{g.descripcion}</div>
-                <div
-                  className="pedido-sub"
-                  title={Array.isArray(g.divisiones) && g.divisiones.length > 0 ? g.divisiones.map(d => `${d.cuenta}: ${formatPesos(d.monto)}`).join(' · ') : undefined}
-                >
-                  {g.fecha} · {g.categoria}{g.miembro ? ` · ${g.miembro}` : ''}
-                  {Array.isArray(g.divisiones) && g.divisiones.length > 0
-                    ? ` · ${g.divisiones.length} cuentas (${g.divisiones.map(d => formatPesos(d.monto)).join(' + ')})`
-                    : (g.cuenta ? ` · ${g.cuenta}` : '')}
-                  {g.cuenta_estimada ? ' · estimada' : ''}
-                  {g.presupuesto_id ? ` · ${presupuestos.find(p => p.id === g.presupuesto_id)?.nombre || 'presupuesto'}` : ''}
+          : meses.map(mes => {
+            const gastosDelMes = filtrados.filter(g => g.mes === mes)
+            const subtotalMes = gastosDelMes.reduce((s, g) => s + g.monto, 0)
+            const abierto = mesesAbiertos.has(mes)
+            return (
+              <div key={mes}>
+                <div className="pedido-card" onClick={() => toggleMes(mes)} style={{ cursor: 'pointer' }}>
+                  <div>
+                    <div className="pedido-nombre">{formatMesLabel(mes)}</div>
+                    <div className="pedido-sub">{gastosDelMes.length} gasto{gastosDelMes.length !== 1 ? 's' : ''}</div>
+                  </div>
+                  <div className="pedido-right">
+                    <span className="pedido-total">{formatPesos(subtotalMes)}</span>
+                    <span className="pedido-editar-hint">{abierto ? 'Ocultar ▴' : 'Ver ▾'}</span>
+                  </div>
                 </div>
+                {abierto && (
+                  <div className="pedidos-list" style={{ marginTop: 8, marginLeft: 12 }}>
+                    {gastosDelMes.map(g => (
+                      <div className="pedido-card" key={g.id} onClick={() => setEditando(g)} style={{ cursor: 'pointer' }}>
+                        <div>
+                          <div className="pedido-nombre">{g.descripcion}</div>
+                          <div
+                            className="pedido-sub"
+                            title={Array.isArray(g.divisiones) && g.divisiones.length > 0 ? g.divisiones.map(d => `${d.cuenta}: ${formatPesos(d.monto)}`).join(' · ') : undefined}
+                          >
+                            {g.fecha} · {g.categoria}{g.miembro ? ` · ${g.miembro}` : ''}
+                            {Array.isArray(g.divisiones) && g.divisiones.length > 0
+                              ? ` · ${g.divisiones.length} cuentas (${g.divisiones.map(d => formatPesos(d.monto)).join(' + ')})`
+                              : (g.cuenta ? ` · ${g.cuenta}` : '')}
+                            {g.cuenta_estimada ? ' · estimada' : ''}
+                            {g.presupuesto_id ? ` · ${presupuestos.find(p => p.id === g.presupuesto_id)?.nombre || 'presupuesto'}` : ''}
+                          </div>
+                        </div>
+                        <div className="pedido-right">
+                          <span className="pedido-total" style={{ color: '#791F1F' }}>{formatPesos(g.monto)}</span>
+                          <span className="pedido-editar-hint">Tocar para editar</span>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
               </div>
-              <div className="pedido-right">
-                <span className="pedido-total" style={{ color: '#791F1F' }}>{formatPesos(g.monto)}</span>
-                <span className="pedido-editar-hint">Tocar para editar</span>
-              </div>
-            </div>
-          ))
+            )
+          })
         }
       </div>
       {editando && (
@@ -1257,6 +1285,63 @@ function tieneAsignacionValida(registro, campoMonto) {
   if (!registro.divisiones.every(d => d && d.cuenta)) return false
   const suma = registro.divisiones.reduce((s, d) => s + (parseFloat(d?.monto) || 0), 0)
   return Math.abs(suma - (registro[campoMonto] || 0)) < 0.5
+}
+
+function IconoCuenta({ nombre, size = 34 }) {
+  const esEfectivo = nombre === CUENTA_EFECTIVO
+  const Icono = esEfectivo ? Wallet : Landmark
+  return (
+    <div className="cuenta-icono" style={{ width: size, height: size, background: esEfectivo ? '#FFF8ED' : '#E1F5EE' }}>
+      <Icono size={Math.round(size * 0.5)} color={esEfectivo ? '#854F0B' : '#0F6E56'} strokeWidth={2} />
+    </div>
+  )
+}
+
+function TarjetaPresupuesto({ p, gastos, onAlternarCerrado, mostrarLocacion }) {
+  const gastado = gastoDePresupuesto(p, gastos)
+  const restante = p.monto_asignado - gastado
+  const estado = estadoPresupuesto(p, gastos)
+  const colorEstado = estado === 'Vencido' || estado === 'Agotado' ? '#791F1F' : estado === 'Cerrado' ? 'var(--text-secondary)' : 'var(--green-dark)'
+  const colorBarra = estado === 'Vencido' || estado === 'Agotado' ? '#791F1F' : estado === 'Cerrado' ? '#c2c2ba' : '#1D9E75'
+  const pct = p.monto_asignado > 0 ? Math.min(100, Math.max(0, (gastado / p.monto_asignado) * 100)) : 0
+  return (
+    <div className="card">
+      <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
+        <div className="cuenta-icono" style={{ width: 34, height: 34, background: '#F3EAF9' }}>
+          <Target size={17} color="#7B4F9E" strokeWidth={2} />
+        </div>
+        <div style={{ flex: 1 }}>
+          <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--text-primary)' }}>{p.nombre}</div>
+          <div style={{ fontSize: 11, color: 'var(--text-secondary)', marginTop: 2 }}>
+            {mostrarLocacion ? `${p.locacion} · ` : ''}asignado {formatFechaDateISO(p.fecha_asignacion)}{p.fecha_limite ? ` · límite ${formatFechaDateISO(p.fecha_limite)}` : ''}
+          </div>
+        </div>
+        <div style={{ fontSize: 12, fontWeight: 600, color: colorEstado }}>{estado}</div>
+      </div>
+      <div className="progreso-bar">
+        <div className="progreso-fill" style={{ width: `${pct}%`, background: colorBarra }} />
+      </div>
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '5px 12px', marginTop: 10 }}>
+        <div>
+          <div style={{ fontSize: 11, color: 'var(--text-secondary)' }}>Asignado</div>
+          <div style={{ fontSize: 13, fontWeight: 600 }}>{formatPesos(p.monto_asignado)}</div>
+        </div>
+        <div>
+          <div style={{ fontSize: 11, color: 'var(--text-secondary)' }}>Gastado</div>
+          <div style={{ fontSize: 13, fontWeight: 600, color: '#791F1F' }}>{formatPesos(gastado)}</div>
+        </div>
+        <div>
+          <div style={{ fontSize: 11, color: 'var(--text-secondary)' }}>Restante</div>
+          <div style={{ fontSize: 13, fontWeight: 600, color: restante < 0 ? '#791F1F' : 'var(--green-dark)' }}>{formatPesos(restante)}</div>
+        </div>
+      </div>
+      {onAlternarCerrado && (
+        <button onClick={() => onAlternarCerrado(p)} style={{ marginTop: 10, background: 'none', border: 'none', padding: 0, fontSize: 12, color: p.cerrado ? 'var(--green-dark)' : '#791F1F', fontWeight: 500, cursor: 'pointer' }}>
+          {p.cerrado ? 'Reabrir presupuesto' : 'Cerrar presupuesto'}
+        </button>
+      )}
+    </div>
+  )
 }
 
 function TabFinanzas({ pedidos, esquejes, miembro, gastos, presupuestos, setPresupuestos }) {
@@ -1418,55 +1503,69 @@ function TabFinanzas({ pedidos, esquejes, miembro, gastos, presupuestos, setPres
       {subTab === 'general' && (
       <>
       <div className="card" style={{ marginBottom: 14 }}>
-        <div style={{ fontSize: 12, color: 'var(--text-secondary)', lineHeight: 1.5 }}>
-          Saldo por cuenta = saldo inicial + pedidos y esquejes cobrados − gastos, desde la fecha de corte de cada cuenta. Mientras el saldo inicial no esté validado con el equipo, la cifra es un <strong>movimiento neto</strong>, no el saldo real de la cuenta.
+        <div style={{ display: 'flex', gap: 8, alignItems: 'flex-start' }}>
+          <Info size={15} color="#6b6b66" style={{ marginTop: 1, flexShrink: 0 }} />
+          <div style={{ fontSize: 12, color: 'var(--text-secondary)', lineHeight: 1.5 }}>
+            Saldo por cuenta = saldo inicial + pedidos y esquejes cobrados − gastos, desde la fecha de corte de cada cuenta. Mientras el saldo inicial no esté validado con el equipo, la cifra es un <strong>movimiento neto</strong>, no el saldo real de la cuenta.
+          </div>
         </div>
       </div>
       <div className="stats-row">
         <div className="stat-card">
+          <Wallet size={16} color={totalGeneral < 0 ? '#791F1F' : '#1D9E75'} style={{ marginBottom: 4 }} />
           <div className="stat-num" style={{ fontSize: 16, color: totalGeneral < 0 ? '#791F1F' : 'var(--green-dark)' }}>{formatPesos(totalGeneral)}</div>
           <div className="stat-lbl">Total todas las cuentas</div>
         </div>
         <div className="stat-card">
+          <TriangleAlert size={16} color={totalEstimados > 0 ? '#854F0B' : '#6b6b66'} style={{ marginBottom: 4 }} />
           <div className="stat-num" style={{ color: totalEstimados > 0 ? '#854F0B' : undefined }}>{totalEstimados}</div>
           <div className="stat-lbl">Registros a revisar</div>
         </div>
       </div>
       {totalEstimados > 0 && (
         <div className="card" style={{ marginBottom: 14, background: '#FFF8ED', borderColor: '#E8C77E' }}>
-          <div style={{ fontSize: 12, color: '#854F0B', lineHeight: 1.5 }}>
-            Hay <strong>{totalEstimados}</strong> registro(s) de junio-julio con cuenta estimada (asignada por quién cargó el pedido/gasto, no confirmada contra comprobante). Se pueden corregir abriendo cada uno desde Cosecha, Esquejes o Gastos → Lista.
+          <div style={{ display: 'flex', gap: 8, alignItems: 'flex-start' }}>
+            <TriangleAlert size={15} color="#854F0B" style={{ marginTop: 1, flexShrink: 0 }} />
+            <div style={{ fontSize: 12, color: '#854F0B', lineHeight: 1.5 }}>
+              Hay <strong>{totalEstimados}</strong> registro(s) de junio-julio con cuenta estimada (asignada por quién cargó el pedido/gasto, no confirmada contra comprobante). Se pueden corregir abriendo cada uno desde Cosecha, Esquejes o Gastos → Lista.
+            </div>
           </div>
         </div>
       )}
       {cantidadSinCuenta > 0 && (
         <div className="card" style={{ marginBottom: 14, background: '#FCEBEB', borderColor: '#791F1F' }}>
-          <div style={{ fontSize: 12, color: '#791F1F', lineHeight: 1.5 }}>
-            <strong>Atención:</strong> hay <strong>{cantidadSinCuenta}</strong> registro(s) pagado(s)/con gasto SIN cuenta asignada o con una división de cuentas inválida, por eso <strong>no están sumados en ningún total de arriba</strong> (ingresos sin contar: {formatPesos(ingresosSinCuenta)} · gastos sin contar: {formatPesos(egresosSinCuenta)}). Corregilos desde Cosecha, Esquejes o Gastos → Lista, abriendo cada registro y eligiendo su cuenta.
+          <div style={{ display: 'flex', gap: 8, alignItems: 'flex-start' }}>
+            <TriangleAlert size={15} color="#791F1F" style={{ marginTop: 1, flexShrink: 0 }} />
+            <div style={{ fontSize: 12, color: '#791F1F', lineHeight: 1.5 }}>
+              <strong>Atención:</strong> hay <strong>{cantidadSinCuenta}</strong> registro(s) pagado(s)/con gasto SIN cuenta asignada o con una división de cuentas inválida, por eso <strong>no están sumados en ningún total de arriba</strong> (ingresos sin contar: {formatPesos(ingresosSinCuenta)} · gastos sin contar: {formatPesos(egresosSinCuenta)}). Corregilos desde Cosecha, Esquejes o Gastos → Lista, abriendo cada registro y eligiendo su cuenta.
+            </div>
           </div>
         </div>
       )}
-      <button className="btn-agregar-fila" onClick={() => setVerDetalleCuentas(v => !v)}>
-        {verDetalleCuentas ? 'Ocultar detalle por cuenta ▴' : `Ver detalle por cuenta (${resumen.length}) ▾`}
+      <button className="btn-disclosure" onClick={() => setVerDetalleCuentas(v => !v)}>
+        <span>{verDetalleCuentas ? 'Ocultar detalle por cuenta' : `Ver detalle por cuenta (${resumen.length})`}</span>
+        {verDetalleCuentas ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
       </button>
       {verDetalleCuentas && (
       <div style={{ display: 'flex', flexDirection: 'column', gap: 12, marginTop: 12 }}>
         {resumen.map(r => (
           <div className="card" key={r.nombre}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
-              <div>
+            <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
+              <IconoCuenta nombre={r.nombre} />
+              <div style={{ flex: 1 }}>
                 <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--text-primary)' }}>{r.nombre}</div>
-                <div style={{ fontSize: 11, color: 'var(--text-secondary)', marginTop: 2 }}>
-                  {r.info.validado ? 'Saldo actual' : `Movimiento neto desde ${formatFechaISOCorta(r.info.fecha_corte)}`}
-                </div>
-                {r.info.actualizado_por && (
-                  <div style={{ fontSize: 10, color: 'var(--text-secondary)', marginTop: 1 }}>
-                    Último cambio: {r.info.actualizado_por} · {formatFechaHoraISO(r.info.actualizado_en)}
-                  </div>
-                )}
+                <div className="form-label" style={{ marginTop: 2 }}>{r.nombre === CUENTA_EFECTIVO ? 'Efectivo' : 'Cuenta bancaria'}</div>
               </div>
-              <div style={{ fontSize: 18, fontWeight: 700, color: r.saldo < 0 ? '#791F1F' : 'var(--green-dark)' }}>{formatPesos(r.saldo)}</div>
+              <div style={{ fontSize: 18, fontWeight: 700, color: r.saldo < 0 ? '#791F1F' : 'var(--green-dark)', textAlign: 'right' }}>{formatPesos(r.saldo)}</div>
             </div>
+            <div style={{ fontSize: 11, color: 'var(--text-secondary)', marginTop: 10 }}>
+              {r.info.validado ? 'Saldo actual' : `Movimiento neto desde ${formatFechaISOCorta(r.info.fecha_corte)}`}
+            </div>
+            {r.info.actualizado_por && (
+              <div style={{ fontSize: 10, color: 'var(--text-secondary)', marginTop: 1 }}>
+                Último cambio: {r.info.actualizado_por} · {formatFechaHoraISO(r.info.actualizado_en)}
+              </div>
+            )}
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '5px 12px', marginTop: 10, paddingTop: 10, borderTop: '0.5px solid var(--border)' }}>
               <div style={{ display: 'flex', justifyContent: 'space-between' }}>
                 <span style={{ fontSize: 12, color: 'var(--text-secondary)' }}>Ingresos</span>
@@ -1505,44 +1604,15 @@ function TabFinanzas({ pedidos, esquejes, miembro, gastos, presupuestos, setPres
       )}
       {presupuestos.length > 0 && (
         <div style={{ marginTop: 14 }}>
-          <button className="btn-agregar-fila" onClick={() => setVerPresupuestosGeneral(v => !v)}>
-            {verPresupuestosGeneral ? 'Ocultar presupuestos activos ▴' : `Ver presupuestos activos (${presupuestos.length}) ▾`}
+          <button className="btn-disclosure" onClick={() => setVerPresupuestosGeneral(v => !v)}>
+            <span>{verPresupuestosGeneral ? 'Ocultar presupuestos activos' : `Ver presupuestos activos (${presupuestos.length})`}</span>
+            {verPresupuestosGeneral ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
           </button>
           {verPresupuestosGeneral && (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 12, marginTop: 12 }}>
-            {presupuestos.map(p => {
-              const gastado = gastoDePresupuesto(p, gastos)
-              const restante = p.monto_asignado - gastado
-              const estado = estadoPresupuesto(p, gastos)
-              const colorEstado = estado === 'Vencido' || estado === 'Agotado' ? '#791F1F' : estado === 'Cerrado' ? 'var(--text-secondary)' : 'var(--green-dark)'
-              return (
-                <div className="card" key={p.id}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
-                    <div>
-                      <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--text-primary)' }}>{p.nombre}</div>
-                      <div style={{ fontSize: 11, color: 'var(--text-secondary)', marginTop: 2 }}>
-                        {p.locacion} · asignado {formatFechaDateISO(p.fecha_asignacion)}{p.fecha_limite ? ` · límite ${formatFechaDateISO(p.fecha_limite)}` : ''}
-                      </div>
-                    </div>
-                    <div style={{ fontSize: 12, fontWeight: 600, color: colorEstado }}>{estado}</div>
-                  </div>
-                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '5px 12px', marginTop: 10, paddingTop: 10, borderTop: '0.5px solid var(--border)' }}>
-                    <div>
-                      <div style={{ fontSize: 11, color: 'var(--text-secondary)' }}>Asignado</div>
-                      <div style={{ fontSize: 13, fontWeight: 600 }}>{formatPesos(p.monto_asignado)}</div>
-                    </div>
-                    <div>
-                      <div style={{ fontSize: 11, color: 'var(--text-secondary)' }}>Gastado</div>
-                      <div style={{ fontSize: 13, fontWeight: 600, color: '#791F1F' }}>{formatPesos(gastado)}</div>
-                    </div>
-                    <div>
-                      <div style={{ fontSize: 11, color: 'var(--text-secondary)' }}>Restante</div>
-                      <div style={{ fontSize: 13, fontWeight: 600, color: restante < 0 ? '#791F1F' : 'var(--green-dark)' }}>{formatPesos(restante)}</div>
-                    </div>
-                  </div>
-                </div>
-              )
-            })}
+            {presupuestos.map(p => (
+              <TarjetaPresupuesto key={p.id} p={p} gastos={gastos} mostrarLocacion />
+            ))}
           </div>
           )}
         </div>
@@ -1656,42 +1726,9 @@ function PanelFinanzasHormi({ locacion, gastos, presupuestos, setPresupuestos, m
         ? <div className="empty-state">Todavía no hay presupuestos en {locacion}.</div>
         : (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-            {presupuestosLocacion.map(p => {
-              const gastado = gastoDePresupuesto(p, gastos)
-              const restante = p.monto_asignado - gastado
-              const estado = estadoPresupuesto(p, gastos)
-              const colorEstado = estado === 'Vencido' || estado === 'Agotado' ? '#791F1F' : estado === 'Cerrado' ? 'var(--text-secondary)' : 'var(--green-dark)'
-              return (
-                <div className="card" key={p.id}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
-                    <div>
-                      <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--text-primary)' }}>{p.nombre}</div>
-                      <div style={{ fontSize: 11, color: 'var(--text-secondary)', marginTop: 2 }}>
-                        asignado {formatFechaDateISO(p.fecha_asignacion)}{p.fecha_limite ? ` · límite ${formatFechaDateISO(p.fecha_limite)}` : ''}
-                      </div>
-                    </div>
-                    <div style={{ fontSize: 12, fontWeight: 600, color: colorEstado }}>{estado}</div>
-                  </div>
-                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '5px 12px', marginTop: 10, paddingTop: 10, borderTop: '0.5px solid var(--border)' }}>
-                    <div>
-                      <div style={{ fontSize: 11, color: 'var(--text-secondary)' }}>Asignado</div>
-                      <div style={{ fontSize: 13, fontWeight: 600 }}>{formatPesos(p.monto_asignado)}</div>
-                    </div>
-                    <div>
-                      <div style={{ fontSize: 11, color: 'var(--text-secondary)' }}>Gastado</div>
-                      <div style={{ fontSize: 13, fontWeight: 600, color: '#791F1F' }}>{formatPesos(gastado)}</div>
-                    </div>
-                    <div>
-                      <div style={{ fontSize: 11, color: 'var(--text-secondary)' }}>Restante</div>
-                      <div style={{ fontSize: 13, fontWeight: 600, color: restante < 0 ? '#791F1F' : 'var(--green-dark)' }}>{formatPesos(restante)}</div>
-                    </div>
-                  </div>
-                  <button onClick={() => alternarCerrado(p)} style={{ marginTop: 10, background: 'none', border: 'none', padding: 0, fontSize: 12, color: p.cerrado ? 'var(--green-dark)' : '#791F1F', fontWeight: 500, cursor: 'pointer' }}>
-                    {p.cerrado ? 'Reabrir presupuesto' : 'Cerrar presupuesto'}
-                  </button>
-                </div>
-              )
-            })}
+            {presupuestosLocacion.map(p => (
+              <TarjetaPresupuesto key={p.id} p={p} gastos={gastos} onAlternarCerrado={alternarCerrado} />
+            ))}
           </div>
         )
       }

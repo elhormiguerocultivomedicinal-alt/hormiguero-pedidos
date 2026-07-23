@@ -208,6 +208,26 @@ select.form-control { cursor: pointer; }
 .pedido-total { font-size: 15px; font-weight: 600; color: var(--text-primary); }
 .pedido-metodo { font-size: 11px; color: var(--text-secondary); }
 
+/* Finanzas — cuentas y presupuestos */
+.cuenta-icono {
+  border-radius: 50%; flex-shrink: 0;
+  display: flex; align-items: center; justify-content: center;
+}
+.btn-disclosure {
+  width: 100%; display: flex; align-items: center; justify-content: space-between;
+  padding: 11px 14px; border: 0.5px solid var(--border);
+  border-radius: var(--radius-md); background: var(--bg-card);
+  font-size: 13px; color: var(--text-primary); font-weight: 500;
+  cursor: pointer; transition: all 0.15s;
+}
+.btn-disclosure:hover { border-color: var(--border-mid); background: var(--bg-secondary); }
+.btn-disclosure svg { color: var(--text-secondary); flex-shrink: 0; }
+.progreso-bar {
+  height: 6px; border-radius: 99px; background: var(--bg-secondary);
+  overflow: hidden; margin-top: 10px;
+}
+.progreso-fill { height: 100%; border-radius: 99px; transition: width 0.3s; }
+
 .empty-state {
   text-align: center; padding: 2.5rem 1rem;
   color: var(--text-secondary); font-size: 14px; line-height: 1.6;
