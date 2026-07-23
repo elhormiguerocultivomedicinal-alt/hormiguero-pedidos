@@ -956,10 +956,24 @@ function ListaRegistros({ cfg, registros, onActualizar, onEliminar }) {
 }
 
 // ─── Panel de Stock (genérico: producción o esquejes) ─────────
-function PanelStock({ stock, cfg, ajustesFallidos }) {
+function PanelStock({ stock, cfg, ajustesFallidos, onEditar }) {
+  const [editValues, setEditValues] = useState({})
+  const [guardando, setGuardando] = useState(() => new Set())
+  const [toast, showToast] = useToast()
   const totalActual = Object.values(stock).reduce((s, v) => s + v, 0)
   const totalInicial = Object.values(cfg.stockInicial).reduce((s, v) => s + v, 0)
   const fallidos = (ajustesFallidos || []).filter(a => a.rpc_name === cfg.rpcStock && !a.resuelto)
+
+  async function guardar(g, valorStr) {
+    setEditValues(prev => { const next = { ...prev }; delete next[g]; return next })
+    const parsed = parseFloat(valorStr)
+    if (!Number.isFinite(parsed) || parsed < 0 || parsed === (stock[g] ?? 0)) return
+    setGuardando(prev => new Set(prev).add(g))
+    const res = await onEditar(g, parsed)
+    setGuardando(prev => { const next = new Set(prev); next.delete(g); return next })
+    showToast(res?.ok === false ? `No se pudo actualizar ${g}` : `${g}: stock actualizado`)
+  }
+
   return (
     <div>
       {fallidos.length > 0 && (
@@ -979,12 +993,27 @@ function PanelStock({ stock, cfg, ajustesFallidos }) {
             const inicial = cfg.stockInicial[g] ?? 0
             const pct = inicial > 0 ? Math.max(0, Math.min(100, (cant / inicial) * 100)) : 0
             const color = cant === 0 ? '#791F1F' : cant < cfg.stockLow ? '#854F0B' : cfg.color
+            const valor = editValues[g] !== undefined ? editValues[g] : String(cant)
+            const saving = guardando.has(g)
             return (
               <div key={g}>
                 <div style={{ display: 'grid', gridTemplateColumns: '1fr auto auto', gap: '0 16px', alignItems: 'center', marginBottom: 5 }}>
                   <span style={{ fontSize: 14, color: 'var(--text-primary)', fontWeight: 500 }}>{g}</span>
                   <span style={{ fontSize: 13, color: 'var(--text-secondary)' }}>{inicial}{cfg.unidad}</span>
-                  <span style={{ fontSize: 14, fontWeight: 600, color }}>{cant}{cfg.unidad}</span>
+                  <span style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                    <input
+                      className="form-control fila-cantidad"
+                      type="number" min="0" inputMode="decimal"
+                      style={{ color, fontWeight: 600, opacity: saving ? 0.5 : 1 }}
+                      value={valor}
+                      disabled={saving}
+                      onChange={e => setEditValues(prev => ({ ...prev, [g]: e.target.value }))}
+                      onFocus={e => e.target.select()}
+                      onBlur={e => guardar(g, e.target.value)}
+                      onKeyDown={e => { if (e.key === 'Enter') e.target.blur() }}
+                    />
+                    <span style={{ fontSize: 12, color: 'var(--text-secondary)' }}>{cfg.unidad}</span>
+                  </span>
                 </div>
                 <div style={{ height: 6, borderRadius: 99, background: 'var(--bg-secondary)', overflow: 'hidden' }}>
                   <div style={{ height: '100%', width: `${pct}%`, borderRadius: 99, background: color, transition: 'width 0.3s' }} />
@@ -999,12 +1028,13 @@ function PanelStock({ stock, cfg, ajustesFallidos }) {
           <span style={{ fontSize: 16, fontWeight: 600, color: 'var(--text-primary)' }}>{totalActual}{cfg.unidad}</span>
         </div>
       </div>
+      <div className={`toast${toast.show ? ' show' : ''}`}>{toast.msg}</div>
     </div>
   )
 }
 
 // ─── Tab Cosecha: agrupa Nuevo / Lista / Stock de materia vegetal ──
-function TabCosecha({ pedidos, stock, miembro, onGuardarPedido, onActualizarPedido, onEliminarPedido, ajustesFallidos }) {
+function TabCosecha({ pedidos, stock, miembro, onGuardarPedido, onActualizarPedido, onEliminarPedido, ajustesFallidos, onEditarStock }) {
   const [sub, setSub] = useState('nuevo')
   return (
     <div className="content">
@@ -1015,7 +1045,7 @@ function TabCosecha({ pedidos, stock, miembro, onGuardarPedido, onActualizarPedi
       </div>
       {sub === 'nuevo' && <FormRegistro cfg={CFG_COSECHA} onGuardar={async p => { const res = await onGuardarPedido(p); if (res?.ok) setSub('lista'); return res }} miembro={miembro} />}
       {sub === 'lista' && <ListaRegistros cfg={CFG_COSECHA} registros={pedidos} onActualizar={onActualizarPedido} onEliminar={onEliminarPedido} />}
-      {sub === 'stock' && <PanelStock stock={stock} cfg={CFG_COSECHA} ajustesFallidos={ajustesFallidos} />}
+      {sub === 'stock' && <PanelStock stock={stock} cfg={CFG_COSECHA} ajustesFallidos={ajustesFallidos} onEditar={onEditarStock} />}
     </div>
   )
 }
@@ -2024,7 +2054,7 @@ function TabRiegos({ onRiegosChange }) {
 }
 
 // ─── Esquejes: Tab con sub-navegación ───────────────────────────
-function TabEsquejes({ esquejes, stockEsquejes, miembro, onGuardarEsqueje, onActualizarEsqueje, onEliminarEsqueje, ajustesFallidos }) {
+function TabEsquejes({ esquejes, stockEsquejes, miembro, onGuardarEsqueje, onActualizarEsqueje, onEliminarEsqueje, ajustesFallidos, onEditarStock }) {
   const [sub, setSub] = useState('nuevo')
   const activeStyle = { background: COLOR_ESQUEJES_LIGHT, borderColor: COLOR_ESQUEJES_BORDER, color: COLOR_ESQUEJES }
   return (
@@ -2036,7 +2066,7 @@ function TabEsquejes({ esquejes, stockEsquejes, miembro, onGuardarEsqueje, onAct
       </div>
       {sub === 'nuevo' && <FormRegistro cfg={CFG_ESQUEJES} onGuardar={onGuardarEsqueje} miembro={miembro} />}
       {sub === 'lista' && <ListaRegistros cfg={CFG_ESQUEJES} registros={esquejes} onActualizar={onActualizarEsqueje} onEliminar={onEliminarEsqueje} />}
-      {sub === 'stock' && <PanelStock stock={stockEsquejes} cfg={CFG_ESQUEJES} ajustesFallidos={ajustesFallidos} />}
+      {sub === 'stock' && <PanelStock stock={stockEsquejes} cfg={CFG_ESQUEJES} ajustesFallidos={ajustesFallidos} onEditar={onEditarStock} />}
     </div>
   )
 }
@@ -2188,6 +2218,22 @@ async function aplicarDeltas(deltas, rpcName, setStockFn) {
     }
     if (data != null) setStockFn(prev => ({ ...prev, [genetica]: Number(data) }))
   }
+}
+
+// Edición manual de stock (PanelStock): a diferencia de aplicarDeltas, no usa
+// alert() bloqueante — el feedback queda a cargo del propio panel (toast inline).
+async function ajustarStockDirecto(genetica, nuevoValor, rpcName, stockActual, setStockFn) {
+  const actual = stockActual[genetica] ?? 0
+  const delta = Number(nuevoValor) - actual
+  if (!Number.isFinite(delta) || delta === 0) return { ok: true }
+  const { data, error } = await supabase.rpc(rpcName, { p_genetica: genetica, p_delta: delta })
+  if (error) {
+    console.error('Error ajustando stock manualmente', genetica, error)
+    await supabase.from('stock_ajustes_fallidos').insert({ rpc_name: rpcName, genetica, delta, error: error.message || String(error) })
+    return { ok: false }
+  }
+  if (data != null) setStockFn(prev => ({ ...prev, [genetica]: Number(data) }))
+  return { ok: true }
 }
 
 // ─── Mapeo DB (snake_case) ↔ app (camelCase) ──────────────────
@@ -2380,6 +2426,9 @@ export default function App() {
     }
   }, [])
 
+  const editarStock = useCallback((genetica, nuevoValor) => ajustarStockDirecto(genetica, nuevoValor, 'ajustar_stock', stock, setStock), [stock])
+  const editarStockEsquejes = useCallback((genetica, nuevoValor) => ajustarStockDirecto(genetica, nuevoValor, 'ajustar_stock_esquejes', stockEsquejes, setStockEsquejes), [stockEsquejes])
+
   const guardarGasto = useCallback(async nuevoGasto => {
     const { data, error } = await supabase.from('gastos').insert(nuevoGasto).select().single()
     if (error || !data) { console.error('Error al guardar gasto', error); return { ok: false, error } }
@@ -2476,6 +2525,7 @@ export default function App() {
           onActualizarPedido={actualizarPedido}
           onEliminarPedido={eliminarPedido}
           ajustesFallidos={stockAjustesFallidos}
+          onEditarStock={editarStock}
         />
       )}
       {tab === 'gastos' && <TabGastos miembro={miembro} gastos={gastos} presupuestos={presupuestos} onGuardarGasto={guardarGasto} onActualizarGasto={actualizarGasto} onEliminarGasto={eliminarGasto} />}
@@ -2489,6 +2539,7 @@ export default function App() {
           onActualizarEsqueje={actualizarEsqueje}
           onEliminarEsqueje={eliminarEsqueje}
           ajustesFallidos={stockAjustesFallidos}
+          onEditarStock={editarStockEsquejes}
         />
       )}
       {tab === 'riegos' && <TabRiegos onRiegosChange={handleRiegosChange} />}
