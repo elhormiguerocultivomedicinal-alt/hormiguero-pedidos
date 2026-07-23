@@ -3,6 +3,7 @@ import './App.css'
 import { supabase } from './supabase'
 
 const GENETICAS = ['OG24K', 'Choco OG', 'Z-Kiem', 'Fancy', 'Gorilla Rainbow']
+const GENETICAS_ESQUEJES = ['OG24K', 'Black Domina', 'Z-Kiem', 'Fancy', 'Gorilla Rainbow', 'Dosichoc']
 const MIEMBROS = ['Bruno', 'Checho', 'Nacho', 'Nico']
 const PRECIO_DEFAULT = 12500
 
@@ -97,13 +98,13 @@ const filaEsquejeVacia = () => ({ id: Date.now() + Math.random(), nombre: '', ca
 // Todo lo que difiere entre pedidos y esquejes vive acá; los componentes
 // (FormRegistro, ModalEditarRegistro, ListaRegistros, PanelStock) son únicos.
 const CFG_COSECHA = {
-  unidad: 'g', stockInicial: STOCK_INICIAL, stockLow: 50, rpcStock: 'ajustar_stock',
+  unidad: 'g', stockInicial: STOCK_INICIAL, stockLow: 50, rpcStock: 'ajustar_stock', geneticas: GENETICAS,
   color: 'var(--green-dark)', colorBorde: null, btnBg: null,
   nuevaFila: filaVacia, precioDefaultFila: PRECIO_DEFAULT,
   singular: 'pedido', plural: 'pedidos', labelEntregado: 'Pedido entregado', txtEliminar: 'Eliminar pedido',
 }
 const CFG_ESQUEJES = {
-  unidad: 'u', stockInicial: STOCK_ESQUEJES_INICIAL, stockLow: 20, rpcStock: 'ajustar_stock_esquejes',
+  unidad: 'u', stockInicial: STOCK_ESQUEJES_INICIAL, stockLow: 20, rpcStock: 'ajustar_stock_esquejes', geneticas: GENETICAS_ESQUEJES,
   color: COLOR_ESQUEJES, colorBorde: COLOR_ESQUEJES_BORDER, btnBg: COLOR_ESQUEJES,
   nuevaFila: filaEsquejeVacia, precioDefaultFila: '',
   singular: 'esqueje', plural: 'esquejes', labelEntregado: 'Entregado', txtEliminar: 'Eliminar',
@@ -420,8 +421,8 @@ function ModalEditarRegistro({ cfg, registro, onGuardar, onEliminar, onCerrar })
               <div key={fila.id} className="fila-genetica">
                 <select className="form-control" value={fila.nombre} onChange={e => setFila(fila.id, 'nombre', e.target.value)}>
                   <option value="">Seleccionar...</option>
-                  {GENETICAS.map(g => <option key={g} value={g}>{g}</option>)}
-                  {fila.nombre && !GENETICAS.includes(fila.nombre) && <option value={fila.nombre}>{fila.nombre} (fuera de catálogo)</option>}
+                  {cfg.geneticas.map(g => <option key={g} value={g}>{g}</option>)}
+                  {fila.nombre && !cfg.geneticas.includes(fila.nombre) && <option value={fila.nombre}>{fila.nombre} (fuera de catálogo)</option>}
                 </select>
                 <input className="form-control fila-cantidad" type="number" placeholder={cfg.unidad} min="0" value={fila.cantidad} onChange={e => setFila(fila.id, 'cantidad', e.target.value)} />
                 {tienePrecioPorFila && (
@@ -762,7 +763,7 @@ function FormRegistro({ cfg, onGuardar, miembro }) {
                 <div key={fila.id} className="fila-genetica">
                   <select className="form-control" value={fila.nombre} onChange={e => setFila(fila.id, 'nombre', e.target.value)}>
                     <option value="">Seleccionar...</option>
-                    {GENETICAS.map(g => <option key={g} value={g}>{g}</option>)}
+                    {cfg.geneticas.map(g => <option key={g} value={g}>{g}</option>)}
                   </select>
                   <input className="form-control fila-cantidad" type="number" placeholder={cfg.unidad} min="0" value={fila.cantidad} onChange={e => setFila(fila.id, 'cantidad', e.target.value)} />
                   <InputMonto className="form-control fila-cantidad" placeholder={`$/${cfg.unidad}`} value={fila.precio} disabled={form.propio} onChange={v => setFila(fila.id, 'precio', v)} />
@@ -961,7 +962,7 @@ function PanelStock({ stock, cfg, ajustesFallidos }) {
           <span className="form-label">Actual</span>
         </div>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-          {GENETICAS.map(g => {
+          {cfg.geneticas.map(g => {
             const cant = stock[g] ?? 0
             const inicial = cfg.stockInicial[g] ?? 0
             const pct = inicial > 0 ? Math.max(0, Math.min(100, (cant / inicial) * 100)) : 0
