@@ -646,13 +646,17 @@ function ModalEditarGasto({ gasto, categorias, presupuestos, onGuardar, onElimin
               <button onClick={cancelarDivision} style={{ marginTop: 8, background: 'none', border: 'none', padding: 0, fontSize: 12, color: 'var(--green-dark)', fontWeight: 500, cursor: 'pointer' }}>Cancelar división (volver a una sola cuenta)</button>
             </div>
           )}
-          <div className="form-group full">
-            <label className="form-label">Presupuesto (opcional)</label>
-            <select className="form-control" value={form.presupuesto_id} onChange={e => set('presupuesto_id', e.target.value)}>
-              <option value="">Ninguno</option>
-              {presupuestosDisponibles.map(p => <option key={p.id} value={p.id}>{p.nombre}</option>)}
-            </select>
-          </div>
+          {presupuestosDisponibles.length > 0 && (
+            <div className="form-group full">
+              <label className="form-label">Presupuesto</label>
+              <div className="miembro-row" style={{ marginBottom: 0 }}>
+                <button type="button" className={`miembro-btn${!form.presupuesto_id ? ' active' : ''}`} onClick={() => set('presupuesto_id', '')}>Ninguno</button>
+                {presupuestosDisponibles.map(p => (
+                  <button type="button" key={p.id} className={`miembro-btn${String(form.presupuesto_id) === String(p.id) ? ' active' : ''}`} onClick={() => set('presupuesto_id', p.id)}>{p.nombre}</button>
+                ))}
+              </div>
+            </div>
+          )}
         </div>
         {errorCampos && (
           <div style={{ fontSize: 12, color: '#791F1F', background: '#FCEBEB', border: '0.5px solid #791F1F', borderRadius: 'var(--radius-md)', padding: '10px 12px', marginTop: 16 }}>
@@ -1139,13 +1143,17 @@ function PanelGastos({ locacion, gastos, miembro, presupuestos, onNuevoGasto, on
                 <button onClick={cancelarDivision} style={{ marginTop: 8, background: 'none', border: 'none', padding: 0, fontSize: 12, color: 'var(--green-dark)', fontWeight: 500, cursor: 'pointer' }}>Cancelar división (volver a una sola cuenta)</button>
               </div>
             )}
-            <div className="form-group full">
-              <label className="form-label">Presupuesto (opcional)</label>
-              <select className="form-control" value={form.presupuesto_id} onChange={e => set('presupuesto_id', e.target.value)}>
-                <option value="">Ninguno</option>
-                {presupuestosActivos.map(p => <option key={p.id} value={p.id}>{p.nombre}</option>)}
-              </select>
-            </div>
+            {presupuestosActivos.length > 0 && (
+              <div className="form-group full">
+                <label className="form-label">Presupuesto</label>
+                <div className="miembro-row" style={{ marginBottom: 0 }}>
+                  <button type="button" className={`miembro-btn${!form.presupuesto_id ? ' active' : ''}`} onClick={() => set('presupuesto_id', '')}>Ninguno</button>
+                  {presupuestosActivos.map(p => (
+                    <button type="button" key={p.id} className={`miembro-btn${String(form.presupuesto_id) === String(p.id) ? ' active' : ''}`} onClick={() => set('presupuesto_id', p.id)}>{p.nombre}</button>
+                  ))}
+                </div>
+              </div>
+            )}
           </div>
           <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
             <button className="btn-submit" onClick={guardarGasto} style={{ flex: 1 }}>Guardar gasto</button>
@@ -1172,6 +1180,7 @@ function PanelGastos({ locacion, gastos, miembro, presupuestos, onNuevoGasto, on
                     ? ` · ${g.divisiones.length} cuentas (${g.divisiones.map(d => formatPesos(d.monto)).join(' + ')})`
                     : (g.cuenta ? ` · ${g.cuenta}` : '')}
                   {g.cuenta_estimada ? ' · estimada' : ''}
+                  {g.presupuesto_id ? ` · ${presupuestos.find(p => p.id === g.presupuesto_id)?.nombre || 'presupuesto'}` : ''}
                 </div>
               </div>
               <div className="pedido-right">
@@ -1259,6 +1268,8 @@ function TabFinanzas({ pedidos, esquejes, miembro, gastos, presupuestos, setPres
   const [editandoSaldo, setEditandoSaldo] = useState(null)
   const [inputSaldo, setInputSaldo] = useState('')
   const [inputCorte, setInputCorte] = useState('')
+  const [verDetalleCuentas, setVerDetalleCuentas] = useState(false)
+  const [verPresupuestosGeneral, setVerPresupuestosGeneral] = useState(false)
   const [toast, showToast] = useToast()
 
 
@@ -1361,6 +1372,18 @@ function TabFinanzas({ pedidos, esquejes, miembro, gastos, presupuestos, setPres
     setInputCorte('')
   }
 
+  // Punto de color en la pestaña de una locación cuando tiene presupuesto activo —
+  // rojo si alguno está Agotado/Vencido, verde si están bien, nada si no hay ninguno.
+  function colorPresupuestoLocacion(locacion) {
+    const activos = presupuestos.filter(p => p.locacion === locacion && !p.cerrado)
+    if (activos.length === 0) return null
+    const hayProblema = activos.some(p => {
+      const estado = estadoPresupuesto(p, gastos)
+      return estado === 'Agotado' || estado === 'Vencido'
+    })
+    return hayProblema ? '#791F1F' : 'var(--green-dark)'
+  }
+
   if (cargando) return <div className="content"><div className="empty-state">Cargando Finanzas...</div></div>
 
   if (errorCarga) {
@@ -1379,9 +1402,15 @@ function TabFinanzas({ pedidos, esquejes, miembro, gastos, presupuestos, setPres
   return (
     <div className="content">
       <div className="miembro-row" style={{ marginBottom: 14 }}>
-        {['general', 'Hormi 1.0', 'Hormi 2.0'].map(st => (
-          <button key={st} className={`miembro-btn${subTab === st ? ' active' : ''}`} onClick={() => setSubTab(st)}>{st === 'general' ? 'General' : st}</button>
-        ))}
+        {['general', 'Hormi 1.0', 'Hormi 2.0'].map(st => {
+          const colorPunto = st !== 'general' ? colorPresupuestoLocacion(st) : null
+          return (
+            <button key={st} className={`miembro-btn${subTab === st ? ' active' : ''}`} onClick={() => setSubTab(st)}>
+              {st === 'general' ? 'General' : st}
+              {colorPunto && <span style={{ display: 'inline-block', width: 7, height: 7, borderRadius: '50%', background: colorPunto, marginLeft: 6 }} />}
+            </button>
+          )
+        })}
       </div>
       {subTab !== 'general' && (
         <PanelFinanzasHormi locacion={subTab} gastos={gastos} presupuestos={presupuestos} setPresupuestos={setPresupuestos} miembro={miembro} />
@@ -1417,7 +1446,11 @@ function TabFinanzas({ pedidos, esquejes, miembro, gastos, presupuestos, setPres
           </div>
         </div>
       )}
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+      <button className="btn-agregar-fila" onClick={() => setVerDetalleCuentas(v => !v)}>
+        {verDetalleCuentas ? 'Ocultar detalle por cuenta ▴' : `Ver detalle por cuenta (${resumen.length}) ▾`}
+      </button>
+      {verDetalleCuentas && (
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 12, marginTop: 12 }}>
         {resumen.map(r => (
           <div className="card" key={r.nombre}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
@@ -1469,10 +1502,14 @@ function TabFinanzas({ pedidos, esquejes, miembro, gastos, presupuestos, setPres
           </div>
         ))}
       </div>
+      )}
       {presupuestos.length > 0 && (
         <div style={{ marginTop: 14 }}>
-          <div className="form-label" style={{ marginBottom: 10, display: 'block' }}>Presupuestos — todas las locaciones</div>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+          <button className="btn-agregar-fila" onClick={() => setVerPresupuestosGeneral(v => !v)}>
+            {verPresupuestosGeneral ? 'Ocultar presupuestos activos ▴' : `Ver presupuestos activos (${presupuestos.length}) ▾`}
+          </button>
+          {verPresupuestosGeneral && (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 12, marginTop: 12 }}>
             {presupuestos.map(p => {
               const gastado = gastoDePresupuesto(p, gastos)
               const restante = p.monto_asignado - gastado
@@ -1507,6 +1544,7 @@ function TabFinanzas({ pedidos, esquejes, miembro, gastos, presupuestos, setPres
               )
             })}
           </div>
+          )}
         </div>
       )}
       </>
