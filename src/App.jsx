@@ -1610,7 +1610,7 @@ function TabFinanzas({ pedidos, esquejes, miembro, gastos, presupuestos, setPres
               <div style={{ fontSize: 18, fontWeight: 700, color: r.saldo < 0 ? '#791F1F' : 'var(--green-dark)', textAlign: 'right' }}>{formatPesos(r.saldo)}</div>
             </div>
             <div style={{ fontSize: 11, color: 'var(--text-secondary)', marginTop: 10 }}>
-              {r.info.validado ? 'Saldo actual' : `Movimiento neto desde ${formatFechaISOCorta(r.info.fecha_corte)}`}
+              {r.info.validado ? `Saldo validado · ingresos y gastos contados desde ${formatFechaISOCorta(r.info.fecha_corte)}` : `Movimiento neto desde ${formatFechaISOCorta(r.info.fecha_corte)}`}
             </div>
             {r.info.actualizado_por && (
               <div style={{ fontSize: 10, color: 'var(--text-secondary)', marginTop: 1 }}>
