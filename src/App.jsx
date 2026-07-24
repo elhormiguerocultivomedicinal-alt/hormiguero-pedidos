@@ -1662,7 +1662,7 @@ function TabFinanzas({ pedidos, esquejes, miembro, gastos, presupuestos, setPres
         })}
       </div>
       {subTab !== 'general' && (
-        <PanelFinanzasHormi locacion={subTab} pedidos={pedidos} esquejes={esquejes} gastos={gastos} presupuestos={presupuestos} setPresupuestos={setPresupuestos} aportes={aportes} setAportes={setAportes} gastosFijos={gastosFijos} setGastosFijos={setGastosFijos} miembro={miembro} />
+        <PanelFinanzasHormi locacion={subTab} pedidos={pedidos} esquejes={esquejes} gastos={gastos} presupuestos={presupuestos} setPresupuestos={setPresupuestos} aportes={aportes} setAportes={setAportes} gastosFijos={gastosFijos} setGastosFijos={setGastosFijos} totalCuentas={totalGeneral} miembro={miembro} />
       )}
       {subTab === 'general' && (
       <>
@@ -1788,7 +1788,7 @@ function TabFinanzas({ pedidos, esquejes, miembro, gastos, presupuestos, setPres
   )
 }
 
-function PanelFinanzasHormi({ locacion, pedidos, esquejes, gastos, presupuestos, setPresupuestos, aportes, setAportes, gastosFijos, setGastosFijos, miembro }) {
+function PanelFinanzasHormi({ locacion, pedidos, esquejes, gastos, presupuestos, setPresupuestos, aportes, setAportes, gastosFijos, setGastosFijos, totalCuentas, miembro }) {
   const [mostrarForm, setMostrarForm] = useState(false)
   const [form, setForm] = useState({ nombre: '', monto_asignado: '', fecha_asignacion: new Date().toISOString().slice(0, 10), fecha_limite: '' })
   const [mostrarFormFijo, setMostrarFormFijo] = useState(false)
@@ -1932,8 +1932,22 @@ function PanelFinanzasHormi({ locacion, pedidos, esquejes, gastos, presupuestos,
         <div style={{ display: 'flex', gap: 8, alignItems: 'flex-start', marginTop: 10 }}>
           <Info size={14} color="#6b6b66" style={{ marginTop: 1, flexShrink: 0 }} />
           <div style={{ fontSize: 11, color: 'var(--text-secondary)', lineHeight: 1.5 }}>
-            Promedio de lo cobrado en los últimos meses cerrados, menos los gastos fijos activos de esta locación. Es una referencia para decidir cuánto asignar a un presupuesto nuevo, no un número exacto.
+            {ingresoPromedio !== null ? (
+              <>
+                <strong>Ingreso promedio</strong> = lo cobrado en pedidos y esquejes pagados de {locacion} en <strong>{mesesCerradosConDatos.map(formatMesLabel).join(', ')}</strong> ({mesesCerradosConDatos.length} mes{mesesCerradosConDatos.length !== 1 ? 'es' : ''} ya cerrado{mesesCerradosConDatos.length !== 1 ? 's' : ''}), dividido esa cantidad de meses. {formatMesLabel(mesHoy)} (el mes en curso) todavía no entra a esta cuenta — se suma recién cuando termine, para no promediar con un mes a medias.<br /><br />
+                <strong>Gastos fijos</strong> = suma de los gastos fijos marcados activos de {locacion} al monto que tienen cargado hoy (no es un promedio, es el valor vigente ahora). <strong>Disponible</strong> = Ingreso promedio − Gastos fijos: una referencia de cuánto suele sobrar por mes en esta locación, no un número exacto ni garantizado.
+              </>
+            ) : (
+              <>Todavía no hay ningún mes cerrado con pedidos o esquejes pagados en {locacion} para calcular un promedio.</>
+            )}
           </div>
+        </div>
+        <div style={{ marginTop: 10, paddingTop: 10, borderTop: '0.5px solid var(--border)', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
+          <span style={{ fontSize: 11, color: 'var(--text-secondary)' }}>Total real en todas las cuentas hoy (Hormi 1.0 + 2.0)</span>
+          <span style={{ fontSize: 13, fontWeight: 600, whiteSpace: 'nowrap' }}>{formatPesos(totalCuentas)}</span>
+        </div>
+        <div style={{ fontSize: 10, color: 'var(--text-secondary)', marginTop: 4, lineHeight: 1.4 }}>
+          Es el saldo real del banco ahora mismo (pestaña General), combinado entre las dos locaciones — no tiene por qué coincidir con "Disponible": uno es una foto de hoy, el otro un promedio mensual proyectado de esta locación sola. Se muestra solo de referencia.
         </div>
       </div>
 
