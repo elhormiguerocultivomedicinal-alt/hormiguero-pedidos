@@ -36,6 +36,14 @@ const mesActual = () => {
   return `${d.getMonth() + 1}/${d.getFullYear()}`
 }
 
+function ordenarMesesDesc(meses) {
+  return [...meses].sort((a, b) => {
+    const [ma, ya] = a.split('/').map(Number)
+    const [mb, yb] = b.split('/').map(Number)
+    return yb !== ya ? yb - ya : mb - ma
+  })
+}
+
 const NOMBRES_MES = ['enero', 'febrero', 'marzo', 'abril', 'mayo', 'junio', 'julio', 'agosto', 'septiembre', 'octubre', 'noviembre', 'diciembre']
 function formatMesLabel(mesStr) {
   const [m, y] = mesStr.split('/').map(Number)
@@ -1314,9 +1322,16 @@ function gastoDePresupuesto(p, gastos) {
   return gastos.filter(g => g.presupuesto_id === p.id).reduce((s, g) => s + (g.monto || 0), 0)
 }
 
-function estadoPresupuesto(p, gastos) {
+// El monto asignado original nunca se pisa — los aportes de capital extra (comisión
+// directiva) quedan como movimientos aparte en presupuesto_aportes, así se conserva
+// el historial de cuánto se sumó, cuándo y por qué.
+function totalAsignado(p, aportes) {
+  return (p.monto_asignado || 0) + (aportes || []).filter(a => a.presupuesto_id === p.id).reduce((s, a) => s + (a.monto || 0), 0)
+}
+
+function estadoPresupuesto(p, gastos, aportes) {
   if (p.cerrado) return 'Cerrado'
-  if (gastoDePresupuesto(p, gastos) >= p.monto_asignado) return 'Agotado'
+  if (gastoDePresupuesto(p, gastos) >= totalAsignado(p, aportes)) return 'Agotado'
   if (p.fecha_limite && p.fecha_limite < new Date().toISOString().slice(0, 10)) return 'Vencido'
   return 'Activo'
 }
@@ -1348,13 +1363,41 @@ function IconoCuenta({ nombre, size = 34 }) {
   )
 }
 
-function TarjetaPresupuesto({ p, gastos, onAlternarCerrado, mostrarLocacion }) {
+const btnLinkStyle = color => ({ background: 'none', border: 'none', padding: 0, fontSize: 12, color, fontWeight: 500, cursor: 'pointer' })
+
+function TarjetaPresupuesto({ p, gastos, aportes, onAlternarCerrado, onAportar, onEliminarAporte, onEditar, mostrarLocacion }) {
+  const [formAbierto, setFormAbierto] = useState(null) // null | 'aportar' | 'editar'
+  const [formAporte, setFormAporte] = useState({ monto: '', motivo: '', fecha: new Date().toISOString().slice(0, 10) })
+  const [formEditar, setFormEditar] = useState({ nombre: p.nombre, fecha_limite: p.fecha_limite || '' })
+
+  const aportesDelPresupuesto = (aportes || []).filter(a => a.presupuesto_id === p.id)
+  const asignado = totalAsignado(p, aportes)
   const gastado = gastoDePresupuesto(p, gastos)
-  const restante = p.monto_asignado - gastado
-  const estado = estadoPresupuesto(p, gastos)
+  const restante = asignado - gastado
+  const estado = estadoPresupuesto(p, gastos, aportes)
+  const necesitaAporte = estado === 'Agotado' && !p.cerrado
   const colorEstado = estado === 'Vencido' || estado === 'Agotado' ? '#791F1F' : estado === 'Cerrado' ? 'var(--text-secondary)' : 'var(--green-dark)'
   const colorBarra = estado === 'Vencido' || estado === 'Agotado' ? '#791F1F' : estado === 'Cerrado' ? '#c2c2ba' : '#1D9E75'
-  const pct = p.monto_asignado > 0 ? Math.min(100, Math.max(0, (gastado / p.monto_asignado) * 100)) : 0
+  const pct = asignado > 0 ? Math.min(100, Math.max(0, (gastado / asignado) * 100)) : 0
+
+  function abrirForm(nombre) {
+    setFormAporte({ monto: '', motivo: '', fecha: new Date().toISOString().slice(0, 10) })
+    setFormEditar({ nombre: p.nombre, fecha_limite: p.fecha_limite || '' })
+    setFormAbierto(prev => prev === nombre ? null : nombre)
+  }
+
+  async function confirmarAporte() {
+    if (!parseFloat(formAporte.monto)) return
+    await onAportar(p, { monto: parseFloat(formAporte.monto), motivo: formAporte.motivo.trim() || null, fecha: formAporte.fecha })
+    setFormAbierto(null)
+  }
+
+  async function confirmarEditar() {
+    if (!formEditar.nombre.trim()) return
+    await onEditar(p, { nombre: formEditar.nombre.trim(), fecha_limite: formEditar.fecha_limite || null })
+    setFormAbierto(null)
+  }
+
   return (
     <div className="card">
       <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
@@ -1367,7 +1410,7 @@ function TarjetaPresupuesto({ p, gastos, onAlternarCerrado, mostrarLocacion }) {
             {mostrarLocacion ? `${p.locacion} · ` : ''}asignado {formatFechaDateISO(p.fecha_asignacion)}{p.fecha_limite ? ` · límite ${formatFechaDateISO(p.fecha_limite)}` : ''}
           </div>
         </div>
-        <div style={{ fontSize: 12, fontWeight: 600, color: colorEstado }}>{estado}</div>
+        <div style={{ fontSize: 12, fontWeight: 600, color: colorEstado }}>{necesitaAporte ? 'Necesita aporte' : estado}</div>
       </div>
       <div className="progreso-bar">
         <div className="progreso-fill" style={{ width: `${pct}%`, background: colorBarra }} />
@@ -1375,7 +1418,10 @@ function TarjetaPresupuesto({ p, gastos, onAlternarCerrado, mostrarLocacion }) {
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '5px 12px', marginTop: 10 }}>
         <div>
           <div style={{ fontSize: 11, color: 'var(--text-secondary)' }}>Asignado</div>
-          <div style={{ fontSize: 13, fontWeight: 600 }}>{formatPesos(p.monto_asignado)}</div>
+          <div style={{ fontSize: 13, fontWeight: 600 }}>{formatPesos(asignado)}</div>
+          {aportesDelPresupuesto.length > 0 && (
+            <div style={{ fontSize: 10, color: 'var(--green-dark)', marginTop: 1 }}>{formatPesos(p.monto_asignado)} + {formatPesos(asignado - p.monto_asignado)} aportado</div>
+          )}
         </div>
         <div>
           <div style={{ fontSize: 11, color: 'var(--text-secondary)' }}>Gastado</div>
@@ -1386,16 +1432,83 @@ function TarjetaPresupuesto({ p, gastos, onAlternarCerrado, mostrarLocacion }) {
           <div style={{ fontSize: 13, fontWeight: 600, color: restante < 0 ? '#791F1F' : 'var(--green-dark)' }}>{formatPesos(restante)}</div>
         </div>
       </div>
-      {onAlternarCerrado && (
-        <button onClick={() => onAlternarCerrado(p)} style={{ marginTop: 10, background: 'none', border: 'none', padding: 0, fontSize: 12, color: p.cerrado ? 'var(--green-dark)' : '#791F1F', fontWeight: 500, cursor: 'pointer' }}>
-          {p.cerrado ? 'Reabrir presupuesto' : 'Cerrar presupuesto'}
-        </button>
+
+      {aportesDelPresupuesto.length > 0 && (
+        <div style={{ marginTop: 10, paddingTop: 10, borderTop: '0.5px solid var(--border)', display: 'flex', flexDirection: 'column', gap: 5 }}>
+          <div className="form-label">Aportes de capital</div>
+          {aportesDelPresupuesto.map(a => (
+            <div key={a.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
+              <span style={{ fontSize: 11, color: 'var(--text-secondary)' }}>
+                {formatFechaDateISO(a.fecha)} · <strong style={{ color: 'var(--text-primary)' }}>{formatPesos(a.monto)}</strong>{a.motivo ? ` · ${a.motivo}` : ''}{a.creado_por ? ` · ${a.creado_por}` : ''}
+              </span>
+              {onEliminarAporte && (
+                <button onClick={() => onEliminarAporte(a.id)} style={{ ...btnLinkStyle('#791F1F'), fontSize: 14, lineHeight: 1 }}>×</button>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+
+      <div style={{ display: 'flex', gap: 14, flexWrap: 'wrap', marginTop: 10 }}>
+        {onAportar && !p.cerrado && (
+          <button onClick={() => abrirForm('aportar')} style={btnLinkStyle('var(--green-dark)')}>+ Aportar capital</button>
+        )}
+        {onEditar && (
+          <button onClick={() => abrirForm('editar')} style={btnLinkStyle('var(--text-secondary)')}>Editar</button>
+        )}
+        {onAlternarCerrado && (
+          <button onClick={() => onAlternarCerrado(p)} style={btnLinkStyle(p.cerrado ? 'var(--green-dark)' : '#791F1F')}>
+            {p.cerrado ? 'Reabrir presupuesto' : 'Cerrar presupuesto'}
+          </button>
+        )}
+      </div>
+
+      {formAbierto === 'aportar' && (
+        <div style={{ marginTop: 12, paddingTop: 12, borderTop: '0.5px solid var(--border)' }}>
+          <div className="form-grid">
+            <div className="form-group">
+              <label className="form-label">Monto a aportar ($)</label>
+              <InputMonto value={formAporte.monto} onChange={v => setFormAporte(f => ({ ...f, monto: v }))} />
+            </div>
+            <div className="form-group">
+              <label className="form-label">Fecha</label>
+              <input className="form-control" type="date" value={formAporte.fecha} onChange={e => setFormAporte(f => ({ ...f, fecha: e.target.value }))} />
+            </div>
+            <div className="form-group full">
+              <label className="form-label">Motivo (opcional)</label>
+              <input className="form-control" type="text" placeholder="Ej: aprobado en reunión de comisión" value={formAporte.motivo} onChange={e => setFormAporte(f => ({ ...f, motivo: e.target.value }))} />
+            </div>
+          </div>
+          <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
+            <button className="btn-submit" onClick={confirmarAporte} style={{ flex: 1 }}>Guardar aporte</button>
+            <button onClick={() => setFormAbierto(null)} style={{ padding: '0 16px', border: '0.5px solid var(--border-mid)', borderRadius: 'var(--radius-md)', background: 'transparent', cursor: 'pointer', fontSize: 13, color: 'var(--text-secondary)' }}>Cancelar</button>
+          </div>
+        </div>
+      )}
+
+      {formAbierto === 'editar' && (
+        <div style={{ marginTop: 12, paddingTop: 12, borderTop: '0.5px solid var(--border)' }}>
+          <div className="form-grid">
+            <div className="form-group full">
+              <label className="form-label">Nombre / proyecto</label>
+              <input className="form-control" type="text" value={formEditar.nombre} onChange={e => setFormEditar(f => ({ ...f, nombre: e.target.value }))} />
+            </div>
+            <div className="form-group full">
+              <label className="form-label">Fecha límite (opcional)</label>
+              <input className="form-control" type="date" value={formEditar.fecha_limite} onChange={e => setFormEditar(f => ({ ...f, fecha_limite: e.target.value }))} />
+            </div>
+          </div>
+          <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
+            <button className="btn-submit" onClick={confirmarEditar} style={{ flex: 1 }}>Guardar cambios</button>
+            <button onClick={() => setFormAbierto(null)} style={{ padding: '0 16px', border: '0.5px solid var(--border-mid)', borderRadius: 'var(--radius-md)', background: 'transparent', cursor: 'pointer', fontSize: 13, color: 'var(--text-secondary)' }}>Cancelar</button>
+          </div>
+        </div>
       )}
     </div>
   )
 }
 
-function TabFinanzas({ pedidos, esquejes, miembro, gastos, presupuestos, setPresupuestos }) {
+function TabFinanzas({ pedidos, esquejes, miembro, gastos, presupuestos, setPresupuestos, aportes, setAportes, gastosFijos, setGastosFijos }) {
   const [subTab, setSubTab] = useState('general')
   const [cuentas, setCuentas] = useState([])
   const [cargando, setCargando] = useState(true)
@@ -1514,7 +1627,7 @@ function TabFinanzas({ pedidos, esquejes, miembro, gastos, presupuestos, setPres
     const activos = presupuestos.filter(p => p.locacion === locacion && !p.cerrado)
     if (activos.length === 0) return null
     const hayProblema = activos.some(p => {
-      const estado = estadoPresupuesto(p, gastos)
+      const estado = estadoPresupuesto(p, gastos, aportes)
       return estado === 'Agotado' || estado === 'Vencido'
     })
     return hayProblema ? '#791F1F' : 'var(--green-dark)'
@@ -1549,7 +1662,7 @@ function TabFinanzas({ pedidos, esquejes, miembro, gastos, presupuestos, setPres
         })}
       </div>
       {subTab !== 'general' && (
-        <PanelFinanzasHormi locacion={subTab} gastos={gastos} presupuestos={presupuestos} setPresupuestos={setPresupuestos} miembro={miembro} />
+        <PanelFinanzasHormi locacion={subTab} pedidos={pedidos} esquejes={esquejes} gastos={gastos} presupuestos={presupuestos} setPresupuestos={setPresupuestos} aportes={aportes} setAportes={setAportes} gastosFijos={gastosFijos} setGastosFijos={setGastosFijos} miembro={miembro} />
       )}
       {subTab === 'general' && (
       <>
@@ -1662,7 +1775,7 @@ function TabFinanzas({ pedidos, esquejes, miembro, gastos, presupuestos, setPres
           {verPresupuestosGeneral && (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 12, marginTop: 12 }}>
             {presupuestos.map(p => (
-              <TarjetaPresupuesto key={p.id} p={p} gastos={gastos} mostrarLocacion />
+              <TarjetaPresupuesto key={p.id} p={p} gastos={gastos} aportes={aportes} mostrarLocacion />
             ))}
           </div>
           )}
@@ -1675,9 +1788,13 @@ function TabFinanzas({ pedidos, esquejes, miembro, gastos, presupuestos, setPres
   )
 }
 
-function PanelFinanzasHormi({ locacion, gastos, presupuestos, setPresupuestos, miembro }) {
+function PanelFinanzasHormi({ locacion, pedidos, esquejes, gastos, presupuestos, setPresupuestos, aportes, setAportes, gastosFijos, setGastosFijos, miembro }) {
   const [mostrarForm, setMostrarForm] = useState(false)
   const [form, setForm] = useState({ nombre: '', monto_asignado: '', fecha_asignacion: new Date().toISOString().slice(0, 10), fecha_limite: '' })
+  const [mostrarFormFijo, setMostrarFormFijo] = useState(false)
+  const [formFijo, setFormFijo] = useState({ nombre: '', categoria: '', monto: '' })
+  const [editandoFijo, setEditandoFijo] = useState(null)
+  const [inputMontoFijo, setInputMontoFijo] = useState('')
   const [toast, showToast] = useToast()
 
 
@@ -1689,6 +1806,20 @@ function PanelFinanzasHormi({ locacion, gastos, presupuestos, setPresupuestos, m
   })).filter(x => x.total > 0)
 
   const presupuestosLocacion = presupuestos.filter(p => p.locacion === locacion)
+
+  const gastosFijosLocacion = (gastosFijos || []).filter(g => g.locacion === locacion)
+  const totalGastosFijosActivos = gastosFijosLocacion.filter(g => g.activo).reduce((s, g) => s + (g.monto || 0), 0)
+
+  const mesHoy = mesActual()
+  const cobradoPorMes = {}
+  ;[...pedidos, ...esquejes].filter(r => r.locacion === locacion && r.pagado && r.mes && r.mes !== mesHoy).forEach(r => {
+    cobradoPorMes[r.mes] = (cobradoPorMes[r.mes] || 0) + (r.total || 0)
+  })
+  const mesesCerradosConDatos = ordenarMesesDesc(Object.keys(cobradoPorMes)).slice(0, 3)
+  const ingresoPromedio = mesesCerradosConDatos.length > 0
+    ? mesesCerradosConDatos.reduce((s, m) => s + cobradoPorMes[m], 0) / mesesCerradosConDatos.length
+    : null
+  const disponibleProyectado = ingresoPromedio !== null ? ingresoPromedio - totalGastosFijosActivos : null
 
   async function guardarPresupuesto() {
     if (!form.nombre.trim() || !parseFloat(form.monto_asignado)) {
@@ -1718,8 +1849,159 @@ function PanelFinanzasHormi({ locacion, gastos, presupuestos, setPresupuestos, m
     else showToast('Error al guardar')
   }
 
+  async function aportarCapital(p, { monto, motivo, fecha }) {
+    const nuevoAporte = { presupuesto_id: p.id, monto, motivo, fecha, creado_por: miembro || null }
+    const { data, error } = await supabase.from('presupuesto_aportes').insert(nuevoAporte).select().single()
+    if (!error && data) { setAportes(prev => [data, ...prev]); showToast('Aporte registrado ✓') }
+    else showToast('Error al guardar')
+  }
+
+  async function eliminarAporte(id) {
+    const { error } = await supabase.from('presupuesto_aportes').delete().eq('id', id)
+    if (!error) setAportes(prev => prev.filter(a => a.id !== id))
+    else showToast('Error al eliminar')
+  }
+
+  async function editarPresupuesto(p, { nombre, fecha_limite }) {
+    const { error } = await supabase.from('presupuestos').update({ nombre, fecha_limite }).eq('id', p.id)
+    if (!error) setPresupuestos(prev => prev.map(x => x.id === p.id ? { ...x, nombre, fecha_limite } : x))
+    else showToast('Error al guardar')
+  }
+
+  async function agregarGastoFijo() {
+    if (!formFijo.nombre.trim() || !parseFloat(formFijo.monto)) {
+      showToast('Completá nombre y monto')
+      return
+    }
+    const ahora = new Date().toISOString()
+    const nuevo = { nombre: formFijo.nombre.trim(), categoria: formFijo.categoria || null, monto: parseFloat(formFijo.monto), locacion, activo: true, actualizado_por: miembro || null, actualizado_en: ahora }
+    const { data, error } = await supabase.from('gastos_fijos').insert(nuevo).select().single()
+    if (!error && data) {
+      setGastosFijos(prev => [data, ...prev])
+      setFormFijo({ nombre: '', categoria: '', monto: '' })
+      setMostrarFormFijo(false)
+      showToast('Gasto fijo agregado ✓')
+    } else showToast('Error al guardar')
+  }
+
+  async function guardarMontoFijo(id) {
+    const valor = parseFloat(inputMontoFijo)
+    if (isNaN(valor)) { showToast('Ingresá un número válido'); return }
+    const ahora = new Date().toISOString()
+    const { error } = await supabase.from('gastos_fijos').update({ monto: valor, actualizado_por: miembro || null, actualizado_en: ahora }).eq('id', id)
+    if (!error) {
+      setGastosFijos(prev => prev.map(g => g.id === id ? { ...g, monto: valor, actualizado_por: miembro || null, actualizado_en: ahora } : g))
+      showToast('Monto actualizado ✓')
+    } else showToast('Error al guardar')
+    setEditandoFijo(null)
+    setInputMontoFijo('')
+  }
+
+  async function toggleActivoFijo(g) {
+    const { error } = await supabase.from('gastos_fijos').update({ activo: !g.activo }).eq('id', g.id)
+    if (!error) setGastosFijos(prev => prev.map(x => x.id === g.id ? { ...x, activo: !g.activo } : x))
+    else showToast('Error al guardar')
+  }
+
+  async function eliminarGastoFijo(id) {
+    const { error } = await supabase.from('gastos_fijos').delete().eq('id', id)
+    if (!error) setGastosFijos(prev => prev.filter(g => g.id !== id))
+    else showToast('Error al eliminar')
+  }
+
   return (
     <div>
+      <div className="card" style={{ marginBottom: 14 }}>
+        <div style={{ marginBottom: 10 }}><span className="form-label">Proyección de {locacion}</span></div>
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '5px 12px' }}>
+          <div>
+            <div style={{ fontSize: 11, color: 'var(--text-secondary)' }}>Ingreso promedio</div>
+            <div style={{ fontSize: 13, fontWeight: 600 }}>{ingresoPromedio !== null ? formatPesos(ingresoPromedio) : '—'}</div>
+          </div>
+          <div>
+            <div style={{ fontSize: 11, color: 'var(--text-secondary)' }}>Gastos fijos</div>
+            <div style={{ fontSize: 13, fontWeight: 600, color: '#791F1F' }}>{formatPesos(totalGastosFijosActivos)}</div>
+          </div>
+          <div>
+            <div style={{ fontSize: 11, color: 'var(--text-secondary)' }}>Disponible</div>
+            <div style={{ fontSize: 13, fontWeight: 600, color: disponibleProyectado !== null && disponibleProyectado < 0 ? '#791F1F' : 'var(--green-dark)' }}>
+              {disponibleProyectado !== null ? formatPesos(disponibleProyectado) : '—'}
+            </div>
+          </div>
+        </div>
+        <div style={{ display: 'flex', gap: 8, alignItems: 'flex-start', marginTop: 10 }}>
+          <Info size={14} color="#6b6b66" style={{ marginTop: 1, flexShrink: 0 }} />
+          <div style={{ fontSize: 11, color: 'var(--text-secondary)', lineHeight: 1.5 }}>
+            Promedio de lo cobrado en los últimos meses cerrados, menos los gastos fijos activos de esta locación. Es una referencia para decidir cuánto asignar a un presupuesto nuevo, no un número exacto.
+          </div>
+        </div>
+      </div>
+
+      <div className="form-label" style={{ marginBottom: 10, display: 'block' }}>Gastos fijos de {locacion}</div>
+      {gastosFijosLocacion.length > 0 && (
+        <div className="card" style={{ marginBottom: 14, display: 'flex', flexDirection: 'column', gap: 10 }}>
+          {gastosFijosLocacion.map(g => (
+            <div key={g.id} style={{ display: 'flex', alignItems: 'center', gap: 10, opacity: g.activo ? 1 : 0.5 }}>
+              <div style={{ flex: 1 }}>
+                <div style={{ fontSize: 13, fontWeight: 500, color: 'var(--text-primary)' }}>{g.nombre}</div>
+                {g.categoria && <div style={{ fontSize: 11, color: 'var(--text-secondary)' }}>{g.categoria}</div>}
+              </div>
+              {editandoFijo === g.id ? (
+                <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                  <InputMonto value={inputMontoFijo} onChange={setInputMontoFijo} style={{ width: 100, height: 32 }} />
+                  <button className="btn-submit" style={{ width: 'auto', height: 32, padding: '0 10px' }} onClick={() => guardarMontoFijo(g.id)}>OK</button>
+                </div>
+              ) : (
+                <button onClick={() => { setEditandoFijo(g.id); setInputMontoFijo(String(g.monto)) }} style={{ background: 'none', border: 'none', padding: 0, fontSize: 13, fontWeight: 600, color: 'var(--text-primary)', cursor: 'pointer' }}>
+                  {formatPesos(g.monto)}
+                </button>
+              )}
+              <label className="toggle-switch" style={{ width: 32, height: 19 }}>
+                <input type="checkbox" checked={g.activo} onChange={() => toggleActivoFijo(g)} />
+                <span className="toggle-slider" />
+              </label>
+              <button onClick={() => eliminarGastoFijo(g.id)} style={btnLinkStyle('#791F1F')}>×</button>
+            </div>
+          ))}
+          <div style={{ borderTop: '0.5px solid var(--border)', paddingTop: 10, display: 'flex', justifyContent: 'space-between' }}>
+            <span style={{ fontSize: 13, fontWeight: 600 }}>Total activos</span>
+            <span style={{ fontSize: 14, fontWeight: 700 }}>{formatPesos(totalGastosFijosActivos)}</span>
+          </div>
+        </div>
+      )}
+      {gastosFijosLocacion.length === 0 && !mostrarFormFijo && (
+        <div className="empty-state" style={{ marginBottom: 14 }}>Todavía no hay gastos fijos cargados en {locacion}.</div>
+      )}
+
+      {mostrarFormFijo && (
+        <div className="card" style={{ marginBottom: 14 }}>
+          <div className="form-grid">
+            <div className="form-group full">
+              <label className="form-label">Nombre</label>
+              <input className="form-control" type="text" placeholder="Ej: Alquiler" value={formFijo.nombre} onChange={e => setFormFijo(f => ({ ...f, nombre: e.target.value }))} />
+            </div>
+            <div className="form-group">
+              <label className="form-label">Categoría</label>
+              <select className="form-control" value={formFijo.categoria} onChange={e => setFormFijo(f => ({ ...f, categoria: e.target.value }))}>
+                <option value="">Sin categoría</option>
+                {categorias.map(c => <option key={c} value={c}>{c}</option>)}
+              </select>
+            </div>
+            <div className="form-group">
+              <label className="form-label">Monto ($)</label>
+              <InputMonto value={formFijo.monto} onChange={v => setFormFijo(f => ({ ...f, monto: v }))} />
+            </div>
+          </div>
+          <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
+            <button className="btn-submit" onClick={agregarGastoFijo} style={{ flex: 1 }}>Guardar gasto fijo</button>
+            <button onClick={() => setMostrarFormFijo(false)} style={{ padding: '0 16px', border: '0.5px solid var(--border-mid)', borderRadius: 'var(--radius-md)', background: 'transparent', cursor: 'pointer', fontSize: 13, color: 'var(--text-secondary)' }}>Cancelar</button>
+          </div>
+        </div>
+      )}
+      {!mostrarFormFijo && (
+        <button className="btn-agregar-fila" onClick={() => setMostrarFormFijo(true)} style={{ marginBottom: 14 }}>+ Nuevo gasto fijo en {locacion}</button>
+      )}
+
       {porCategoria.length > 0 && (
         <div className="card" style={{ marginBottom: 14 }}>
           <div style={{ marginBottom: 10 }}><span className="form-label">Gastos de {locacion}</span></div>
@@ -1778,7 +2060,7 @@ function PanelFinanzasHormi({ locacion, gastos, presupuestos, setPresupuestos, m
         : (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
             {presupuestosLocacion.map(p => (
-              <TarjetaPresupuesto key={p.id} p={p} gastos={gastos} onAlternarCerrado={alternarCerrado} />
+              <TarjetaPresupuesto key={p.id} p={p} gastos={gastos} aportes={aportes} onAlternarCerrado={alternarCerrado} onAportar={aportarCapital} onEliminarAporte={eliminarAporte} onEditar={editarPresupuesto} />
             ))}
           </div>
         )
@@ -2309,6 +2591,8 @@ export default function App() {
   const [esquejes, setEsquejes] = useState([])
   const [gastos, setGastos] = useState([])
   const [presupuestos, setPresupuestos] = useState([])
+  const [aportes, setAportes] = useState([])
+  const [gastosFijos, setGastosFijos] = useState([])
   const [stockEsquejes, setStockEsquejes] = useState(STOCK_ESQUEJES_INICIAL)
   const [stockEsquejesInicial, setStockEsquejesInicial] = useState(STOCK_ESQUEJES_INICIAL)
   const [stockAjustesFallidos, setStockAjustesFallidos] = useState([])
@@ -2344,16 +2628,18 @@ export default function App() {
     async function cargarDatos() {
       setCargando(true)
       setErrorCarga(false)
-      const [pedidosRes, stockRes, esquejesRes, stockEsquejesRes, gastosRes, presupuestosRes] = await Promise.all([
+      const [pedidosRes, stockRes, esquejesRes, stockEsquejesRes, gastosRes, presupuestosRes, aportesRes, gastosFijosRes] = await Promise.all([
         supabase.from('pedidos').select('*').order('created_at', { ascending: false }),
         supabase.from('stock').select('*'),
         supabase.from('esquejes').select('*').order('created_at', { ascending: false }),
         supabase.from('stock_esquejes').select('*'),
         supabase.from('gastos').select('*').order('created_at', { ascending: false }),
         supabase.from('presupuestos').select('*').order('created_at', { ascending: false }),
+        supabase.from('presupuesto_aportes').select('*').order('created_at', { ascending: false }),
+        supabase.from('gastos_fijos').select('*').order('created_at', { ascending: false }),
       ])
       if (cancelado) return
-      const conError = [pedidosRes, stockRes, esquejesRes, stockEsquejesRes, gastosRes, presupuestosRes].filter(r => r.error)
+      const conError = [pedidosRes, stockRes, esquejesRes, stockEsquejesRes, gastosRes, presupuestosRes, aportesRes, gastosFijosRes].filter(r => r.error)
       if (conError.length > 0) {
         console.error('Error al cargar datos', conError.map(r => r.error))
         setErrorCarga(true)
@@ -2376,6 +2662,8 @@ export default function App() {
       }
       setGastos(gastosRes.data || [])
       setPresupuestos(presupuestosRes.data || [])
+      setAportes(aportesRes.data || [])
+      setGastosFijos(gastosFijosRes.data || [])
       setCargando(false)
     }
     cargarDatos()
@@ -2573,7 +2861,7 @@ export default function App() {
         />
       )}
       {tab === 'gastos' && <TabGastos miembro={miembro} gastos={gastos} presupuestos={presupuestos} onGuardarGasto={guardarGasto} onActualizarGasto={actualizarGasto} onEliminarGasto={eliminarGasto} />}
-      {tab === 'finanzas' && <TabFinanzas pedidos={pedidos} esquejes={esquejes} miembro={miembro} gastos={gastos} presupuestos={presupuestos} setPresupuestos={setPresupuestos} />}
+      {tab === 'finanzas' && <TabFinanzas pedidos={pedidos} esquejes={esquejes} miembro={miembro} gastos={gastos} presupuestos={presupuestos} setPresupuestos={setPresupuestos} aportes={aportes} setAportes={setAportes} gastosFijos={gastosFijos} setGastosFijos={setGastosFijos} />}
       {tab === 'esquejes' && (
         <TabEsquejes
           esquejes={esquejes}
