@@ -1077,24 +1077,74 @@ function PanelStock({ stock, inicial, cfg, ajustesFallidos, onEditar, onEditarIn
   )
 }
 
-// ─── Tab genérico Cosecha/Esquejes: Registro / Stock de genéticas / Registrados ──
-// Cosecha y Esquejes quedan como tabs principales separados (no se mezclan sus
-// datos); cada uno usa este mismo shell parametrizado por cfg, con sus 3 pasos
-// en orden: Registro → Stock de genéticas → [Pedidos/Esquejes] registrados.
-function TabDominio({ cfg, registros, miembro, onGuardar, onActualizar, onEliminar, stock, stockInicial, ajustesFallidos, onEditarStock, onEditarInicial }) {
-  const [sub, setSub] = useState('nuevo')
-  const activeStyle = cfg.colorBorde ? { background: cfg.colorLight, borderColor: cfg.colorBorde, color: cfg.color } : {}
+// ─── Panel genérico Cosecha/Esquejes: una sola página que despliega en
+// orden 1) el registro de un pedido nuevo (siempre visible), 2) el stock
+// disponible por genética (colapsado, se abre con un click, igual que un
+// mes en la lista de abajo) y 3) los pedidos registrados mes a mes (el
+// acordeón que ya existe, con cada mes oculto hasta que se lo abre).
+function PanelDominio({ cfg, registros, miembro, onGuardar, onActualizar, onEliminar, stock, stockInicial, ajustesFallidos, onEditarStock, onEditarInicial }) {
+  const [stockAbierto, setStockAbierto] = useState(false)
+  const seccionTitulo = { fontSize: 15, fontWeight: 600, color: 'var(--text-primary)', marginBottom: 8 }
   const plural = cfg.plural[0].toUpperCase() + cfg.plural.slice(1)
+  return (
+    <div>
+      <div style={seccionTitulo}>Registro de nuevo {cfg.singular}</div>
+      <FormRegistro cfg={cfg} onGuardar={onGuardar} miembro={miembro} />
+
+      <div style={{ marginTop: 18 }}>
+        <div className="pedido-card" onClick={() => setStockAbierto(o => !o)} style={{ cursor: 'pointer' }}>
+          <div>
+            <div className="pedido-nombre">Stock disponible por genética</div>
+            <div className="pedido-sub">{cfg.geneticas.length} genéticas</div>
+          </div>
+          <div className="pedido-right">
+            <span className="pedido-editar-hint">{stockAbierto ? 'Ocultar ▴' : 'Ver ▾'}</span>
+          </div>
+        </div>
+        {stockAbierto && (
+          <div style={{ marginTop: 8 }}>
+            <PanelStock stock={stock} inicial={stockInicial} cfg={cfg} ajustesFallidos={ajustesFallidos} onEditar={onEditarStock} onEditarInicial={onEditarInicial} />
+          </div>
+        )}
+      </div>
+
+      <div style={{ marginTop: 18 }}>
+        <div style={seccionTitulo}>{plural} registrados</div>
+        <ListaRegistrosPorMes cfg={cfg} registros={registros} onActualizar={onActualizar} onEliminar={onEliminar} />
+      </div>
+    </div>
+  )
+}
+
+// ─── Tab Pedidos: agrupa Cosecha y Esquejes, cada uno con su PanelDominio ──
+function TabPedidos({
+  pedidos, stock, stockInicial, onGuardarPedido, onActualizarPedido, onEliminarPedido,
+  esquejes, stockEsquejes, stockEsquejesInicial, onGuardarEsqueje, onActualizarEsqueje, onEliminarEsqueje,
+  miembro, ajustesFallidos,
+  onEditarStock, onEditarStockEsquejes, onEditarInicial, onEditarInicialEsquejes,
+}) {
+  const [tipo, setTipo] = useState('cosecha')
+  const cfg = tipo === 'cosecha' ? CFG_COSECHA : CFG_ESQUEJES
+  const activeStyle = tipo === 'esquejes' ? { background: COLOR_ESQUEJES_LIGHT, borderColor: COLOR_ESQUEJES_BORDER, color: COLOR_ESQUEJES } : {}
   return (
     <div className="content">
       <div className="miembro-row">
-        <button className={`miembro-btn${sub === 'nuevo' ? ' active' : ''}`} style={sub === 'nuevo' ? activeStyle : {}} onClick={() => setSub('nuevo')}>Registro de {cfg.singular}</button>
-        <button className={`miembro-btn${sub === 'stock' ? ' active' : ''}`} style={sub === 'stock' ? activeStyle : {}} onClick={() => setSub('stock')}>Stock de genéticas</button>
-        <button className={`miembro-btn${sub === 'lista' ? ' active' : ''}`} style={sub === 'lista' ? activeStyle : {}} onClick={() => setSub('lista')}>{plural} registrados</button>
+        <button className={`miembro-btn${tipo === 'cosecha' ? ' active' : ''}`} onClick={() => setTipo('cosecha')}>Cosecha</button>
+        <button className={`miembro-btn${tipo === 'esquejes' ? ' active' : ''}`} style={tipo === 'esquejes' ? activeStyle : {}} onClick={() => setTipo('esquejes')}>Esquejes</button>
       </div>
-      {sub === 'nuevo' && <FormRegistro cfg={cfg} onGuardar={onGuardar} miembro={miembro} />}
-      {sub === 'stock' && <PanelStock stock={stock} inicial={stockInicial} cfg={cfg} ajustesFallidos={ajustesFallidos} onEditar={onEditarStock} onEditarInicial={onEditarInicial} />}
-      {sub === 'lista' && <ListaRegistrosPorMes cfg={cfg} registros={registros} onActualizar={onActualizar} onEliminar={onEliminar} />}
+      <PanelDominio
+        cfg={cfg}
+        registros={tipo === 'cosecha' ? pedidos : esquejes}
+        miembro={miembro}
+        onGuardar={tipo === 'cosecha' ? onGuardarPedido : onGuardarEsqueje}
+        onActualizar={tipo === 'cosecha' ? onActualizarPedido : onActualizarEsqueje}
+        onEliminar={tipo === 'cosecha' ? onEliminarPedido : onEliminarEsqueje}
+        stock={tipo === 'cosecha' ? stock : stockEsquejes}
+        stockInicial={tipo === 'cosecha' ? stockInicial : stockEsquejesInicial}
+        ajustesFallidos={ajustesFallidos}
+        onEditarStock={tipo === 'cosecha' ? onEditarStock : onEditarStockEsquejes}
+        onEditarInicial={tipo === 'cosecha' ? onEditarInicial : onEditarInicialEsquejes}
+      />
     </div>
   )
 }
@@ -1711,7 +1761,7 @@ function TabFinanzas({ pedidos, esquejes, miembro, gastos, presupuestos, setPres
           <div style={{ display: 'flex', gap: 8, alignItems: 'flex-start' }}>
             <TriangleAlert size={15} color="#854F0B" style={{ marginTop: 1, flexShrink: 0 }} />
             <div style={{ fontSize: 12, color: '#854F0B', lineHeight: 1.5 }}>
-              Hay <strong>{totalEstimados}</strong> registro(s) de junio-julio con cuenta estimada (asignada por quién cargó el pedido/gasto, no confirmada contra comprobante). Se pueden corregir abriendo cada uno desde Cosecha o Esquejes → registrados, o Gastos → Lista.
+              Hay <strong>{totalEstimados}</strong> registro(s) de junio-julio con cuenta estimada (asignada por quién cargó el pedido/gasto, no confirmada contra comprobante). Se pueden corregir abriendo cada uno desde Pedidos (Cosecha/Esquejes) o Gastos → Lista.
             </div>
           </div>
         </div>
@@ -1721,7 +1771,7 @@ function TabFinanzas({ pedidos, esquejes, miembro, gastos, presupuestos, setPres
           <div style={{ display: 'flex', gap: 8, alignItems: 'flex-start' }}>
             <TriangleAlert size={15} color="#791F1F" style={{ marginTop: 1, flexShrink: 0 }} />
             <div style={{ fontSize: 12, color: '#791F1F', lineHeight: 1.5 }}>
-              <strong>Atención:</strong> hay <strong>{cantidadSinCuenta}</strong> registro(s) pagado(s)/con gasto SIN cuenta asignada o con una división de cuentas inválida, por eso <strong>no están sumados en ningún total de arriba</strong> (ingresos sin contar: {formatPesos(ingresosSinCuenta)} · gastos sin contar: {formatPesos(egresosSinCuenta)}). Corregilos desde Cosecha o Esquejes → registrados, o Gastos → Lista, abriendo cada registro y eligiendo su cuenta.
+              <strong>Atención:</strong> hay <strong>{cantidadSinCuenta}</strong> registro(s) pagado(s)/con gasto SIN cuenta asignada o con una división de cuentas inválida, por eso <strong>no están sumados en ningún total de arriba</strong> (ingresos sin contar: {formatPesos(ingresosSinCuenta)} · gastos sin contar: {formatPesos(egresosSinCuenta)}). Corregilos desde Pedidos (Cosecha/Esquejes) o Gastos → Lista, abriendo cada registro y eligiendo su cuenta.
             </div>
           </div>
         </div>
@@ -1770,7 +1820,7 @@ function TabFinanzas({ pedidos, esquejes, miembro, gastos, presupuestos, setPres
                   <input className="form-control" type="date" value={inputCorte} onChange={e => setInputCorte(e.target.value)} style={{ flex: 1 }} />
                 </div>
                 <div style={{ fontSize: 11, color: 'var(--text-secondary)', marginTop: 6 }}>
-                  Desde esta fecha se cuentan los movimientos nuevos — todo lo anterior queda afuera del saldo (sigue disponible en Cosecha/Esquejes/Gastos).
+                  Desde esta fecha se cuentan los movimientos nuevos — todo lo anterior queda afuera del saldo (sigue disponible en Pedidos/Gastos).
                 </div>
                 <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
                   <button className="btn-submit" style={{ width: 'auto', padding: '0 14px' }} onClick={() => guardarSaldoInicial(r.nombre)}>Guardar</button>
@@ -2599,7 +2649,7 @@ const gastoToDB = g => ({
 
 // ─── App raíz ─────────────────────────────────────────────────
 export default function App() {
-  const [tab, setTab] = useState('cosecha')
+  const [tab, setTab] = useState('pedidos')
   const [pedidos, setPedidos] = useState([])
   const [stock, setStock] = useState(STOCK_INICIAL)
   const [stockInicial, setStockInicial] = useState(STOCK_INICIAL)
@@ -2853,42 +2903,33 @@ export default function App() {
           </div>
         </div>
         <div className="tab-bar">
-          <button className={`tab${tab === 'cosecha' ? ' active' : ''}`} onClick={() => setTab('cosecha')}>Cosecha</button>
-          <button className={`tab${tab === 'esquejes' ? ' active' : ''}`} onClick={() => setTab('esquejes')}>Esquejes</button>
+          <button className={`tab${tab === 'pedidos' ? ' active' : ''}`} onClick={() => setTab('pedidos')}>Pedidos</button>
           <button className={`tab${tab === 'gastos' ? ' active' : ''}`} onClick={() => setTab('gastos')}>Gastos</button>
           <button className={`tab${tab === 'finanzas' ? ' active' : ''}`} onClick={() => setTab('finanzas')}>Finanzas</button>
           <button className={`tab${tab === 'riegos' ? ' active' : ''}`} onClick={() => setTab('riegos')}>Riegos</button>
           <button className={`tab${tab === 'calendario' ? ' active' : ''}`} onClick={() => setTab('calendario')}>Cultivo</button>
         </div>
       </div>
-      {tab === 'cosecha' && (
-        <TabDominio
-          cfg={CFG_COSECHA}
-          registros={pedidos}
-          miembro={miembro}
-          onGuardar={guardarPedido}
-          onActualizar={actualizarPedido}
-          onEliminar={eliminarPedido}
+      {tab === 'pedidos' && (
+        <TabPedidos
+          pedidos={pedidos}
           stock={stock}
           stockInicial={stockInicial}
+          onGuardarPedido={guardarPedido}
+          onActualizarPedido={actualizarPedido}
+          onEliminarPedido={eliminarPedido}
+          esquejes={esquejes}
+          stockEsquejes={stockEsquejes}
+          stockEsquejesInicial={stockEsquejesInicial}
+          onGuardarEsqueje={guardarEsqueje}
+          onActualizarEsqueje={actualizarEsqueje}
+          onEliminarEsqueje={eliminarEsqueje}
+          miembro={miembro}
           ajustesFallidos={stockAjustesFallidos}
           onEditarStock={editarStock}
+          onEditarStockEsquejes={editarStockEsquejes}
           onEditarInicial={editarInicial}
-        />
-      )}
-      {tab === 'esquejes' && (
-        <TabDominio
-          cfg={CFG_ESQUEJES}
-          registros={esquejes}
-          miembro={miembro}
-          onGuardar={guardarEsqueje}
-          onActualizar={actualizarEsqueje}
-          onEliminar={eliminarEsqueje}
-          stock={stockEsquejes}
-          stockInicial={stockEsquejesInicial}
-          ajustesFallidos={stockAjustesFallidos}
-          onEditarStock={editarStockEsquejes}
-          onEditarInicial={editarInicialEsquejes}
+          onEditarInicialEsquejes={editarInicialEsquejes}
         />
       )}
       {tab === 'gastos' && <TabGastos miembro={miembro} gastos={gastos} presupuestos={presupuestos} onGuardarGasto={guardarGasto} onActualizarGasto={actualizarGasto} onEliminarGasto={eliminarGasto} />}
