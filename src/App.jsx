@@ -868,13 +868,11 @@ function FormRegistro({ cfg, onGuardar, miembro }) {
   )
 }
 
-// ─── Lista combinada de pedidos + esquejes, agrupada por mes en acordeón ───
-// A diferencia de PanelGastos, acá todos los meses arrancan cerrados (ni
-// siquiera el actual se auto-abre): son dos tablas distintas combinadas y
-// preferimos que el usuario elija qué mes abrir en vez de mostrar de entrada
-// una mezcla de Cosecha y Esquejes.
-function ListaPedidosPorMes({ pedidos, esquejes, onActualizarPedido, onEliminarPedido, onActualizarEsqueje, onEliminarEsqueje }) {
-  const [filtroTipo, setFiltroTipo] = useState('todos')
+// ─── Lista de registros (genérico: pedidos o esquejes), agrupada por mes
+// en acordeón. Mismo patrón que Gastos, pero acá todos los meses arrancan
+// cerrados (ni siquiera el actual se auto-abre): el usuario elige qué
+// mes abrir en vez de ver el mes en curso expandido de entrada.
+function ListaRegistrosPorMes({ cfg, registros, onActualizar, onEliminar }) {
   const [filtroEstado, setFiltroEstado] = useState('todos')
   const [mesesAbiertos, setMesesAbiertos] = useState(() => new Set())
   const [editando, setEditando] = useState(null)
@@ -887,13 +885,7 @@ function ListaPedidosPorMes({ pedidos, esquejes, onActualizarPedido, onEliminarP
     })
   }
 
-  const combinados = [
-    ...pedidos.map(p => ({ ...p, _tipo: 'cosecha' })),
-    ...esquejes.map(e => ({ ...e, _tipo: 'esquejes' })),
-  ].sort((a, b) => new Date(b.created_at) - new Date(a.created_at))
-
-  const porTipo = combinados.filter(r => filtroTipo === 'todos' || r._tipo === filtroTipo)
-  const filtrados = porTipo.filter(r => {
+  const filtrados = registros.filter(r => {
     if (filtroEstado === 'sin-entregar') return !r.entregado
     if (filtroEstado === 'sin-cobrar') return !r.pagado && !r.propio
     return true
@@ -901,22 +893,14 @@ function ListaPedidosPorMes({ pedidos, esquejes, onActualizarPedido, onEliminarP
 
   const totalVendido = filtrados.filter(r => !r.propio).reduce((s, r) => s + (r.total || 0), 0)
   const sinEntregar = filtrados.filter(r => !r.entregado).length
-  const cfgFiltro = filtroTipo === 'cosecha' ? CFG_COSECHA : filtroTipo === 'esquejes' ? CFG_ESQUEJES : null
-  const labelCantidad = cfgFiltro ? cfgFiltro.plural[0].toUpperCase() + cfgFiltro.plural.slice(1) : 'Registros'
-
   const meses = ordenarMesesDesc([...new Set(filtrados.map(r => r.mes).filter(Boolean))])
 
   return (
     <div>
       <div className="stats-row">
-        <div className="stat-card"><div className="stat-num">{filtrados.length}</div><div className="stat-lbl">{labelCantidad}</div></div>
+        <div className="stat-card"><div className="stat-num">{filtrados.length}</div><div className="stat-lbl">{cfg.plural[0].toUpperCase() + cfg.plural.slice(1)}</div></div>
         <div className="stat-card"><div className="stat-num" style={{ fontSize: 16 }}>{formatPesos(totalVendido)}</div><div className="stat-lbl">Vendido</div></div>
         <div className="stat-card"><div className="stat-num" style={{ color: sinEntregar > 0 ? '#854F0B' : undefined }}>{sinEntregar}</div><div className="stat-lbl">Sin entregar</div></div>
-      </div>
-      <div className="filtros-row">
-        {[['todos', 'Todos'], ['cosecha', 'Cosecha'], ['esquejes', 'Esquejes']].map(([key, label]) => (
-          <button key={key} className={`filtro-btn${filtroTipo === key ? ' active' : ''}`} onClick={() => setFiltroTipo(key)}>{label}</button>
-        ))}
       </div>
       <div className="filtros-row">
         {[['sin-entregar', 'Sin entregar'], ['sin-cobrar', 'Sin cobrar'], ['todos', 'Todos']].map(([key, label]) => (
@@ -925,7 +909,7 @@ function ListaPedidosPorMes({ pedidos, esquejes, onActualizarPedido, onEliminarP
       </div>
       <div className="pedidos-list">
         {filtrados.length === 0
-          ? <div className="empty-state">No hay pedidos para mostrar.</div>
+          ? <div className="empty-state">No hay {cfg.plural} para mostrar.</div>
           : meses.map(mes => {
             const delMes = filtrados.filter(r => r.mes === mes)
             const subtotalMes = delMes.filter(r => !r.propio).reduce((s, r) => s + (r.total || 0), 0)
@@ -935,7 +919,7 @@ function ListaPedidosPorMes({ pedidos, esquejes, onActualizarPedido, onEliminarP
                 <div className="pedido-card" onClick={() => toggleMes(mes)} style={{ cursor: 'pointer' }}>
                   <div>
                     <div className="pedido-nombre">{formatMesLabel(mes)}</div>
-                    <div className="pedido-sub">{delMes.length} registro{delMes.length !== 1 ? 's' : ''}</div>
+                    <div className="pedido-sub">{delMes.length} {delMes.length === 1 ? cfg.singular : cfg.plural}</div>
                   </div>
                   <div className="pedido-right">
                     <span className="pedido-total">{formatPesos(subtotalMes)}</span>
@@ -944,42 +928,36 @@ function ListaPedidosPorMes({ pedidos, esquejes, onActualizarPedido, onEliminarP
                 </div>
                 {abierto && (
                   <div className="pedidos-list" style={{ marginTop: 8, marginLeft: 12 }}>
-                    {delMes.map(r => {
-                      const cfgFila = r._tipo === 'cosecha' ? CFG_COSECHA : CFG_ESQUEJES
-                      return (
-                        <div className="pedido-card" key={`${r._tipo}-${r.id}`} onClick={() => setEditando(r)} style={{ cursor: 'pointer' }}>
-                          <div>
-                            <div className="pedido-nombre">
-                              {r.socio}
-                              <span style={{ marginLeft: 8, fontSize: 10, fontWeight: 700, textTransform: 'uppercase', color: cfgFila.color, background: cfgFila.colorLight, borderRadius: 4, padding: '2px 6px' }}>{cfgFila.singular}</span>
-                            </div>
-                            <div className="pedido-sub">{r.geneticas.map(g => `${g.nombre} ${g.cantidad}${cfgFila.unidad}`).join(' · ')} · {r.fecha} · {r.miembro}</div>
-                            <div className="pedido-badges">
-                              <span className={`badge ${r.entregado ? 'badge-entregado' : 'badge-no-entregado'}`}>{r.entregado ? 'Entregado' : 'No entregado'}</span>
-                              {r.propio
-                                ? <span className="badge badge-propio">Consumo propio</span>
-                                : <span className={`badge ${r.pagado ? 'badge-pagado' : 'badge-sin-cobrar'}`}>{r.pagado ? 'Pagado' : 'Sin cobrar'}</span>
-                              }
-                            </div>
-                          </div>
-                          <div className="pedido-right">
-                            <span className="pedido-total">{r.propio ? '—' : formatPesos(r.total)}</span>
-                            {r.pagado && (
-                              <span
-                                className="pedido-metodo"
-                                title={Array.isArray(r.divisiones) && r.divisiones.length > 0 ? r.divisiones.map(d => `${d.cuenta}: ${formatPesos(d.monto)}`).join(' · ') : undefined}
-                              >
-                                {Array.isArray(r.divisiones) && r.divisiones.length > 0
-                                  ? `${r.divisiones.length} cuentas (${r.divisiones.map(d => formatPesos(d.monto)).join(' + ')})`
-                                  : `${r.metodoPago || r.metodo_pago}${r.cuenta ? ` · ${r.cuenta}` : ''}`}
-                                {r.cuenta_estimada ? ' (estimada)' : ''}
-                              </span>
-                            )}
-                            <span className="pedido-editar-hint">Tocar para editar</span>
+                    {delMes.map(r => (
+                      <div className="pedido-card" key={r.id} onClick={() => setEditando(r)} style={{ cursor: 'pointer' }}>
+                        <div>
+                          <div className="pedido-nombre">{r.socio}</div>
+                          <div className="pedido-sub">{r.geneticas.map(g => `${g.nombre} ${g.cantidad}${cfg.unidad}`).join(' · ')} · {r.fecha} · {r.miembro}</div>
+                          <div className="pedido-badges">
+                            <span className={`badge ${r.entregado ? 'badge-entregado' : 'badge-no-entregado'}`}>{r.entregado ? 'Entregado' : 'No entregado'}</span>
+                            {r.propio
+                              ? <span className="badge badge-propio">Consumo propio</span>
+                              : <span className={`badge ${r.pagado ? 'badge-pagado' : 'badge-sin-cobrar'}`}>{r.pagado ? 'Pagado' : 'Sin cobrar'}</span>
+                            }
                           </div>
                         </div>
-                      )
-                    })}
+                        <div className="pedido-right">
+                          <span className="pedido-total">{r.propio ? '—' : formatPesos(r.total)}</span>
+                          {r.pagado && (
+                            <span
+                              className="pedido-metodo"
+                              title={Array.isArray(r.divisiones) && r.divisiones.length > 0 ? r.divisiones.map(d => `${d.cuenta}: ${formatPesos(d.monto)}`).join(' · ') : undefined}
+                            >
+                              {Array.isArray(r.divisiones) && r.divisiones.length > 0
+                                ? `${r.divisiones.length} cuentas (${r.divisiones.map(d => formatPesos(d.monto)).join(' + ')})`
+                                : `${r.metodoPago || r.metodo_pago}${r.cuenta ? ` · ${r.cuenta}` : ''}`}
+                              {r.cuenta_estimada ? ' (estimada)' : ''}
+                            </span>
+                          )}
+                          <span className="pedido-editar-hint">Tocar para editar</span>
+                        </div>
+                      </div>
+                    ))}
                   </div>
                 )}
               </div>
@@ -989,18 +967,10 @@ function ListaPedidosPorMes({ pedidos, esquejes, onActualizarPedido, onEliminarP
       </div>
       {editando && (
         <ModalEditarRegistro
-          cfg={editando._tipo === 'cosecha' ? CFG_COSECHA : CFG_ESQUEJES}
+          cfg={cfg}
           registro={editando}
-          onGuardar={actualizado => {
-            const handler = actualizado._tipo === 'cosecha' ? onActualizarPedido : onActualizarEsqueje
-            handler(actualizado, editando)
-            setEditando(null)
-          }}
-          onEliminar={row => {
-            const handler = row._tipo === 'cosecha' ? onEliminarPedido : onEliminarEsqueje
-            handler(row)
-            setEditando(null)
-          }}
+          onGuardar={actualizado => { onActualizar(actualizado, editando); setEditando(null) }}
+          onEliminar={r => { onEliminar(r, editando); setEditando(null) }}
           onCerrar={() => setEditando(null)}
         />
       )}
@@ -1107,51 +1077,24 @@ function PanelStock({ stock, inicial, cfg, ajustesFallidos, onEditar, onEditarIn
   )
 }
 
-// ─── Tab Pedidos: unifica Cosecha + Esquejes en 3 sub-tabs ────
-// Registro de pedido / Stock de genéticas / Pedidos registrados x mes.
-// `tipo` se comparte entre Registro y Stock (si acabás de cargar un pedido
-// de Cosecha, tiene sentido que Stock arranque mostrando Cosecha también).
-function TabPedidos({
-  pedidos, stock, stockInicial, onGuardarPedido, onActualizarPedido, onEliminarPedido,
-  esquejes, stockEsquejes, stockEsquejesInicial, onGuardarEsqueje, onActualizarEsqueje, onEliminarEsqueje,
-  miembro, ajustesFallidos,
-  onEditarStock, onEditarStockEsquejes, onEditarInicial, onEditarInicialEsquejes,
-}) {
+// ─── Tab genérico Cosecha/Esquejes: Registro / Stock de genéticas / Registrados ──
+// Cosecha y Esquejes quedan como tabs principales separados (no se mezclan sus
+// datos); cada uno usa este mismo shell parametrizado por cfg, con sus 3 pasos
+// en orden: Registro → Stock de genéticas → [Pedidos/Esquejes] registrados.
+function TabDominio({ cfg, registros, miembro, onGuardar, onActualizar, onEliminar, stock, stockInicial, ajustesFallidos, onEditarStock, onEditarInicial }) {
   const [sub, setSub] = useState('nuevo')
-  const [tipo, setTipo] = useState('cosecha')
-  const cfg = tipo === 'cosecha' ? CFG_COSECHA : CFG_ESQUEJES
-  const activeStyle = tipo === 'esquejes' ? { background: COLOR_ESQUEJES_LIGHT, borderColor: COLOR_ESQUEJES_BORDER, color: COLOR_ESQUEJES } : {}
+  const activeStyle = cfg.colorBorde ? { background: cfg.colorLight, borderColor: cfg.colorBorde, color: cfg.color } : {}
+  const plural = cfg.plural[0].toUpperCase() + cfg.plural.slice(1)
   return (
     <div className="content">
       <div className="miembro-row">
-        <button className={`miembro-btn${sub === 'nuevo' ? ' active' : ''}`} onClick={() => setSub('nuevo')}>Registro de pedido</button>
-        <button className={`miembro-btn${sub === 'stock' ? ' active' : ''}`} onClick={() => setSub('stock')}>Stock de genéticas</button>
-        <button className={`miembro-btn${sub === 'lista' ? ' active' : ''}`} onClick={() => setSub('lista')}>Pedidos registrados</button>
+        <button className={`miembro-btn${sub === 'nuevo' ? ' active' : ''}`} style={sub === 'nuevo' ? activeStyle : {}} onClick={() => setSub('nuevo')}>Registro de {cfg.singular}</button>
+        <button className={`miembro-btn${sub === 'stock' ? ' active' : ''}`} style={sub === 'stock' ? activeStyle : {}} onClick={() => setSub('stock')}>Stock de genéticas</button>
+        <button className={`miembro-btn${sub === 'lista' ? ' active' : ''}`} style={sub === 'lista' ? activeStyle : {}} onClick={() => setSub('lista')}>{plural} registrados</button>
       </div>
-      {sub !== 'lista' && (
-        <div className="miembro-row">
-          <button className={`miembro-btn${tipo === 'cosecha' ? ' active' : ''}`} onClick={() => setTipo('cosecha')}>Cosecha</button>
-          <button className={`miembro-btn${tipo === 'esquejes' ? ' active' : ''}`} style={tipo === 'esquejes' ? activeStyle : {}} onClick={() => setTipo('esquejes')}>Esquejes</button>
-        </div>
-      )}
-      {sub === 'nuevo' && <FormRegistro cfg={cfg} onGuardar={tipo === 'cosecha' ? onGuardarPedido : onGuardarEsqueje} miembro={miembro} />}
-      {sub === 'stock' && (
-        <PanelStock
-          stock={tipo === 'cosecha' ? stock : stockEsquejes}
-          inicial={tipo === 'cosecha' ? stockInicial : stockEsquejesInicial}
-          cfg={cfg}
-          ajustesFallidos={ajustesFallidos}
-          onEditar={tipo === 'cosecha' ? onEditarStock : onEditarStockEsquejes}
-          onEditarInicial={tipo === 'cosecha' ? onEditarInicial : onEditarInicialEsquejes}
-        />
-      )}
-      {sub === 'lista' && (
-        <ListaPedidosPorMes
-          pedidos={pedidos} esquejes={esquejes}
-          onActualizarPedido={onActualizarPedido} onEliminarPedido={onEliminarPedido}
-          onActualizarEsqueje={onActualizarEsqueje} onEliminarEsqueje={onEliminarEsqueje}
-        />
-      )}
+      {sub === 'nuevo' && <FormRegistro cfg={cfg} onGuardar={onGuardar} miembro={miembro} />}
+      {sub === 'stock' && <PanelStock stock={stock} inicial={stockInicial} cfg={cfg} ajustesFallidos={ajustesFallidos} onEditar={onEditarStock} onEditarInicial={onEditarInicial} />}
+      {sub === 'lista' && <ListaRegistrosPorMes cfg={cfg} registros={registros} onActualizar={onActualizar} onEliminar={onEliminar} />}
     </div>
   )
 }
@@ -1768,7 +1711,7 @@ function TabFinanzas({ pedidos, esquejes, miembro, gastos, presupuestos, setPres
           <div style={{ display: 'flex', gap: 8, alignItems: 'flex-start' }}>
             <TriangleAlert size={15} color="#854F0B" style={{ marginTop: 1, flexShrink: 0 }} />
             <div style={{ fontSize: 12, color: '#854F0B', lineHeight: 1.5 }}>
-              Hay <strong>{totalEstimados}</strong> registro(s) de junio-julio con cuenta estimada (asignada por quién cargó el pedido/gasto, no confirmada contra comprobante). Se pueden corregir abriendo cada uno desde Pedidos → Pedidos registrados o Gastos → Lista.
+              Hay <strong>{totalEstimados}</strong> registro(s) de junio-julio con cuenta estimada (asignada por quién cargó el pedido/gasto, no confirmada contra comprobante). Se pueden corregir abriendo cada uno desde Cosecha o Esquejes → registrados, o Gastos → Lista.
             </div>
           </div>
         </div>
@@ -1778,7 +1721,7 @@ function TabFinanzas({ pedidos, esquejes, miembro, gastos, presupuestos, setPres
           <div style={{ display: 'flex', gap: 8, alignItems: 'flex-start' }}>
             <TriangleAlert size={15} color="#791F1F" style={{ marginTop: 1, flexShrink: 0 }} />
             <div style={{ fontSize: 12, color: '#791F1F', lineHeight: 1.5 }}>
-              <strong>Atención:</strong> hay <strong>{cantidadSinCuenta}</strong> registro(s) pagado(s)/con gasto SIN cuenta asignada o con una división de cuentas inválida, por eso <strong>no están sumados en ningún total de arriba</strong> (ingresos sin contar: {formatPesos(ingresosSinCuenta)} · gastos sin contar: {formatPesos(egresosSinCuenta)}). Corregilos desde Pedidos → Pedidos registrados o Gastos → Lista, abriendo cada registro y eligiendo su cuenta.
+              <strong>Atención:</strong> hay <strong>{cantidadSinCuenta}</strong> registro(s) pagado(s)/con gasto SIN cuenta asignada o con una división de cuentas inválida, por eso <strong>no están sumados en ningún total de arriba</strong> (ingresos sin contar: {formatPesos(ingresosSinCuenta)} · gastos sin contar: {formatPesos(egresosSinCuenta)}). Corregilos desde Cosecha o Esquejes → registrados, o Gastos → Lista, abriendo cada registro y eligiendo su cuenta.
             </div>
           </div>
         </div>
@@ -1827,7 +1770,7 @@ function TabFinanzas({ pedidos, esquejes, miembro, gastos, presupuestos, setPres
                   <input className="form-control" type="date" value={inputCorte} onChange={e => setInputCorte(e.target.value)} style={{ flex: 1 }} />
                 </div>
                 <div style={{ fontSize: 11, color: 'var(--text-secondary)', marginTop: 6 }}>
-                  Desde esta fecha se cuentan los movimientos nuevos — todo lo anterior queda afuera del saldo (sigue disponible en Pedidos/Gastos).
+                  Desde esta fecha se cuentan los movimientos nuevos — todo lo anterior queda afuera del saldo (sigue disponible en Cosecha/Esquejes/Gastos).
                 </div>
                 <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
                   <button className="btn-submit" style={{ width: 'auto', padding: '0 14px' }} onClick={() => guardarSaldoInicial(r.nombre)}>Guardar</button>
@@ -2656,7 +2599,7 @@ const gastoToDB = g => ({
 
 // ─── App raíz ─────────────────────────────────────────────────
 export default function App() {
-  const [tab, setTab] = useState('pedidos')
+  const [tab, setTab] = useState('cosecha')
   const [pedidos, setPedidos] = useState([])
   const [stock, setStock] = useState(STOCK_INICIAL)
   const [stockInicial, setStockInicial] = useState(STOCK_INICIAL)
@@ -2910,33 +2853,42 @@ export default function App() {
           </div>
         </div>
         <div className="tab-bar">
-          <button className={`tab${tab === 'pedidos' ? ' active' : ''}`} onClick={() => setTab('pedidos')}>Pedidos</button>
+          <button className={`tab${tab === 'cosecha' ? ' active' : ''}`} onClick={() => setTab('cosecha')}>Cosecha</button>
+          <button className={`tab${tab === 'esquejes' ? ' active' : ''}`} onClick={() => setTab('esquejes')}>Esquejes</button>
           <button className={`tab${tab === 'gastos' ? ' active' : ''}`} onClick={() => setTab('gastos')}>Gastos</button>
           <button className={`tab${tab === 'finanzas' ? ' active' : ''}`} onClick={() => setTab('finanzas')}>Finanzas</button>
           <button className={`tab${tab === 'riegos' ? ' active' : ''}`} onClick={() => setTab('riegos')}>Riegos</button>
           <button className={`tab${tab === 'calendario' ? ' active' : ''}`} onClick={() => setTab('calendario')}>Cultivo</button>
         </div>
       </div>
-      {tab === 'pedidos' && (
-        <TabPedidos
-          pedidos={pedidos}
+      {tab === 'cosecha' && (
+        <TabDominio
+          cfg={CFG_COSECHA}
+          registros={pedidos}
+          miembro={miembro}
+          onGuardar={guardarPedido}
+          onActualizar={actualizarPedido}
+          onEliminar={eliminarPedido}
           stock={stock}
           stockInicial={stockInicial}
-          onGuardarPedido={guardarPedido}
-          onActualizarPedido={actualizarPedido}
-          onEliminarPedido={eliminarPedido}
-          esquejes={esquejes}
-          stockEsquejes={stockEsquejes}
-          stockEsquejesInicial={stockEsquejesInicial}
-          onGuardarEsqueje={guardarEsqueje}
-          onActualizarEsqueje={actualizarEsqueje}
-          onEliminarEsqueje={eliminarEsqueje}
-          miembro={miembro}
           ajustesFallidos={stockAjustesFallidos}
           onEditarStock={editarStock}
-          onEditarStockEsquejes={editarStockEsquejes}
           onEditarInicial={editarInicial}
-          onEditarInicialEsquejes={editarInicialEsquejes}
+        />
+      )}
+      {tab === 'esquejes' && (
+        <TabDominio
+          cfg={CFG_ESQUEJES}
+          registros={esquejes}
+          miembro={miembro}
+          onGuardar={guardarEsqueje}
+          onActualizar={actualizarEsqueje}
+          onEliminar={eliminarEsqueje}
+          stock={stockEsquejes}
+          stockInicial={stockEsquejesInicial}
+          ajustesFallidos={stockAjustesFallidos}
+          onEditarStock={editarStockEsquejes}
+          onEditarInicial={editarInicialEsquejes}
         />
       )}
       {tab === 'gastos' && <TabGastos miembro={miembro} gastos={gastos} presupuestos={presupuestos} onGuardarGasto={guardarGasto} onActualizarGasto={actualizarGasto} onEliminarGasto={eliminarGasto} />}
