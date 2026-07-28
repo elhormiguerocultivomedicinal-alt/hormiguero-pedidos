@@ -115,17 +115,16 @@ const filaEsquejeVacia = () => ({ id: Date.now() + Math.random(), nombre: '', ca
 // (FormRegistro, ModalEditarRegistro, PanelStock) son únicos.
 const CFG_COSECHA = {
   unidad: 'g', stockInicial: STOCK_INICIAL, stockLow: 50, rpcStock: 'ajustar_stock', geneticas: GENETICAS,
-  color: 'var(--green-dark)', colorLight: 'var(--green-light)', colorBorde: null, btnBg: null,
+  color: 'var(--green-dark)', colorBorde: null, btnBg: null,
   nuevaFila: filaVacia, precioDefaultFila: PRECIO_DEFAULT,
   singular: 'pedido', plural: 'pedidos', labelEntregado: 'Pedido entregado', txtEliminar: 'Eliminar pedido',
 }
 const CFG_ESQUEJES = {
   unidad: 'u', stockInicial: STOCK_ESQUEJES_INICIAL, stockLow: 20, rpcStock: 'ajustar_stock_esquejes', geneticas: GENETICAS_ESQUEJES,
-  color: COLOR_ESQUEJES, colorLight: COLOR_ESQUEJES_LIGHT, colorBorde: COLOR_ESQUEJES_BORDER, btnBg: COLOR_ESQUEJES,
+  color: COLOR_ESQUEJES, colorBorde: COLOR_ESQUEJES_BORDER, btnBg: COLOR_ESQUEJES,
   nuevaFila: filaEsquejeVacia, precioDefaultFila: '',
   singular: 'esqueje', plural: 'esquejes', labelEntregado: 'Entregado', txtEliminar: 'Eliminar',
 }
-const NOMBRES_MESES_CORTO = ['', 'Ene', 'Feb', 'Mar', 'Abr', 'May', 'Jun', 'Jul', 'Ago', 'Sep', 'Oct', 'Nov', 'Dic']
 
 // ─── DatePicker ───────────────────────────────────────────────
 const DIAS_SEMANA = ['Lu', 'Ma', 'Mi', 'Ju', 'Vi', 'Sa', 'Do']
@@ -1013,7 +1012,7 @@ function CampoStockEditable({ valor, color, onGuardar }) {
 
 function PanelStock({ stock, inicial, cfg, ajustesFallidos, onEditar, onEditarInicial }) {
   const [toast, showToast] = useToast()
-  const totalActual = Object.values(stock).reduce((s, v) => s + v, 0)
+  const totalActual = cfg.geneticas.reduce((s, g) => s + (stock[g] ?? 0), 0)
   const totalInicial = cfg.geneticas.reduce((s, g) => s + (inicial[g] ?? cfg.stockInicial[g] ?? 0), 0)
   const fallidos = (ajustesFallidos || []).filter(a => a.rpc_name === cfg.rpcStock && !a.resuelto)
 
