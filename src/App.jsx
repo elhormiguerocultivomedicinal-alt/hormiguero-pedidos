@@ -1,5 +1,5 @@
 import { useState, useCallback, useEffect, useRef, useMemo } from 'react'
-import { Landmark, Wallet, ChevronDown, ChevronUp, Target, TriangleAlert, Info } from 'lucide-react'
+import { Landmark, Wallet, ChevronDown, ChevronUp, Target, TriangleAlert, Info, Check } from 'lucide-react'
 import './App.css'
 import { supabase } from './supabase'
 
@@ -365,6 +365,9 @@ function PagosRegistro({ registro, pagos, total, miembro, onAgregarPago, onEdita
   const montoPagoTotal = Math.max(0, (total || 0) - cobradoSinEditado)
   const excedente = form ? (cobradoSinEditado + (parseFloat(form.monto) || 0)) - (total || 0) : 0
   const haySobrepago = excedente > 0.5
+  // El check "Pago total" no es un flag aparte: refleja si el monto cargado ahora mismo
+  // coincide con lo que falta cobrar. Tildarlo lo completa; destildarlo lo vacía de nuevo.
+  const esPagoTotal = montoPagoTotal > 0 && form && form.monto === String(montoPagoTotal)
 
   function abrirAgregar() {
     setForm({ monto: '', metodoPago: 'Transferencia', cuenta: '', fecha: new Date().toISOString().slice(0, 10) })
@@ -379,6 +382,9 @@ function PagosRegistro({ registro, pagos, total, miembro, onAgregarPago, onEdita
   function cerrar() { setFormPara(null); setForm(null); setError('') }
   function setMetodoPago(val) {
     setForm(f => ({ ...f, metodoPago: val, cuenta: val === 'Efectivo' ? CUENTA_EFECTIVO : (f.cuenta === CUENTA_EFECTIVO ? '' : f.cuenta) }))
+  }
+  function marcarPagoTotal(marcar) {
+    setForm(f => ({ ...f, monto: marcar ? String(montoPagoTotal) : '' }))
   }
 
   async function confirmar() {
@@ -399,12 +405,24 @@ function PagosRegistro({ registro, pagos, total, miembro, onAgregarPago, onEdita
     <div>
       <div className="form-grid">
         <div className="form-group">
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-            <label className="form-label">Monto ($)</label>
-            {montoPagoTotal > 0 && (
-              <button type="button" onClick={() => setForm(f => ({ ...f, monto: String(montoPagoTotal) }))} style={{ ...btnLinkStyle('var(--green-dark)'), fontSize: 10, textTransform: 'uppercase', letterSpacing: '0.04em' }}>Pago total</button>
-            )}
-          </div>
+          <label className="form-label">Monto ($)</label>
+          {montoPagoTotal > 0 && (
+            <button
+              type="button"
+              onClick={() => marcarPagoTotal(!esPagoTotal)}
+              style={{ display: 'flex', alignItems: 'center', gap: 7, background: 'none', border: 'none', padding: '2px 0 6px', cursor: 'pointer', textAlign: 'left' }}
+            >
+              <span style={{
+                width: 17, height: 17, borderRadius: 4, flexShrink: 0,
+                border: `1.5px solid ${esPagoTotal ? 'var(--green-dark)' : 'var(--border-mid)'}`,
+                background: esPagoTotal ? 'var(--green-dark)' : 'transparent',
+                display: 'flex', alignItems: 'center', justifyContent: 'center', transition: 'background 0.15s, border-color 0.15s',
+              }}>
+                {esPagoTotal && <Check size={12} color="white" strokeWidth={3} />}
+              </span>
+              <span style={{ fontSize: 12, color: 'var(--text-primary)' }}>Pago total <span style={{ color: 'var(--text-secondary)' }}>({formatPesos(montoPagoTotal)})</span></span>
+            </button>
+          )}
           <InputMonto value={form.monto} onChange={v => setForm(f => ({ ...f, monto: v }))} />
         </div>
         <div className="form-group">
