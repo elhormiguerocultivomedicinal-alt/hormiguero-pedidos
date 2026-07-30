@@ -202,6 +202,8 @@ select.form-control { cursor: pointer; }
 .badge-no-entregado { background: #FAEEDA; color: #633806; }
 .badge-pagado { background: #EAF3DE; color: #27500A; }
 .badge-sin-cobrar { background: #FCEBEB; color: #791F1F; }
+.badge-parcial { background: #FAEEDA; color: #854F0B; }
+.badge-sobrepago { background: #FCEBEB; color: #791F1F; font-weight: 600; }
 .badge-propio { background: var(--bg-secondary); color: var(--text-secondary); }
 
 .pedido-right { display: flex; flex-direction: column; align-items: flex-end; gap: 4px; }
