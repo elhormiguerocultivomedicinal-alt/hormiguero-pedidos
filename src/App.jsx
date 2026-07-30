@@ -356,18 +356,18 @@ function PagosRegistro({ registro, pagos, total, miembro, onAgregarPago, onEdita
 
   const propios = pagosDe(pagos, registro.id, fkCampo)
   const cobrado = propios.reduce((s, pg) => s + (parseFloat(pg.monto) || 0), 0)
-  const pendiente = Math.max(0, (total || 0) - cobrado)
 
-  // Si se está editando un pago existente, ese monto no cuenta dos veces al
-  // proyectar si el cambio dejaría un sobrepago.
+  // Si se está editando un pago existente, ese monto no cuenta dos veces: ni para saber
+  // cuánto falta (el botón "Pago total"), ni para detectar sobrepago.
   const cobradoSinEditado = (formPara && formPara !== 'agregar')
     ? cobrado - (propios.find(pg => pg.id === formPara)?.monto || 0)
     : cobrado
+  const montoPagoTotal = Math.max(0, (total || 0) - cobradoSinEditado)
   const excedente = form ? (cobradoSinEditado + (parseFloat(form.monto) || 0)) - (total || 0) : 0
   const haySobrepago = excedente > 0.5
 
   function abrirAgregar() {
-    setForm({ monto: pendiente > 0 ? String(pendiente) : '', metodoPago: 'Transferencia', cuenta: '', fecha: new Date().toISOString().slice(0, 10) })
+    setForm({ monto: '', metodoPago: 'Transferencia', cuenta: '', fecha: new Date().toISOString().slice(0, 10) })
     setError('')
     setFormPara('agregar')
   }
@@ -399,7 +399,12 @@ function PagosRegistro({ registro, pagos, total, miembro, onAgregarPago, onEdita
     <div>
       <div className="form-grid">
         <div className="form-group">
-          <label className="form-label">Monto ($)</label>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <label className="form-label">Monto ($)</label>
+            {montoPagoTotal > 0 && (
+              <button type="button" onClick={() => setForm(f => ({ ...f, monto: String(montoPagoTotal) }))} style={{ ...btnLinkStyle('var(--green-dark)'), fontSize: 10, textTransform: 'uppercase', letterSpacing: '0.04em' }}>Pago total</button>
+            )}
+          </div>
           <InputMonto value={form.monto} onChange={v => setForm(f => ({ ...f, monto: v }))} />
         </div>
         <div className="form-group">
@@ -1255,7 +1260,7 @@ function PanelGastos({ locacion, gastos, miembro, presupuestos, onNuevoGasto, on
   const [toast, showToast] = useToast()
   const [filtrocat, setFiltrocat] = useState('todas')
   const [editando, setEditando] = useState(null)
-  const [mesesAbiertos, setMesesAbiertos] = useState(() => new Set([mesActual()]))
+  const [mesesAbiertos, setMesesAbiertos] = useState(() => new Set())
   const set = (k, v) => setForm(f => ({ ...f, [k]: v }))
   function toggleMes(mes) {
     setMesesAbiertos(prev => {
