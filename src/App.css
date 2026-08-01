@@ -163,6 +163,7 @@ select.form-control { cursor: pointer; }
 
 /* Stats */
 .stats-row { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+.stats-row-2x2 { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px; }
 .stat-card {
   background: var(--bg-card); border: 0.5px solid var(--border);
   border-radius: var(--radius-md); padding: 12px; text-align: center;

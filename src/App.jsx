@@ -1847,7 +1847,6 @@ function TarjetaCuentaDolar({ r, onValidarSaldo, onAgregarMovimiento, onEliminar
 }
 
 function TabFinanzas({ pedidos, esquejes, miembro, gastos, presupuestos, setPresupuestos, aportes, setAportes, gastosFijos, setGastosFijos, pedidoPagos, esquejePagos, onRevisar }) {
-  const revisarRef = useRef(null)
   const [subTab, setSubTab] = useState('general')
   const [cuentas, setCuentas] = useState([])
   const [dolaresMovimientos, setDolaresMovimientos] = useState([])
@@ -1968,6 +1967,42 @@ function TabFinanzas({ pedidos, esquejes, miembro, gastos, presupuestos, setPres
 
   const totalEstimados = registrosARevisar.length
 
+  // Presupuestos activos (no cerrados) de ambas locaciones, para los KPIs generales.
+  // "Asignado" es un compromiso de gasto planeado — aportar capital a un presupuesto no
+  // mueve plata de ninguna cuenta (aportarCapital solo inserta en presupuesto_aportes),
+  // así que no se puede restar el asignado completo del total de cuentas sin contar dos
+  // veces lo que ya se gastó (eso sí bajó las cuentas, vía los gastos vinculados).
+  const presupuestosActivosGeneral = useMemo(() => presupuestos.filter(p => !p.cerrado), [presupuestos])
+  const totalPresupuestosAsignados = useMemo(
+    () => presupuestosActivosGeneral.reduce((s, p) => s + totalAsignado(p, aportes), 0),
+    [presupuestosActivosGeneral, aportes]
+  )
+  const totalPresupuestosRestante = useMemo(
+    () => presupuestosActivosGeneral.reduce((s, p) => s + (totalAsignado(p, aportes) - gastoDePresupuesto(p, gastos)), 0),
+    [presupuestosActivosGeneral, aportes, gastos]
+  )
+  const balanceTrasPresupuestos = totalGeneral - totalPresupuestosRestante
+
+  // Presupuestos activos con fecha límite dentro de los próximos 7 días y todavía con
+  // saldo por gastar — alerta informativa de vencimiento próximo.
+  const presupuestosPorVencer = useMemo(() => {
+    const hoy = new Date(); hoy.setHours(0, 0, 0, 0)
+    return presupuestosActivosGeneral
+      .map(p => {
+        const restante = totalAsignado(p, aportes) - gastoDePresupuesto(p, gastos)
+        if (!p.fecha_limite || restante <= 0) return null
+        const [y, m, d] = p.fecha_limite.split('-').map(Number)
+        const limite = new Date(y, m - 1, d)
+        const dias = Math.round((limite - hoy) / 86400000)
+        if (dias < 0 || dias > 7) return null
+        return { p, restante, dias }
+      })
+      .filter(Boolean)
+      .sort((a, b) => a.dias - b.dias)
+  }, [presupuestosActivosGeneral, aportes, gastos])
+  const totalRestantePorVencer = presupuestosPorVencer.reduce((s, x) => s + x.restante, 0)
+  const faltaCobertura = totalRestantePorVencer - totalGeneral
+
   // Cuentas en dólares: reserva/ahorro, sin pedidos ni gastos que las muevan —
   // el saldo sale de saldo inicial validado + historial propio de movimientos.
   const resumenDolares = useMemo(() => CUENTAS_DOLARES.map(nombre => {
@@ -2078,20 +2113,21 @@ function TabFinanzas({ pedidos, esquejes, miembro, gastos, presupuestos, setPres
       )}
       {subTab === 'general' && (
       <>
-      <div className="stats-row">
+      <div className="stats-row-2x2">
         <div className="stat-card">
           <Wallet size={16} color={totalGeneral < 0 ? '#791F1F' : '#1D9E75'} style={{ marginBottom: 4 }} />
           <div className="stat-num" style={{ fontSize: 16, color: totalGeneral < 0 ? '#791F1F' : 'var(--green-dark)' }}>{formatPesos(totalGeneral)}</div>
           <div className="stat-lbl">Total todas las cuentas</div>
         </div>
-        <div
-          className="stat-card"
-          style={{ cursor: totalEstimados > 0 ? 'pointer' : 'default' }}
-          onClick={() => totalEstimados > 0 && revisarRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' })}
-        >
-          <TriangleAlert size={16} color={totalEstimados > 0 ? '#854F0B' : '#6b6b66'} style={{ marginBottom: 4 }} />
-          <div className="stat-num" style={{ color: totalEstimados > 0 ? '#854F0B' : undefined }}>{totalEstimados}</div>
-          <div className="stat-lbl">Registros a revisar</div>
+        <div className="stat-card">
+          <Target size={16} color="#7B4F9E" style={{ marginBottom: 4 }} />
+          <div className="stat-num" style={{ fontSize: 16, color: '#7B4F9E' }}>{formatPesos(totalPresupuestosAsignados)}</div>
+          <div className="stat-lbl">Presupuestos asignados</div>
+        </div>
+        <div className="stat-card">
+          <Wallet size={16} color={balanceTrasPresupuestos < 0 ? '#791F1F' : '#1D9E75'} style={{ marginBottom: 4 }} />
+          <div className="stat-num" style={{ fontSize: 16, color: balanceTrasPresupuestos < 0 ? '#791F1F' : 'var(--green-dark)' }}>{formatPesos(balanceTrasPresupuestos)}</div>
+          <div className="stat-lbl">Balance tras presupuestos</div>
         </div>
         <div className="stat-card">
           <Landmark size={16} color={totalDolares < 0 ? '#791F1F' : '#33538F'} style={{ marginBottom: 4 }} />
@@ -2099,26 +2135,59 @@ function TabFinanzas({ pedidos, esquejes, miembro, gastos, presupuestos, setPres
           <div className="stat-lbl">Ahorro en dólares</div>
         </div>
       </div>
-      {totalEstimados > 0 && (
-        <div ref={revisarRef} className="card" style={{ marginBottom: 14, background: '#FFF8ED', borderColor: '#E8C77E' }}>
+      {presupuestosPorVencer.length > 0 && (
+        <div className="card" style={{ marginTop: 14, background: '#FFF8ED', borderColor: '#E8C77E' }}>
           <div style={{ display: 'flex', gap: 8, alignItems: 'flex-start' }}>
-            <TriangleAlert size={15} color="#854F0B" style={{ marginTop: 1, flexShrink: 0 }} />
+            <Target size={15} color="#854F0B" style={{ marginTop: 1, flexShrink: 0 }} />
             <div style={{ fontSize: 12, color: '#854F0B', lineHeight: 1.5 }}>
-              Hay <strong>{totalEstimados}</strong> registro(s) con cuenta estimada.
+              <strong>Presupuestos por vencer</strong>
             </div>
           </div>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginTop: 10 }}>
-            {registrosARevisar.map(item => (
-              <div key={item.key} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, paddingTop: 8, borderTop: '0.5px solid #E8C77E' }}>
-                <span style={{ fontSize: 12, color: '#854F0B' }}>{item.label}</span>
-                <button onClick={() => onRevisar(item.objetivo)} style={{ ...btnLinkStyle('#854F0B'), flexShrink: 0 }}>Revisar</button>
+            {presupuestosPorVencer.map(({ p, restante, dias }) => (
+              <div key={p.id} style={{ fontSize: 12, color: '#854F0B', paddingTop: 8, borderTop: '0.5px solid #E8C77E' }}>
+                {dias === 0 ? 'Hoy vence' : dias === 1 ? 'Mañana vence' : `En ${dias} días vence`} <strong>{p.nombre}</strong> ({p.locacion}) · quedan {formatPesos(restante)} por gastar
               </div>
             ))}
           </div>
         </div>
       )}
+      {faltaCobertura > 0 && (
+        <div className="card" style={{ marginTop: 14, background: '#FCEBEB', borderColor: '#791F1F' }}>
+          <div style={{ display: 'flex', gap: 8, alignItems: 'flex-start' }}>
+            <TriangleAlert size={15} color="#791F1F" style={{ marginTop: 1, flexShrink: 0 }} />
+            <div style={{ fontSize: 12, color: '#791F1F', lineHeight: 1.5 }}>
+              <strong>Atención:</strong> las cuentas no alcanzan para cubrir los presupuestos que vencen pronto. Tenés {formatPesos(totalGeneral)} y hacen falta {formatPesos(totalRestantePorVencer)} (faltan {formatPesos(faltaCobertura)}).
+            </div>
+          </div>
+        </div>
+      )}
+      <div className="card" style={{ marginTop: 14, background: totalEstimados > 0 ? '#FFF8ED' : 'var(--bg-card)', borderColor: totalEstimados > 0 ? '#E8C77E' : 'var(--border)' }}>
+        {totalEstimados > 0 ? (
+          <>
+            <div style={{ display: 'flex', gap: 8, alignItems: 'flex-start' }}>
+              <TriangleAlert size={15} color="#854F0B" style={{ marginTop: 1, flexShrink: 0 }} />
+              <div style={{ fontSize: 12, color: '#854F0B', lineHeight: 1.5 }}>
+                <strong>Registros a revisar</strong> · {totalEstimados} con cuenta estimada.
+              </div>
+            </div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginTop: 10 }}>
+              {registrosARevisar.map(item => (
+                <div key={item.key} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, paddingTop: 8, borderTop: '0.5px solid #E8C77E' }}>
+                  <span style={{ fontSize: 12, color: '#854F0B' }}>{item.label}</span>
+                  <button onClick={() => onRevisar(item.objetivo)} style={{ ...btnLinkStyle('#854F0B'), flexShrink: 0 }}>Revisar</button>
+                </div>
+              ))}
+            </div>
+          </>
+        ) : (
+          <div style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
+            <strong style={{ color: 'var(--text-primary)' }}>Registros a revisar</strong> · Sin registros a validar.
+          </div>
+        )}
+      </div>
       {cantidadSinCuenta > 0 && (
-        <div className="card" style={{ marginBottom: 14, background: '#FCEBEB', borderColor: '#791F1F' }}>
+        <div className="card" style={{ marginTop: 14, background: '#FCEBEB', borderColor: '#791F1F' }}>
           <div style={{ display: 'flex', gap: 8, alignItems: 'flex-start' }}>
             <TriangleAlert size={15} color="#791F1F" style={{ marginTop: 1, flexShrink: 0 }} />
             <div style={{ fontSize: 12, color: '#791F1F', lineHeight: 1.5 }}>
@@ -2127,7 +2196,7 @@ function TabFinanzas({ pedidos, esquejes, miembro, gastos, presupuestos, setPres
           </div>
         </div>
       )}
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 14 }}>
       <button className="btn-disclosure" onClick={() => setVerDetalleCuentas(v => !v)}>
         <span>{verDetalleCuentas ? 'Ocultar cuentas en pesos' : `Ver detalle cuentas en pesos (${resumen.length})`}</span>
         {verDetalleCuentas ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
