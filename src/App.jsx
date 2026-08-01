@@ -2694,6 +2694,65 @@ function BadgesParametros({ etapa, semana, valores }) {
   )
 }
 
+function ModalEditarRiego({ riego, onGuardar, onEliminar, onCerrar }) {
+  useEscape(onCerrar)
+  const [form, setForm] = useState({
+    semana: riego.semana, fecha: riego.fecha || '',
+    ec: riego.ec || '', ph: riego.ph || '', ppfd: riego.ppfd || '',
+    pulsos: riego.pulsos || '', tiempoPulso: riego.tiempoPulso || '',
+    ml: riego.ml || '', vpd: riego.vpd || '', hr: riego.hr || '',
+    temp: riego.temp || '', fertilizantes: riego.fertilizantes || '',
+  })
+  const [confirmando, setConfirmando] = useState(false)
+  const set = (k, v) => setForm(f => ({ ...f, [k]: v }))
+
+  function guardar() {
+    if (!form.fecha) return
+    onGuardar({ ...riego, ...form })
+  }
+
+  return (
+    <div className="modal-overlay" onClick={onCerrar}>
+      <div className="modal-card" onClick={e => e.stopPropagation()} style={{ maxHeight: '90vh', overflowY: 'auto' }}>
+        <div className="modal-header">
+          <div className="modal-titulo">Editar riego</div>
+          <button className="modal-cerrar" onClick={onCerrar}>✕</button>
+        </div>
+        <div className="form-grid">
+          <div className="form-group">
+            <label className="form-label">Semana</label>
+            <input className="form-control" type="number" min="1" value={form.semana} onChange={e => set('semana', parseInt(e.target.value) || 1)} />
+          </div>
+          <div className="form-group">
+            <label className="form-label">Fecha</label>
+            <DatePicker value={form.fecha} onChange={v => set('fecha', v)} />
+          </div>
+          {paramsRiego.map(p => (
+            <div key={p.key} className="form-group">
+              <label className="form-label">{p.label}</label>
+              <input className="form-control" type="text" placeholder={p.placeholder} value={form[p.key]} onChange={e => set(p.key, e.target.value)} />
+            </div>
+          ))}
+        </div>
+        <button className="btn-submit" style={{ marginTop: 16 }} onClick={guardar}>Guardar cambios</button>
+        {!confirmando ? (
+          <button onClick={() => setConfirmando(true)} style={{ width: '100%', marginTop: 8, padding: '10px', border: '0.5px solid #791F1F', borderRadius: 'var(--radius-md)', background: 'transparent', color: '#791F1F', fontSize: 14, fontWeight: 500, cursor: 'pointer' }}>
+            Eliminar riego
+          </button>
+        ) : (
+          <div style={{ marginTop: 8, background: '#FCEBEB', border: '0.5px solid #791F1F', borderRadius: 'var(--radius-md)', padding: 12 }}>
+            <div style={{ fontSize: 13, color: '#791F1F', fontWeight: 500, marginBottom: 10, textAlign: 'center' }}>¿Confirmás la eliminación?</div>
+            <div style={{ display: 'flex', gap: 8 }}>
+              <button onClick={() => onEliminar(riego.id)} style={{ flex: 1, padding: '9px', background: '#791F1F', color: 'white', border: 'none', borderRadius: 'var(--radius-md)', fontSize: 13, fontWeight: 600, cursor: 'pointer' }}>Sí, eliminar</button>
+              <button onClick={() => setConfirmando(false)} style={{ flex: 1, padding: '9px', background: 'transparent', border: '0.5px solid var(--border-mid)', borderRadius: 'var(--radius-md)', fontSize: 13, cursor: 'pointer' }}>Cancelar</button>
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
 function TabRiegos({ onRiegosChange }) {
   const [etapa, setEtapa] = useState('vegetativo')
   const [riegosVege, setRiegosVege] = useState([])
@@ -2703,6 +2762,7 @@ function TabRiegos({ onRiegosChange }) {
   const [form, setForm] = useState({ ...riegoVacio(), fecha: hoyCompleto(), semana: 1 })
   const [toast, showToast] = useToast()
   const [riegosAbiertos, setRiegosAbiertos] = useState(new Set())
+  const [editando, setEditando] = useState(null)
 
   function toggleRiego(id) {
     setRiegosAbiertos(prev => {
@@ -2763,6 +2823,41 @@ function TabRiegos({ onRiegosChange }) {
     } else showToast('Error al guardar')
   }
 
+  async function actualizarRiego(actualizado) {
+    const { data, error } = await supabase.from('riegos').update({
+      semana: actualizado.semana, fecha: actualizado.fecha,
+      ec: actualizado.ec, ph: actualizado.ph, ppfd: actualizado.ppfd,
+      pulsos: actualizado.pulsos, tiempo_pulso: actualizado.tiempoPulso,
+      ml: actualizado.ml, vpd: actualizado.vpd, hr: actualizado.hr,
+      temp: actualizado.temp, fertilizantes: actualizado.fertilizantes,
+    }).eq('id', actualizado.id).select().single()
+    if (!error && data) {
+      const editado = { ...data, tiempoPulso: data.tiempo_pulso }
+      const nuevosRiegos = riegos.map(r => r.id === editado.id ? editado : r)
+      setRiegos(nuevosRiegos)
+      const semanas = [...new Set(nuevosRiegos.map(r => r.semana))]
+      const promedios = {}
+      semanas.forEach(s => { promedios[s] = promediarRiegos(nuevosRiegos.filter(r => r.semana === s)) })
+      onRiegosChange(etapa, promedios)
+      setEditando(null)
+      showToast('Riego actualizado ✓')
+    } else showToast('Error al actualizar')
+  }
+
+  async function eliminarRiego(id) {
+    const { error } = await supabase.from('riegos').delete().eq('id', id)
+    if (!error) {
+      const nuevosRiegos = riegos.filter(r => r.id !== id)
+      setRiegos(nuevosRiegos)
+      const semanas = [...new Set(nuevosRiegos.map(r => r.semana))]
+      const promedios = {}
+      semanas.forEach(s => { promedios[s] = promediarRiegos(nuevosRiegos.filter(r => r.semana === s)) })
+      onRiegosChange(etapa, promedios)
+      setEditando(null)
+      showToast('Riego eliminado')
+    } else showToast('Error al eliminar')
+  }
+
   const riegosFiltrados = riegos.filter(r => r.semana === semanaFiltro)
 
   return (
@@ -2819,17 +2914,18 @@ function TabRiegos({ onRiegosChange }) {
                 <div className="pedido-card" onClick={() => toggleRiego(r.id)} style={{ cursor: 'pointer' }}>
                   <div>
                     <div className="pedido-nombre">{r.fecha}</div>
-                    <BadgesParametros etapa={etapa} semana={r.semana} valores={r} />
                   </div>
                   <div className="pedido-right">
                     <span className="pedido-editar-hint">{abierto ? 'Ocultar ▴' : 'Ver ▾'}</span>
                   </div>
                 </div>
                 {abierto && (
-                  <div className="pedido-card" style={{ cursor: 'default', marginTop: 6, marginLeft: 12 }}>
+                  <div className="pedido-card" onClick={() => setEditando(r)} style={{ cursor: 'pointer', marginTop: 6, marginLeft: 12 }}>
                     <div>
                       <div className="pedido-sub">EC {r.ec || '—'} · pH {r.ph || '—'} · {r.pulsos || '—'} pulsos · {r.ml || '—'}ml</div>
                       {r.fertilizantes && <div className="pedido-sub" style={{ marginTop: 3 }}>{r.fertilizantes}</div>}
+                      <BadgesParametros etapa={etapa} semana={r.semana} valores={r} />
+                      <span className="pedido-editar-hint">Tocar para editar</span>
                     </div>
                     <div className="pedido-right">
                       <span style={{ fontSize: 11, color: 'var(--text-secondary)' }}>VPD {r.vpd || '—'}</span>
@@ -2859,6 +2955,14 @@ function TabRiegos({ onRiegosChange }) {
           </div>
         )
       })()}
+      {editando && (
+        <ModalEditarRiego
+          riego={editando}
+          onGuardar={actualizarRiego}
+          onEliminar={eliminarRiego}
+          onCerrar={() => setEditando(null)}
+        />
+      )}
       <div className={`toast${toast.show ? ' show' : ''}`}>{toast.msg}</div>
     </div>
   )
