@@ -43,40 +43,73 @@ const MARGEN_RANGO = {
   temp: 1,
 }
 
+// intensidad: 0 = justo en el centro/límite más "tranquilo" de la zona, 1 = en el límite más
+// alejado de esa zona (o más allá, en el caso de "fuera", donde se satura en 1).
 function evaluarRango(valor, [min, max], margen) {
-  if (valor < min - margen || valor > max + margen) return 'fuera'
-  if (valor < min || valor > max) return 'atencion'
-  return 'ok'
+  const centro = (min + max) / 2
+  const mitad = (max - min) / 2
+  const d = Math.abs(valor - centro)
+  if (d <= mitad) return { estado: 'ok', intensidad: mitad > 0 ? d / mitad : 0 }
+  if (d <= mitad + margen) return { estado: 'atencion', intensidad: margen > 0 ? (d - mitad) / margen : 1 }
+  const t = margen > 0 ? (d - mitad - margen) / margen : 1
+  return { estado: 'fuera', intensidad: Math.min(1, Math.max(0, t)) }
 }
 
 function evaluarUnico(valor, objetivo, { ok, atencion }) {
-  const desvio = Math.abs(valor - objetivo)
-  if (desvio <= ok) return 'ok'
-  if (desvio <= atencion) return 'atencion'
-  return 'fuera'
+  const d = Math.abs(valor - objetivo)
+  const anchoAtencion = atencion - ok
+  if (d <= ok) return { estado: 'ok', intensidad: ok > 0 ? d / ok : 0 }
+  if (d <= atencion) return { estado: 'atencion', intensidad: anchoAtencion > 0 ? (d - ok) / anchoAtencion : 1 }
+  const t = anchoAtencion > 0 ? (d - atencion) / anchoAtencion : 1
+  return { estado: 'fuera', intensidad: Math.min(1, Math.max(0, t)) }
 }
 
 // Evalúa un único parámetro contra la fila de referencia. Nunca inventa un valor: si no hay
 // dato registrado o no hay fila de referencia para la semana, devuelve 'sin_dato'.
 export function evaluarParametro(tipo, valorCrudo, filaRef) {
-  if (!filaRef) return { estado: 'sin_dato', objetivoTexto: null }
+  if (!filaRef) return { estado: 'sin_dato', objetivoTexto: null, intensidad: 0 }
   const valor = parseFloat(String(valorCrudo ?? '').replace(',', '.'))
   if (valorCrudo === undefined || valorCrudo === null || valorCrudo === '' || isNaN(valor)) {
-    return { estado: 'sin_dato', objetivoTexto: null }
+    return { estado: 'sin_dato', objetivoTexto: null, intensidad: 0 }
   }
 
   if (tipo === 'ec' || tipo === 'ppfd' || tipo === 'temp') {
     const rango = filaRef[tipo]
     const objetivoTexto = rango[0] === rango[1] ? `${rango[0]}` : `${rango[0]}–${rango[1]}`
-    return { estado: evaluarRango(valor, rango, MARGEN_RANGO[tipo]), objetivoTexto }
+    const { estado, intensidad } = evaluarRango(valor, rango, MARGEN_RANGO[tipo])
+    return { estado, objetivoTexto, intensidad }
   }
 
   if (tipo === 'ph' || tipo === 'hr' || tipo === 'vpd') {
     const objetivo = filaRef[tipo]
-    return { estado: evaluarUnico(valor, objetivo, TOLERANCIA_UNICO[tipo]), objetivoTexto: `${objetivo}` }
+    const { estado, intensidad } = evaluarUnico(valor, objetivo, TOLERANCIA_UNICO[tipo])
+    return { estado, objetivoTexto: `${objetivo}`, intensidad }
   }
 
-  return { estado: 'sin_dato', objetivoTexto: null }
+  return { estado: 'sin_dato', objetivoTexto: null, intensidad: 0 }
+}
+
+// Rampa de color por estado: bgBase = borde "tranquilo" de la zona (intensidad 0),
+// bgIntenso = borde "alejado" del objetivo (intensidad 1). El texto queda fijo por legibilidad.
+const RAMPA_COLOR = {
+  ok:       { bgBase: '#E1F5EE', bgIntenso: '#8FDBBC', texto: '#0F6E56' },
+  atencion: { bgBase: '#FAEEDA', bgIntenso: '#F0BE72', texto: '#854F0B' },
+  fuera:    { bgBase: '#FCEBEB', bgIntenso: '#E8A0A0', texto: '#791F1F' },
+  sin_dato: { bgBase: '#EEEEEE', bgIntenso: '#EEEEEE', texto: '#767676' },
+}
+
+function lerpHex(hexA, hexB, t) {
+  const a = parseInt(hexA.slice(1), 16), b = parseInt(hexB.slice(1), 16)
+  const canal = (shift) => Math.round(((a >> shift) & 255) + (((b >> shift) & 255) - ((a >> shift) & 255)) * t)
+  return `#${[16, 8, 0].map(s => canal(s).toString(16).padStart(2, '0')).join('')}`
+}
+
+// Devuelve { background, color } interpolando dentro de la rampa del estado según la intensidad (0-1).
+export function colorPorIntensidad(estado, intensidad) {
+  const r = RAMPA_COLOR[estado] || RAMPA_COLOR.sin_dato
+  if (estado === 'sin_dato') return { background: r.bgBase, color: r.texto }
+  const t = Math.min(1, Math.max(0, intensidad || 0))
+  return { background: lerpHex(r.bgBase, r.bgIntenso, t), color: r.texto }
 }
 
 // Evalúa los 6 parámetros evaluables de un registro (riego individual o promedio semanal).

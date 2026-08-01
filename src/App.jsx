@@ -2,7 +2,7 @@ import { useState, useCallback, useEffect, useRef, useMemo } from 'react'
 import { Landmark, Wallet, ChevronDown, ChevronUp, Target, TriangleAlert, Info, Check } from 'lucide-react'
 import './App.css'
 import { supabase } from './supabase'
-import { evaluarRegistro } from './parametrosTurba'
+import { evaluarRegistro, colorPorIntensidad } from './parametrosTurba'
 
 const GENETICAS = ['OG24K', 'Choco OG', 'Z-Kiem', 'Fancy', 'Gorilla Rainbow']
 const GENETICAS_ESQUEJES = ['OG24K', 'Black Domina', 'Z-Kiem', 'Fancy', 'Gorilla Rainbow', 'Dosichoc']
@@ -2672,6 +2672,32 @@ function promediarRiegos(riegos) {
 }
 
 const LABELS_PARAM = { ec: 'EC', ph: 'pH', ppfd: 'PPFD', vpd: 'VPD', hr: 'HR', temp: 'Temp' }
+const ORDEN_GRILLA = ['ec', 'ph', 'temp', 'hr', 'vpd', 'ppfd']
+
+// Grilla 2x3 con los 6 parámetros evaluados por el agente (turba sin CO₂), siempre visibles,
+// coloreados según estado y con intensidad de color proporcional a la distancia al objetivo.
+function GrillaParametros({ etapa, semana, valores }) {
+  if (!semana) return null
+  const { filaRef, parametros } = evaluarRegistro(etapa, semana, valores)
+  if (!filaRef) {
+    return <span className="badge badge-param-sin-dato">Semana {semana} sin tabla de referencia</span>
+  }
+  return (
+    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
+      {ORDEN_GRILLA.map(tipo => {
+        const { estado, objetivoTexto, intensidad } = parametros[tipo]
+        const { background, color } = colorPorIntensidad(estado, intensidad)
+        return (
+          <div key={tipo} style={{ background, color, borderRadius: 8, padding: '8px 10px', textAlign: 'center' }}>
+            <div style={{ fontSize: 10, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.03em', opacity: 0.8 }}>{LABELS_PARAM[tipo]}</div>
+            <div style={{ fontSize: 15, fontWeight: 700 }}>{valores[tipo] || '—'}</div>
+            <div style={{ fontSize: 10, opacity: 0.75 }}>{estado === 'sin_dato' ? 'sin dato' : `obj. ${objetivoTexto}`}</div>
+          </div>
+        )
+      })}
+    </div>
+  )
+}
 
 // Compara valores registrados contra la tabla de turba sin CO₂ y muestra los que están fuera de rango.
 // Chequeo 100% determinístico (ver src/parametrosTurba.js) — nunca inventa un objetivo si falta la fila de referencia.
@@ -2941,18 +2967,23 @@ function TabRiegos({ onRiegosChange }) {
       {riegosFiltrados.length > 0 && (() => {
         const prom = promediarRiegos(riegosFiltrados)
         return (
-          <div className="card" style={{ borderColor: colorBorder, background: colorLight }}>
-            <div className="form-label" style={{ marginBottom: 10 }}>Promedio semana {semanaFiltro}</div>
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '6px 12px' }}>
-              {[['EC', prom.ec], ['pH', prom.ph], ['PPFD', prom.ppfd], ['Pulsos', prom.pulsos], ['ML', prom.ml], ['VPD', prom.vpd], ['HR', prom.hr ? prom.hr + '%' : null], ['Temp', prom.temp ? prom.temp + '°C' : null]].map(([label, val]) => val ? (
-                <div key={label} style={{ display: 'flex', justifyContent: 'space-between' }}>
-                  <span style={{ fontSize: 12, color: 'var(--text-secondary)' }}>{label}</span>
-                  <span style={{ fontSize: 12, fontWeight: 600, color }}>{val}</span>
-                </div>
-              ) : null)}
+          <>
+            <div className="card" style={{ borderColor: colorBorder, background: colorLight }}>
+              <div className="form-label" style={{ marginBottom: 10 }}>Promedio semana {semanaFiltro}</div>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '6px 12px' }}>
+                {[['EC', prom.ec], ['pH', prom.ph], ['PPFD', prom.ppfd], ['Pulsos', prom.pulsos], ['ML', prom.ml], ['VPD', prom.vpd], ['HR', prom.hr ? prom.hr + '%' : null], ['Temp', prom.temp ? prom.temp + '°C' : null]].map(([label, val]) => val ? (
+                  <div key={label} style={{ display: 'flex', justifyContent: 'space-between' }}>
+                    <span style={{ fontSize: 12, color: 'var(--text-secondary)' }}>{label}</span>
+                    <span style={{ fontSize: 12, fontWeight: 600, color }}>{val}</span>
+                  </div>
+                ) : null)}
+              </div>
             </div>
-            <BadgesParametros etapa={etapa} semana={semanaFiltro} valores={prom} />
-          </div>
+            <div className="card" style={{ marginTop: 10 }}>
+              <div className="form-label" style={{ marginBottom: 10 }}>Evaluación vs. tabla — Semana {semanaFiltro}</div>
+              <GrillaParametros etapa={etapa} semana={semanaFiltro} valores={prom} />
+            </div>
+          </>
         )
       })()}
       {editando && (
