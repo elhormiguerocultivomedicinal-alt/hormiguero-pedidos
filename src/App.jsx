@@ -2702,6 +2702,15 @@ function TabRiegos({ onRiegosChange }) {
   const [mostrarForm, setMostrarForm] = useState(false)
   const [form, setForm] = useState({ ...riegoVacio(), fecha: hoyCompleto(), semana: 1 })
   const [toast, showToast] = useToast()
+  const [riegosAbiertos, setRiegosAbiertos] = useState(new Set())
+
+  function toggleRiego(id) {
+    setRiegosAbiertos(prev => {
+      const next = new Set(prev)
+      next.has(id) ? next.delete(id) : next.add(id)
+      return next
+    })
+  }
 
   useEffect(() => {
     supabase.from('riegos').select('*').order('created_at', { ascending: false })
@@ -2743,6 +2752,7 @@ function TabRiegos({ onRiegosChange }) {
       const nuevo = { ...data, tiempoPulso: data.tiempo_pulso }
       const nuevosRiegos = [nuevo, ...riegos]
       setRiegos(nuevosRiegos)
+      setRiegosAbiertos(prev => new Set(prev).add(nuevo.id))
       const semanas = [...new Set(nuevosRiegos.map(r => r.semana))]
       const promedios = {}
       semanas.forEach(s => { promedios[s] = promediarRiegos(nuevosRiegos.filter(r => r.semana === s)) })
@@ -2802,20 +2812,34 @@ function TabRiegos({ onRiegosChange }) {
       <div className="pedidos-list">
         {riegosFiltrados.length === 0
           ? <div className="empty-state">No hay riegos registrados para la semana {semanaFiltro}.</div>
-          : riegosFiltrados.map(r => (
-            <div className="pedido-card" key={r.id} style={{ cursor: 'default' }}>
-              <div>
-                <div className="pedido-nombre">{r.fecha}</div>
-                <div className="pedido-sub">EC {r.ec || '—'} · pH {r.ph || '—'} · {r.pulsos || '—'} pulsos · {r.ml || '—'}ml</div>
-                {r.fertilizantes && <div className="pedido-sub" style={{ marginTop: 3 }}>{r.fertilizantes}</div>}
-                <BadgesParametros etapa={etapa} semana={r.semana} valores={r} />
+          : riegosFiltrados.map(r => {
+            const abierto = riegosAbiertos.has(r.id)
+            return (
+              <div key={r.id}>
+                <div className="pedido-card" onClick={() => toggleRiego(r.id)} style={{ cursor: 'pointer' }}>
+                  <div>
+                    <div className="pedido-nombre">{r.fecha}</div>
+                    <BadgesParametros etapa={etapa} semana={r.semana} valores={r} />
+                  </div>
+                  <div className="pedido-right">
+                    <span className="pedido-editar-hint">{abierto ? 'Ocultar ▴' : 'Ver ▾'}</span>
+                  </div>
+                </div>
+                {abierto && (
+                  <div className="pedido-card" style={{ cursor: 'default', marginTop: 6, marginLeft: 12 }}>
+                    <div>
+                      <div className="pedido-sub">EC {r.ec || '—'} · pH {r.ph || '—'} · {r.pulsos || '—'} pulsos · {r.ml || '—'}ml</div>
+                      {r.fertilizantes && <div className="pedido-sub" style={{ marginTop: 3 }}>{r.fertilizantes}</div>}
+                    </div>
+                    <div className="pedido-right">
+                      <span style={{ fontSize: 11, color: 'var(--text-secondary)' }}>VPD {r.vpd || '—'}</span>
+                      <span style={{ fontSize: 11, color: 'var(--text-secondary)' }}>{r.temp || '—'}°C · {r.hr || '—'}%HR</span>
+                    </div>
+                  </div>
+                )}
               </div>
-              <div className="pedido-right">
-                <span style={{ fontSize: 11, color: 'var(--text-secondary)' }}>VPD {r.vpd || '—'}</span>
-                <span style={{ fontSize: 11, color: 'var(--text-secondary)' }}>{r.temp || '—'}°C · {r.hr || '—'}%HR</span>
-              </div>
-            </div>
-          ))
+            )
+          })
         }
       </div>
       {riegosFiltrados.length > 0 && (() => {
