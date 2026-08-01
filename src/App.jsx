@@ -399,9 +399,12 @@ function PagosRegistro({ registro, pagos, total, miembro, onAgregarPago, onEdita
     if (!monto || monto <= 0) { setError('Ingresá un monto válido.'); return }
     if (!form.cuenta) { setError('Elegí una cuenta: si no, este pago no se va a reflejar en Finanzas.'); return }
     setGuardando(true)
-    const payload = { monto, metodo_pago: form.metodoPago, cuenta: form.cuenta, fecha: form.fecha }
+    // cuenta_estimada siempre se limpia al guardar: tanto al cargar un pago nuevo (nunca es
+    // estimado, se elige la cuenta a mano) como al editar uno existente (corregir la cuenta
+    // es justamente lo que saca al registro de "a revisar").
+    const payload = { monto, metodo_pago: form.metodoPago, cuenta: form.cuenta, fecha: form.fecha, cuenta_estimada: false }
     const res = formPara === 'agregar'
-      ? await onAgregarPago(registro, { ...payload, cuenta_estimada: false, creado_por: miembro || null })
+      ? await onAgregarPago(registro, { ...payload, creado_por: miembro || null })
       : await onEditarPago(formPara, payload)
     setGuardando(false)
     if (!res?.ok) { setError('No se pudo guardar. Intentá de nuevo.'); return }
@@ -471,7 +474,7 @@ function PagosRegistro({ registro, pagos, total, miembro, onAgregarPago, onEdita
             ) : (
               <div key={pg.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
                 <span style={{ fontSize: 11, color: 'var(--text-secondary)' }}>
-                  {formatFechaISOCorta(pg.fecha)} · <strong style={{ color: 'var(--text-primary)' }}>{formatPesos(pg.monto)}</strong>{pg.cuenta ? ` · ${pg.cuenta}` : ' · sin cuenta'}
+                  {formatFechaISOCorta(pg.fecha)} · <strong style={{ color: 'var(--text-primary)' }}>{formatPesos(pg.monto)}</strong>{pg.cuenta ? ` · ${pg.cuenta}` : ' · sin cuenta'}{pg.cuenta_estimada ? <span style={{ color: '#854F0B' }}> · estimada</span> : null}
                 </span>
                 <div style={{ display: 'flex', gap: 10, flexShrink: 0 }}>
                   <button onClick={() => abrirEditar(pg)} style={btnLinkStyle('var(--text-secondary)')}>Editar</button>
@@ -973,10 +976,10 @@ function FormRegistro({ cfg, onGuardar, onAgregarPago, miembro }) {
 // en acordeón. Mismo patrón que Gastos, pero acá todos los meses arrancan
 // cerrados (ni siquiera el actual se auto-abre): el usuario elige qué
 // mes abrir en vez de ver el mes en curso expandido de entrada.
-function ListaRegistrosPorMes({ cfg, registros, onActualizar, onEliminar, pagos, miembro, onAgregarPago, onEditarPago, onEliminarPago }) {
+function ListaRegistrosPorMes({ cfg, registros, onActualizar, onEliminar, pagos, miembro, onAgregarPago, onEditarPago, onEliminarPago, target }) {
   const [filtroEstado, setFiltroEstado] = useState('todos')
-  const [mesesAbiertos, setMesesAbiertos] = useState(() => new Set())
-  const [editando, setEditando] = useState(null)
+  const [mesesAbiertos, setMesesAbiertos] = useState(() => target ? new Set([target.mes]) : new Set())
+  const [editando, setEditando] = useState(() => target ? (registros.find(r => r.id === target.id) || null) : null)
 
   function toggleMes(mes) {
     setMesesAbiertos(prev => {
@@ -1206,7 +1209,7 @@ function PanelStock({ stock, inicial, cfg, ajustesFallidos, onEditar, onEditarIn
 // disponible por genética (colapsado, se abre con un click, igual que un
 // mes en la lista de abajo) y 3) los pedidos registrados mes a mes (el
 // acordeón que ya existe, con cada mes oculto hasta que se lo abre).
-function PanelDominio({ cfg, registros, miembro, onGuardar, onActualizar, onEliminar, stock, stockInicial, ajustesFallidos, onEditarStock, onEditarInicial, pagos, onAgregarPago, onEditarPago, onEliminarPago }) {
+function PanelDominio({ cfg, registros, miembro, onGuardar, onActualizar, onEliminar, stock, stockInicial, ajustesFallidos, onEditarStock, onEditarInicial, pagos, onAgregarPago, onEditarPago, onEliminarPago, target }) {
   const [stockAbierto, setStockAbierto] = useState(false)
   const seccionTitulo = { fontSize: 15, fontWeight: 600, color: 'var(--text-primary)', marginBottom: 8 }
   const plural = cfg.plural[0].toUpperCase() + cfg.plural.slice(1)
@@ -1234,7 +1237,7 @@ function PanelDominio({ cfg, registros, miembro, onGuardar, onActualizar, onElim
 
       <div style={{ marginTop: 18 }}>
         <div style={seccionTitulo}>{plural} registrados</div>
-        <ListaRegistrosPorMes cfg={cfg} registros={registros} onActualizar={onActualizar} onEliminar={onEliminar} pagos={pagos} miembro={miembro} onAgregarPago={onAgregarPago} onEditarPago={onEditarPago} onEliminarPago={onEliminarPago} />
+        <ListaRegistrosPorMes cfg={cfg} registros={registros} onActualizar={onActualizar} onEliminar={onEliminar} pagos={pagos} miembro={miembro} onAgregarPago={onAgregarPago} onEditarPago={onEditarPago} onEliminarPago={onEliminarPago} target={target} />
       </div>
     </div>
   )
@@ -1247,8 +1250,9 @@ function TabPedidos({
   miembro, ajustesFallidos,
   onEditarStock, onEditarStockEsquejes, onEditarInicial, onEditarInicialEsquejes,
   pedidoPagos, esquejePagos, onAgregarPagoPedido, onEditarPagoPedido, onEliminarPagoPedido, onAgregarPagoEsqueje, onEditarPagoEsqueje, onEliminarPagoEsqueje,
+  target,
 }) {
-  const [tipo, setTipo] = useState('cosecha')
+  const [tipo, setTipo] = useState(() => target?.tipoRegistro || 'cosecha')
   const cfg = tipo === 'cosecha' ? CFG_COSECHA : CFG_ESQUEJES
   const activeStyle = tipo === 'esquejes' ? { background: COLOR_ESQUEJES_LIGHT, borderColor: COLOR_ESQUEJES_BORDER, color: COLOR_ESQUEJES } : {}
   return (
@@ -1273,19 +1277,20 @@ function TabPedidos({
         onAgregarPago={tipo === 'cosecha' ? onAgregarPagoPedido : onAgregarPagoEsqueje}
         onEditarPago={tipo === 'cosecha' ? onEditarPagoPedido : onEditarPagoEsqueje}
         onEliminarPago={tipo === 'cosecha' ? onEliminarPagoPedido : onEliminarPagoEsqueje}
+        target={target}
       />
     </div>
   )
 }
 
 // ─── Tab Gastos ───────────────────────────────────────────────
-function PanelGastos({ locacion, gastos, miembro, presupuestos, onNuevoGasto, onActualizarGasto, onEliminarGasto }) {
+function PanelGastos({ locacion, gastos, miembro, presupuestos, onNuevoGasto, onActualizarGasto, onEliminarGasto, target }) {
   const [mostrarForm, setMostrarForm] = useState(false)
   const [form, setForm] = useState({ descripcion: '', categoria: '', monto: '', fecha: '', cuenta: '', presupuesto_id: '', dividido: false, divisiones: [] })
   const [toast, showToast] = useToast()
   const [filtrocat, setFiltrocat] = useState('todas')
-  const [editando, setEditando] = useState(null)
-  const [mesesAbiertos, setMesesAbiertos] = useState(() => new Set())
+  const [editando, setEditando] = useState(() => target ? (gastos.find(g => g.id === target.id) || null) : null)
+  const [mesesAbiertos, setMesesAbiertos] = useState(() => target ? new Set([target.mes]) : new Set())
   const set = (k, v) => setForm(f => ({ ...f, [k]: v }))
   function toggleMes(mes) {
     setMesesAbiertos(prev => {
@@ -1840,7 +1845,8 @@ function TarjetaCuentaDolar({ r, onValidarSaldo, onAgregarMovimiento, onEliminar
   )
 }
 
-function TabFinanzas({ pedidos, esquejes, miembro, gastos, presupuestos, setPresupuestos, aportes, setAportes, gastosFijos, setGastosFijos, pedidoPagos, esquejePagos }) {
+function TabFinanzas({ pedidos, esquejes, miembro, gastos, presupuestos, setPresupuestos, aportes, setAportes, gastosFijos, setGastosFijos, pedidoPagos, esquejePagos, onRevisar }) {
+  const revisarRef = useRef(null)
   const [subTab, setSubTab] = useState('general')
   const [cuentas, setCuentas] = useState([])
   const [dolaresMovimientos, setDolaresMovimientos] = useState([])
@@ -1927,7 +1933,39 @@ function TabFinanzas({ pedidos, esquejes, miembro, gastos, presupuestos, setPres
   }), [pedidoPagos, esquejePagos, gastos, cuentas])
 
   const totalGeneral = resumen.reduce((s, r) => s + r.saldo, 0)
-  const totalEstimados = resumen.reduce((s, r) => s + r.estimados, 0)
+
+  // Independiente del desglose por cuenta de arriba (que agrupa por nombre de cuenta y por
+  // eso se pierde los gastos divididos entre varias, que no tienen un "cuenta" único): acá
+  // contamos directo sobre los 3 orígenes, así el total y el listado de abajo son exactos.
+  const registrosARevisar = useMemo(() => {
+    const items = []
+    pedidoPagos.filter(pg => pg.cuenta_estimada).forEach(pg => {
+      const pedido = pedidos.find(p => p.id === pg.pedido_id)
+      items.push({
+        key: `pedido-${pg.id}`,
+        label: `Pedido de ${pedido?.socio || '(no encontrado)'} · ${formatPesos(pg.monto)} · ${formatFechaISOCorta(pg.fecha)}`,
+        objetivo: { tab: 'pedidos', tipoRegistro: 'cosecha', mes: pedido?.mes, id: pg.pedido_id },
+      })
+    })
+    esquejePagos.filter(pg => pg.cuenta_estimada).forEach(pg => {
+      const esqueje = esquejes.find(e => e.id === pg.esqueje_id)
+      items.push({
+        key: `esqueje-${pg.id}`,
+        label: `Esqueje de ${esqueje?.socio || '(no encontrado)'} · ${formatPesos(pg.monto)} · ${formatFechaISOCorta(pg.fecha)}`,
+        objetivo: { tab: 'pedidos', tipoRegistro: 'esquejes', mes: esqueje?.mes, id: pg.esqueje_id },
+      })
+    })
+    gastos.filter(g => g.cuenta_estimada).forEach(g => {
+      items.push({
+        key: `gasto-${g.id}`,
+        label: `${g.descripcion} · ${formatPesos(g.monto)} · ${g.fecha}`,
+        objetivo: { tab: 'gastos', locacion: g.locacion, mes: g.mes, id: g.id },
+      })
+    })
+    return items
+  }, [pedidoPagos, esquejePagos, gastos, pedidos, esquejes])
+
+  const totalEstimados = registrosARevisar.length
 
   // Cuentas en dólares: reserva/ahorro, sin pedidos ni gastos que las muevan —
   // el saldo sale de saldo inicial validado + historial propio de movimientos.
@@ -2039,21 +2077,17 @@ function TabFinanzas({ pedidos, esquejes, miembro, gastos, presupuestos, setPres
       )}
       {subTab === 'general' && (
       <>
-      <div className="card" style={{ marginBottom: 14 }}>
-        <div style={{ display: 'flex', gap: 8, alignItems: 'flex-start' }}>
-          <Info size={15} color="#6b6b66" style={{ marginTop: 1, flexShrink: 0 }} />
-          <div style={{ fontSize: 12, color: 'var(--text-secondary)', lineHeight: 1.5 }}>
-            Saldo por cuenta = saldo inicial + pedidos y esquejes cobrados − gastos, desde la fecha de corte de cada cuenta. Mientras el saldo inicial no esté validado con el equipo, la cifra es un <strong>movimiento neto</strong>, no el saldo real de la cuenta.
-          </div>
-        </div>
-      </div>
       <div className="stats-row">
         <div className="stat-card">
           <Wallet size={16} color={totalGeneral < 0 ? '#791F1F' : '#1D9E75'} style={{ marginBottom: 4 }} />
           <div className="stat-num" style={{ fontSize: 16, color: totalGeneral < 0 ? '#791F1F' : 'var(--green-dark)' }}>{formatPesos(totalGeneral)}</div>
           <div className="stat-lbl">Total todas las cuentas</div>
         </div>
-        <div className="stat-card">
+        <div
+          className="stat-card"
+          style={{ cursor: totalEstimados > 0 ? 'pointer' : 'default' }}
+          onClick={() => totalEstimados > 0 && revisarRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' })}
+        >
           <TriangleAlert size={16} color={totalEstimados > 0 ? '#854F0B' : '#6b6b66'} style={{ marginBottom: 4 }} />
           <div className="stat-num" style={{ color: totalEstimados > 0 ? '#854F0B' : undefined }}>{totalEstimados}</div>
           <div className="stat-lbl">Registros a revisar</div>
@@ -2065,12 +2099,20 @@ function TabFinanzas({ pedidos, esquejes, miembro, gastos, presupuestos, setPres
         </div>
       </div>
       {totalEstimados > 0 && (
-        <div className="card" style={{ marginBottom: 14, background: '#FFF8ED', borderColor: '#E8C77E' }}>
+        <div ref={revisarRef} className="card" style={{ marginBottom: 14, background: '#FFF8ED', borderColor: '#E8C77E' }}>
           <div style={{ display: 'flex', gap: 8, alignItems: 'flex-start' }}>
             <TriangleAlert size={15} color="#854F0B" style={{ marginTop: 1, flexShrink: 0 }} />
             <div style={{ fontSize: 12, color: '#854F0B', lineHeight: 1.5 }}>
-              Hay <strong>{totalEstimados}</strong> registro(s) de junio-julio con cuenta estimada (asignada por quién cargó el pedido/gasto, no confirmada contra comprobante). Se pueden corregir abriendo cada uno desde Pedidos (Cosecha/Esquejes) o Gastos → Lista.
+              Hay <strong>{totalEstimados}</strong> registro(s) con cuenta estimada.
             </div>
+          </div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginTop: 10 }}>
+            {registrosARevisar.map(item => (
+              <div key={item.key} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, paddingTop: 8, borderTop: '0.5px solid #E8C77E' }}>
+                <span style={{ fontSize: 12, color: '#854F0B' }}>{item.label}</span>
+                <button onClick={() => onRevisar(item.objetivo)} style={{ ...btnLinkStyle('#854F0B'), flexShrink: 0 }}>Revisar</button>
+              </div>
+            ))}
           </div>
         </div>
       )}
@@ -2482,8 +2524,8 @@ function PanelFinanzasHormi({ locacion, pedidos, esquejes, gastos, presupuestos,
   )
 }
 
-function TabGastos({ miembro, gastos, presupuestos, onGuardarGasto, onActualizarGasto, onEliminarGasto }) {
-  const [locacion, setLocacion] = useState('Hormi 1.0')
+function TabGastos({ miembro, gastos, presupuestos, onGuardarGasto, onActualizarGasto, onEliminarGasto, target }) {
+  const [locacion, setLocacion] = useState(() => target?.locacion || 'Hormi 1.0')
   const gastosFiltrados = gastos.filter(g => g.locacion === locacion)
   return (
     <div className="content">
@@ -2500,6 +2542,7 @@ function TabGastos({ miembro, gastos, presupuestos, onGuardarGasto, onActualizar
         onNuevoGasto={onGuardarGasto}
         onActualizarGasto={onActualizarGasto}
         onEliminarGasto={onEliminarGasto}
+        target={target}
       />
     </div>
   )
@@ -2976,6 +3019,17 @@ const gastoToDB = g => ({
 // ─── App raíz ─────────────────────────────────────────────────
 export default function App() {
   const [tab, setTab] = useState('pedidos')
+  const [objetivoRevision, setObjetivoRevision] = useState(null)
+
+  function irATab(nuevoTab) {
+    setObjetivoRevision(null)
+    setTab(nuevoTab)
+  }
+
+  function irARevisar(objetivo) {
+    setObjetivoRevision(objetivo)
+    setTab(objetivo.tab)
+  }
   const [pedidos, setPedidos] = useState([])
   const [stock, setStock] = useState(STOCK_INICIAL)
   const [stockInicial, setStockInicial] = useState(STOCK_INICIAL)
@@ -3279,15 +3333,16 @@ export default function App() {
           </div>
         </div>
         <div className="tab-bar">
-          <button className={`tab${tab === 'pedidos' ? ' active' : ''}`} onClick={() => setTab('pedidos')}>Pedidos</button>
-          <button className={`tab${tab === 'gastos' ? ' active' : ''}`} onClick={() => setTab('gastos')}>Gastos</button>
-          <button className={`tab${tab === 'finanzas' ? ' active' : ''}`} onClick={() => setTab('finanzas')}>Finanzas</button>
-          <button className={`tab${tab === 'riegos' ? ' active' : ''}`} onClick={() => setTab('riegos')}>Riegos</button>
-          <button className={`tab${tab === 'calendario' ? ' active' : ''}`} onClick={() => setTab('calendario')}>Cultivo</button>
+          <button className={`tab${tab === 'pedidos' ? ' active' : ''}`} onClick={() => irATab('pedidos')}>Pedidos</button>
+          <button className={`tab${tab === 'gastos' ? ' active' : ''}`} onClick={() => irATab('gastos')}>Gastos</button>
+          <button className={`tab${tab === 'finanzas' ? ' active' : ''}`} onClick={() => irATab('finanzas')}>Finanzas</button>
+          <button className={`tab${tab === 'riegos' ? ' active' : ''}`} onClick={() => irATab('riegos')}>Riegos</button>
+          <button className={`tab${tab === 'calendario' ? ' active' : ''}`} onClick={() => irATab('calendario')}>Cultivo</button>
         </div>
       </div>
       {tab === 'pedidos' && (
         <TabPedidos
+          target={objetivoRevision}
           pedidos={pedidos}
           stock={stock}
           stockInicial={stockInicial}
@@ -3316,8 +3371,8 @@ export default function App() {
           onEliminarPagoEsqueje={eliminarPagoEsqueje}
         />
       )}
-      {tab === 'gastos' && <TabGastos miembro={miembro} gastos={gastos} presupuestos={presupuestos} onGuardarGasto={guardarGasto} onActualizarGasto={actualizarGasto} onEliminarGasto={eliminarGasto} />}
-      {tab === 'finanzas' && <TabFinanzas pedidos={pedidos} esquejes={esquejes} miembro={miembro} gastos={gastos} presupuestos={presupuestos} setPresupuestos={setPresupuestos} aportes={aportes} setAportes={setAportes} gastosFijos={gastosFijos} setGastosFijos={setGastosFijos} pedidoPagos={pedidoPagos} esquejePagos={esquejePagos} />}
+      {tab === 'gastos' && <TabGastos target={objetivoRevision} miembro={miembro} gastos={gastos} presupuestos={presupuestos} onGuardarGasto={guardarGasto} onActualizarGasto={actualizarGasto} onEliminarGasto={eliminarGasto} />}
+      {tab === 'finanzas' && <TabFinanzas onRevisar={irARevisar} pedidos={pedidos} esquejes={esquejes} miembro={miembro} gastos={gastos} presupuestos={presupuestos} setPresupuestos={setPresupuestos} aportes={aportes} setAportes={setAportes} gastosFijos={gastosFijos} setGastosFijos={setGastosFijos} pedidoPagos={pedidoPagos} esquejePagos={esquejePagos} />}
       {tab === 'riegos' && <TabRiegos onRiegosChange={handleRiegosChange} />}
       {tab === 'calendario' && <TabCalendario riegoPromediosVege={riegoPromediosVege} riegoPromediosFlora={riegoPromediosFlora} />}
       {mostrarCambiarPass && <ModalCambiarPassword onCerrar={() => setMostrarCambiarPass(false)} />}
