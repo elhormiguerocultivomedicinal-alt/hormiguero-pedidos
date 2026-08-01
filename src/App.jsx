@@ -2,6 +2,7 @@ import { useState, useCallback, useEffect, useRef, useMemo } from 'react'
 import { Landmark, Wallet, ChevronDown, ChevronUp, Target, TriangleAlert, Info, Check } from 'lucide-react'
 import './App.css'
 import { supabase } from './supabase'
+import { evaluarRegistro } from './parametrosTurba'
 
 const GENETICAS = ['OG24K', 'Choco OG', 'Z-Kiem', 'Fancy', 'Gorilla Rainbow']
 const GENETICAS_ESQUEJES = ['OG24K', 'Black Domina', 'Z-Kiem', 'Fancy', 'Gorilla Rainbow', 'Dosichoc']
@@ -2126,6 +2127,7 @@ function TabFinanzas({ pedidos, esquejes, miembro, gastos, presupuestos, setPres
           </div>
         </div>
       )}
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
       <button className="btn-disclosure" onClick={() => setVerDetalleCuentas(v => !v)}>
         <span>{verDetalleCuentas ? 'Ocultar cuentas en pesos' : `Ver detalle cuentas en pesos (${resumen.length})`}</span>
         {verDetalleCuentas ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
@@ -2186,7 +2188,7 @@ function TabFinanzas({ pedidos, esquejes, miembro, gastos, presupuestos, setPres
         ))}
       </div>
       )}
-      <button className="btn-disclosure" style={{ marginTop: 10 }} onClick={() => setVerDetalleDolares(v => !v)}>
+      <button className="btn-disclosure" onClick={() => setVerDetalleDolares(v => !v)}>
         <span>{verDetalleDolares ? 'Ocultar cuentas en dólares' : `Ver detalle cuentas en dólares (${resumenDolares.length})`}</span>
         {verDetalleDolares ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
       </button>
@@ -2204,7 +2206,7 @@ function TabFinanzas({ pedidos, esquejes, miembro, gastos, presupuestos, setPres
       </div>
       )}
       {presupuestos.length > 0 && (
-        <div style={{ marginTop: 14 }}>
+        <div>
           <button className="btn-disclosure" onClick={() => setVerPresupuestosGeneral(v => !v)}>
             <span>{verPresupuestosGeneral ? 'Ocultar presupuestos activos' : `Ver presupuestos activos (${presupuestos.length})`}</span>
             {verPresupuestosGeneral ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
@@ -2218,6 +2220,7 @@ function TabFinanzas({ pedidos, esquejes, miembro, gastos, presupuestos, setPres
           )}
         </div>
       )}
+      </div>
       </>
       )}
       <div className={`toast${toast.show ? ' show' : ''}`}>{toast.msg}</div>
@@ -2607,6 +2610,7 @@ function SeccionCiclo({ ciclo, onChange, riegoPromedios = {} }) {
                 </div>
               ) : null)}
             </div>
+            <BadgesParametros etapa={ciclo.tipo} semana={semana} valores={prom} />
           </div>
         )
       })()}
@@ -2665,6 +2669,29 @@ function promediarRiegos(riegos) {
     if (last) resultado[k] = last[k]
   })
   return resultado
+}
+
+const LABELS_PARAM = { ec: 'EC', ph: 'pH', ppfd: 'PPFD', vpd: 'VPD', hr: 'HR', temp: 'Temp' }
+
+// Compara valores registrados contra la tabla de turba sin CO₂ y muestra los que están fuera de rango.
+// Chequeo 100% determinístico (ver src/parametrosTurba.js) — nunca inventa un objetivo si falta la fila de referencia.
+function BadgesParametros({ etapa, semana, valores }) {
+  if (!semana) return null
+  const { filaRef, parametros } = evaluarRegistro(etapa, semana, valores)
+  if (!filaRef) {
+    return <div className="pedido-badges"><span className="badge badge-param-sin-dato">Semana {semana} sin tabla de referencia</span></div>
+  }
+  const desvios = Object.entries(parametros).filter(([, v]) => v.estado === 'atencion' || v.estado === 'fuera')
+  if (desvios.length === 0) return null
+  return (
+    <div className="pedido-badges">
+      {desvios.map(([tipo, { estado, objetivoTexto }]) => (
+        <span key={tipo} className={`badge badge-param-${estado}`} title={`${LABELS_PARAM[tipo]} objetivo: ${objetivoTexto}`}>
+          {estado === 'fuera' ? '⚠ ' : '· '}{LABELS_PARAM[tipo]} {valores[tipo]} (obj. {objetivoTexto})
+        </span>
+      ))}
+    </div>
+  )
 }
 
 function TabRiegos({ onRiegosChange }) {
@@ -2781,6 +2808,7 @@ function TabRiegos({ onRiegosChange }) {
                 <div className="pedido-nombre">{r.fecha}</div>
                 <div className="pedido-sub">EC {r.ec || '—'} · pH {r.ph || '—'} · {r.pulsos || '—'} pulsos · {r.ml || '—'}ml</div>
                 {r.fertilizantes && <div className="pedido-sub" style={{ marginTop: 3 }}>{r.fertilizantes}</div>}
+                <BadgesParametros etapa={etapa} semana={r.semana} valores={r} />
               </div>
               <div className="pedido-right">
                 <span style={{ fontSize: 11, color: 'var(--text-secondary)' }}>VPD {r.vpd || '—'}</span>
@@ -2803,6 +2831,7 @@ function TabRiegos({ onRiegosChange }) {
                 </div>
               ) : null)}
             </div>
+            <BadgesParametros etapa={etapa} semana={semanaFiltro} valores={prom} />
           </div>
         )
       })()}

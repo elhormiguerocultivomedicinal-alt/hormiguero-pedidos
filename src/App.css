@@ -205,6 +205,10 @@ select.form-control { cursor: pointer; }
 .badge-parcial { background: #FAEEDA; color: #854F0B; }
 .badge-sobrepago { background: #FCEBEB; color: #791F1F; font-weight: 600; }
 .badge-propio { background: var(--bg-secondary); color: var(--text-secondary); }
+.badge-param-ok { background: #E1F5EE; color: #0F6E56; }
+.badge-param-atencion { background: #FAEEDA; color: #854F0B; }
+.badge-param-fuera { background: #FCEBEB; color: #791F1F; }
+.badge-param-sin-dato { background: var(--bg-secondary); color: var(--text-secondary); }
 
 .pedido-right { display: flex; flex-direction: column; align-items: flex-end; gap: 4px; }
 .pedido-total { font-size: 15px; font-weight: 600; color: var(--text-primary); }
