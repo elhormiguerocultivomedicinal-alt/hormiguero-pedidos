@@ -217,13 +217,15 @@ select.form-control { cursor: pointer; }
 }
 .btn-disclosure {
   width: 100%; display: flex; align-items: center; justify-content: space-between;
-  padding: 11px 14px; border: 0.5px solid var(--border);
+  padding: 10px 12px; border: 0.5px solid var(--border);
   border-radius: var(--radius-md); background: var(--bg-card);
   font-size: 13px; color: var(--text-primary); font-weight: 500;
   cursor: pointer; transition: all 0.15s;
 }
 .btn-disclosure:hover { border-color: var(--border-mid); background: var(--bg-secondary); }
 .btn-disclosure svg { color: var(--text-secondary); flex-shrink: 0; }
+/* Montos financieros: alinean como en un resumen bancario en vez de "bailar" por ancho variable */
+.cifra-tabular, .cifra-tabular * { font-variant-numeric: tabular-nums; }
 .progreso-bar {
   height: 6px; border-radius: 99px; background: var(--bg-secondary);
   overflow: hidden; margin-top: 10px;

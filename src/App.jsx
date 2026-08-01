@@ -26,6 +26,12 @@ function formatPesos(n) {
   return (r < 0 ? '-$' : '$') + Math.abs(r).toLocaleString('es-AR')
 }
 
+function formatDolares(n) {
+  const v = Number(n)
+  const r = Math.round(isFinite(v) ? v : 0)
+  return (r < 0 ? '-US$' : 'US$') + Math.abs(r).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+}
+
 function hoyCompleto() {
   const d = new Date()
   return `${d.getDate()}/${d.getMonth() + 1}/${d.getFullYear()}`
@@ -95,6 +101,7 @@ const CATEGORIAS_GASTOS_MAP = {
 const CUENTA_EFECTIVO = 'Efectivo - Caja Hormi'
 const CUENTAS_BANCARIAS = ['NaranjaX - Nacho', 'NaranjaX - Nico', 'NaranjaX - Bruno', 'Lemon - Checho']
 const CUENTAS = [...CUENTAS_BANCARIAS, CUENTA_EFECTIVO]
+const CUENTAS_DOLARES = ['NaranjaX (Dólar) - Nacho', 'NaranjaX (Dólar) - Nico', 'Lemon (Dólar) - Checho']
 const FECHA_CORTE_DEFAULT = '2026-05-31'
 
 // ─── Esquejes: constantes y color de identidad ────────────────
@@ -1547,10 +1554,13 @@ function tieneAsignacionValida(registro, campoMonto) {
 
 function IconoCuenta({ nombre, size = 34 }) {
   const esEfectivo = nombre === CUENTA_EFECTIVO
+  const esDolar = CUENTAS_DOLARES.includes(nombre)
   const Icono = esEfectivo ? Wallet : Landmark
+  const bg = esEfectivo ? '#FFF8ED' : esDolar ? '#EAF0FB' : '#E1F5EE'
+  const color = esEfectivo ? '#854F0B' : esDolar ? '#33538F' : '#0F6E56'
   return (
-    <div className="cuenta-icono" style={{ width: size, height: size, background: esEfectivo ? '#FFF8ED' : '#E1F5EE' }}>
-      <Icono size={Math.round(size * 0.5)} color={esEfectivo ? '#854F0B' : '#0F6E56'} strokeWidth={2} />
+    <div className="cuenta-icono" style={{ width: size, height: size, background: bg }}>
+      <Icono size={Math.round(size * 0.5)} color={color} strokeWidth={2} />
     </div>
   )
 }
@@ -1700,9 +1710,140 @@ function TarjetaPresupuesto({ p, gastos, aportes, onAlternarCerrado, onAportar, 
   )
 }
 
+// Cuentas en dólares: sin pedidos/gastos que las alimenten, el saldo es
+// saldo inicial validado + historial de movimientos manuales (compras/retiros),
+// igual patrón que los aportes de capital de un presupuesto.
+function TarjetaCuentaDolar({ r, onValidarSaldo, onAgregarMovimiento, onEliminarMovimiento }) {
+  const [formAbierto, setFormAbierto] = useState(null) // null | 'saldo' | 'movimiento'
+  const [inputSaldo, setInputSaldo] = useState('')
+  const [inputCorte, setInputCorte] = useState('')
+  const [formMov, setFormMov] = useState({ tipo: 'ingreso', monto: '', concepto: '', fecha: new Date().toISOString().slice(0, 10) })
+
+  function abrirValidarSaldo() {
+    setInputSaldo(String(r.info.saldo_inicial || 0))
+    setInputCorte(r.info.validado ? r.info.fecha_corte : new Date().toISOString().slice(0, 10))
+    setFormAbierto('saldo')
+  }
+
+  function abrirMovimiento() {
+    setFormMov({ tipo: 'ingreso', monto: '', concepto: '', fecha: new Date().toISOString().slice(0, 10) })
+    setFormAbierto('movimiento')
+  }
+
+  async function confirmarSaldo() {
+    await onValidarSaldo(r.nombre, inputSaldo, inputCorte)
+    setFormAbierto(null)
+  }
+
+  async function confirmarMovimiento() {
+    if (!parseFloat(formMov.monto)) return
+    await onAgregarMovimiento(r.nombre, { tipo: formMov.tipo, monto: parseFloat(formMov.monto), concepto: formMov.concepto.trim() || null, fecha: formMov.fecha })
+    setFormAbierto(null)
+  }
+
+  return (
+    <div className="card">
+      <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
+        <IconoCuenta nombre={r.nombre} />
+        <div style={{ flex: 1 }}>
+          <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--text-primary)' }}>{r.nombre}</div>
+          <div className="form-label" style={{ marginTop: 2 }}>Cuenta en dólares</div>
+        </div>
+        <div className="cifra-tabular" style={{ fontSize: 18, fontWeight: 700, color: r.saldo < 0 ? '#791F1F' : '#33538F', textAlign: 'right' }}>{formatDolares(r.saldo)}</div>
+      </div>
+      <div style={{ fontSize: 11, color: 'var(--text-secondary)', marginTop: 10 }}>
+        {r.info.validado ? `Saldo validado · movimientos contados desde ${formatFechaISOCorta(r.info.fecha_corte)}` : `Movimiento neto desde ${formatFechaISOCorta(r.info.fecha_corte)}`}
+      </div>
+      {r.info.actualizado_por && (
+        <div style={{ fontSize: 10, color: 'var(--text-secondary)', marginTop: 1 }}>
+          Último cambio: {r.info.actualizado_por} · {formatFechaHoraISO(r.info.actualizado_en)}
+        </div>
+      )}
+      <div className="cifra-tabular" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '5px 12px', marginTop: 10, paddingTop: 10, borderTop: '0.5px solid var(--border)' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+          <span style={{ fontSize: 12, color: 'var(--text-secondary)' }}>Ingresos</span>
+          <span style={{ fontSize: 12, fontWeight: 600, color: '#33538F' }}>{formatDolares(r.ingresos)}</span>
+        </div>
+        <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+          <span style={{ fontSize: 12, color: 'var(--text-secondary)' }}>Retiros</span>
+          <span style={{ fontSize: 12, fontWeight: 600, color: '#791F1F' }}>{formatDolares(r.egresos)}</span>
+        </div>
+      </div>
+
+      {r.movimientos.length > 0 && (
+        <div className="cifra-tabular" style={{ marginTop: 10, paddingTop: 10, borderTop: '0.5px solid var(--border)', display: 'flex', flexDirection: 'column', gap: 5 }}>
+          <div className="form-label">Historial de movimientos</div>
+          {r.movimientos.map(m => (
+            <div key={m.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
+              <span style={{ fontSize: 11, color: 'var(--text-secondary)' }}>
+                {formatFechaDateISO(m.fecha)} · <strong style={{ color: m.tipo === 'egreso' ? '#791F1F' : '#33538F' }}>{m.tipo === 'egreso' ? '-' : '+'}{formatDolares(m.monto)}</strong>{m.concepto ? ` · ${m.concepto}` : ''}{m.creado_por ? ` · ${m.creado_por}` : ''}
+              </span>
+              <button onClick={() => onEliminarMovimiento(m.id)} style={{ ...btnLinkStyle('#791F1F'), fontSize: 14, lineHeight: 1 }}>×</button>
+            </div>
+          ))}
+        </div>
+      )}
+
+      <div style={{ display: 'flex', gap: 14, flexWrap: 'wrap', marginTop: 10 }}>
+        <button onClick={abrirMovimiento} style={btnLinkStyle('#33538F')}>+ Movimiento</button>
+        <button onClick={abrirValidarSaldo} style={btnLinkStyle('var(--text-secondary)')}>
+          {r.info.validado ? 'Corregir saldo validado' : 'Validar saldo inicial con el equipo'}
+        </button>
+      </div>
+
+      {formAbierto === 'saldo' && (
+        <div style={{ marginTop: 10 }}>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <InputMonto placeholder="Saldo real validado (US$)" value={inputSaldo} onChange={setInputSaldo} permiteNegativo style={{ flex: 1 }} />
+            <input className="form-control" type="date" value={inputCorte} onChange={e => setInputCorte(e.target.value)} style={{ flex: 1 }} />
+          </div>
+          <div style={{ fontSize: 11, color: 'var(--text-secondary)', marginTop: 6 }}>
+            Desde esta fecha se cuentan los movimientos nuevos — todo lo anterior queda afuera del saldo.
+          </div>
+          <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
+            <button className="btn-submit" style={{ width: 'auto', padding: '0 14px' }} onClick={confirmarSaldo}>Guardar</button>
+            <button onClick={() => setFormAbierto(null)} style={{ padding: '0 12px', border: '0.5px solid var(--border-mid)', borderRadius: 'var(--radius-md)', background: 'transparent', cursor: 'pointer', fontSize: 13, color: 'var(--text-secondary)' }}>Cancelar</button>
+          </div>
+        </div>
+      )}
+
+      {formAbierto === 'movimiento' && (
+        <div style={{ marginTop: 10 }}>
+          <div className="form-grid">
+            <div className="form-group">
+              <label className="form-label">Tipo</label>
+              <select className="form-control" value={formMov.tipo} onChange={e => setFormMov(f => ({ ...f, tipo: e.target.value }))}>
+                <option value="ingreso">Compra / depósito</option>
+                <option value="egreso">Retiro</option>
+              </select>
+            </div>
+            <div className="form-group">
+              <label className="form-label">Monto (US$)</label>
+              <InputMonto value={formMov.monto} onChange={v => setFormMov(f => ({ ...f, monto: v }))} />
+            </div>
+            <div className="form-group">
+              <label className="form-label">Fecha</label>
+              <input className="form-control" type="date" value={formMov.fecha} onChange={e => setFormMov(f => ({ ...f, fecha: e.target.value }))} />
+            </div>
+            <div className="form-group">
+              <label className="form-label">Concepto (opcional)</label>
+              <input className="form-control" type="text" placeholder="Ej: compra para reserva" value={formMov.concepto} onChange={e => setFormMov(f => ({ ...f, concepto: e.target.value }))} />
+            </div>
+          </div>
+          <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
+            <button className="btn-submit" onClick={confirmarMovimiento} style={{ flex: 1 }}>Guardar movimiento</button>
+            <button onClick={() => setFormAbierto(null)} style={{ padding: '0 16px', border: '0.5px solid var(--border-mid)', borderRadius: 'var(--radius-md)', background: 'transparent', cursor: 'pointer', fontSize: 13, color: 'var(--text-secondary)' }}>Cancelar</button>
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
 function TabFinanzas({ pedidos, esquejes, miembro, gastos, presupuestos, setPresupuestos, aportes, setAportes, gastosFijos, setGastosFijos, pedidoPagos, esquejePagos }) {
   const [subTab, setSubTab] = useState('general')
   const [cuentas, setCuentas] = useState([])
+  const [dolaresMovimientos, setDolaresMovimientos] = useState([])
   const [cargando, setCargando] = useState(true)
   const [errorCarga, setErrorCarga] = useState(false)
   const [intento, setIntento] = useState(0)
@@ -1710,15 +1851,20 @@ function TabFinanzas({ pedidos, esquejes, miembro, gastos, presupuestos, setPres
   const [inputSaldo, setInputSaldo] = useState('')
   const [inputCorte, setInputCorte] = useState('')
   const [verDetalleCuentas, setVerDetalleCuentas] = useState(false)
+  const [verDetalleDolares, setVerDetalleDolares] = useState(false)
   const [verPresupuestosGeneral, setVerPresupuestosGeneral] = useState(false)
   const [toast, showToast] = useToast()
 
 
   useEffect(() => {
     async function cargar() {
-      const { data: cuentasData, error: errCuentas } = await supabase.from('cuentas').select('*')
-      if (cuentasData) setCuentas(cuentasData)
-      setErrorCarga(Boolean(errCuentas))
+      const [cuentasRes, dolaresRes] = await Promise.all([
+        supabase.from('cuentas').select('*'),
+        supabase.from('dolares_movimientos').select('*').order('fecha', { ascending: false }),
+      ])
+      if (cuentasRes.data) setCuentas(cuentasRes.data)
+      if (dolaresRes.data) setDolaresMovimientos(dolaresRes.data)
+      setErrorCarga(Boolean(cuentasRes.error || dolaresRes.error))
       setCargando(false)
     }
     cargar()
@@ -1783,6 +1929,20 @@ function TabFinanzas({ pedidos, esquejes, miembro, gastos, presupuestos, setPres
   const totalGeneral = resumen.reduce((s, r) => s + r.saldo, 0)
   const totalEstimados = resumen.reduce((s, r) => s + r.estimados, 0)
 
+  // Cuentas en dólares: reserva/ahorro, sin pedidos ni gastos que las muevan —
+  // el saldo sale de saldo inicial validado + historial propio de movimientos.
+  const resumenDolares = useMemo(() => CUENTAS_DOLARES.map(nombre => {
+    const info = cuentas.find(c => c.nombre === nombre) || { nombre, saldo_inicial: 0, fecha_corte: FECHA_CORTE_DEFAULT, validado: false }
+    const movimientos = dolaresMovimientos.filter(m => m.cuenta === nombre)
+    const movimientosContados = movimientos.filter(m => esDesdeCorteISO(m.fecha, info.fecha_corte))
+    const ingresos = movimientosContados.filter(m => m.tipo === 'ingreso').reduce((s, m) => s + (m.monto || 0), 0)
+    const egresos = movimientosContados.filter(m => m.tipo === 'egreso').reduce((s, m) => s + (m.monto || 0), 0)
+    const saldo = (info.saldo_inicial || 0) + ingresos - egresos
+    return { nombre, info, ingresos, egresos, saldo, movimientos }
+  }), [cuentas, dolaresMovimientos])
+
+  const totalDolares = resumenDolares.reduce((s, r) => s + r.saldo, 0)
+
   // Pagos/gastos sin cuenta asignada no entran en ningún saldo de arriba y por eso no deben
   // quedar invisibles — se muestran aparte para que se corrijan. Se excluye lo anterior al
   // corte más viejo entre las cuentas configuradas: es plata migrada del historial que nunca
@@ -1797,24 +1957,41 @@ function TabFinanzas({ pedidos, esquejes, miembro, gastos, presupuestos, setPres
   const egresosSinCuenta = gastosSinCuenta.reduce((s, g) => s + (g.monto || 0), 0)
   const cantidadSinCuenta = pagosPedidosSinCuenta.length + pagosEsquejesSinCuenta.length + gastosSinCuenta.length
 
-  async function guardarSaldoInicial(nombre) {
-    const valor = parseFloat(inputSaldo)
+  async function actualizarSaldoCuenta(nombre, valorStr, corteStr) {
+    const valor = parseFloat(valorStr)
     if (isNaN(valor)) { showToast('Ingresá un número válido'); return }
-    if (!inputCorte) { showToast('Elegí una fecha de corte'); return }
+    if (!corteStr) { showToast('Elegí una fecha de corte'); return }
     const ahora = new Date().toISOString()
     const existente = cuentas.find(c => c.nombre === nombre)
     if (existente) {
-      const { error } = await supabase.from('cuentas').update({ saldo_inicial: valor, fecha_corte: inputCorte, validado: true, actualizado_por: miembro || null, actualizado_en: ahora }).eq('nombre', nombre)
-      if (!error) { setCuentas(prev => prev.map(c => c.nombre === nombre ? { ...c, saldo_inicial: valor, fecha_corte: inputCorte, validado: true, actualizado_por: miembro || null, actualizado_en: ahora } : c)); showToast('Saldo inicial validado ✓') }
+      const { error } = await supabase.from('cuentas').update({ saldo_inicial: valor, fecha_corte: corteStr, validado: true, actualizado_por: miembro || null, actualizado_en: ahora }).eq('nombre', nombre)
+      if (!error) { setCuentas(prev => prev.map(c => c.nombre === nombre ? { ...c, saldo_inicial: valor, fecha_corte: corteStr, validado: true, actualizado_por: miembro || null, actualizado_en: ahora } : c)); showToast('Saldo inicial validado ✓') }
       else showToast('Error al guardar')
     } else {
-      const { data, error } = await supabase.from('cuentas').insert({ nombre, saldo_inicial: valor, fecha_corte: inputCorte, validado: true, actualizado_por: miembro || null, actualizado_en: ahora }).select().single()
+      const { data, error } = await supabase.from('cuentas').insert({ nombre, saldo_inicial: valor, fecha_corte: corteStr, validado: true, actualizado_por: miembro || null, actualizado_en: ahora }).select().single()
       if (!error && data) { setCuentas(prev => [...prev, data]); showToast('Saldo inicial validado ✓') }
       else showToast('Error al guardar')
     }
+  }
+
+  async function guardarSaldoInicial(nombre) {
+    await actualizarSaldoCuenta(nombre, inputSaldo, inputCorte)
     setEditandoSaldo(null)
     setInputSaldo('')
     setInputCorte('')
+  }
+
+  async function agregarMovimientoDolares(nombre, { tipo, monto, concepto, fecha }) {
+    const nuevo = { cuenta: nombre, tipo, monto, concepto, fecha, creado_por: miembro || null }
+    const { data, error } = await supabase.from('dolares_movimientos').insert(nuevo).select().single()
+    if (!error && data) { setDolaresMovimientos(prev => [data, ...prev]); showToast('Movimiento registrado ✓') }
+    else showToast('Error al guardar')
+  }
+
+  async function eliminarMovimientoDolares(id) {
+    const { error } = await supabase.from('dolares_movimientos').delete().eq('id', id)
+    if (!error) setDolaresMovimientos(prev => prev.filter(m => m.id !== id))
+    else showToast('Error al eliminar')
   }
 
   // Punto de color en la pestaña de una locación cuando tiene presupuesto activo —
@@ -1881,6 +2058,11 @@ function TabFinanzas({ pedidos, esquejes, miembro, gastos, presupuestos, setPres
           <div className="stat-num" style={{ color: totalEstimados > 0 ? '#854F0B' : undefined }}>{totalEstimados}</div>
           <div className="stat-lbl">Registros a revisar</div>
         </div>
+        <div className="stat-card">
+          <Landmark size={16} color={totalDolares < 0 ? '#791F1F' : '#33538F'} style={{ marginBottom: 4 }} />
+          <div className="cifra-tabular stat-num" style={{ fontSize: 16, color: totalDolares < 0 ? '#791F1F' : '#33538F' }}>{formatDolares(totalDolares)}</div>
+          <div className="stat-lbl">Ahorro en dólares</div>
+        </div>
       </div>
       {totalEstimados > 0 && (
         <div className="card" style={{ marginBottom: 14, background: '#FFF8ED', borderColor: '#E8C77E' }}>
@@ -1903,11 +2085,11 @@ function TabFinanzas({ pedidos, esquejes, miembro, gastos, presupuestos, setPres
         </div>
       )}
       <button className="btn-disclosure" onClick={() => setVerDetalleCuentas(v => !v)}>
-        <span>{verDetalleCuentas ? 'Ocultar detalle por cuenta' : `Ver detalle por cuenta (${resumen.length})`}</span>
+        <span>{verDetalleCuentas ? 'Ocultar cuentas en pesos' : `Ver detalle cuentas en pesos (${resumen.length})`}</span>
         {verDetalleCuentas ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
       </button>
       {verDetalleCuentas && (
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 12, marginTop: 12 }}>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 10, marginTop: 10 }}>
         {resumen.map(r => (
           <div className="card" key={r.nombre}>
             <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
@@ -1916,7 +2098,7 @@ function TabFinanzas({ pedidos, esquejes, miembro, gastos, presupuestos, setPres
                 <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--text-primary)' }}>{r.nombre}</div>
                 <div className="form-label" style={{ marginTop: 2 }}>{r.nombre === CUENTA_EFECTIVO ? 'Efectivo' : 'Cuenta bancaria'}</div>
               </div>
-              <div style={{ fontSize: 18, fontWeight: 700, color: r.saldo < 0 ? '#791F1F' : 'var(--green-dark)', textAlign: 'right' }}>{formatPesos(r.saldo)}</div>
+              <div className="cifra-tabular" style={{ fontSize: 18, fontWeight: 700, color: r.saldo < 0 ? '#791F1F' : 'var(--green-dark)', textAlign: 'right' }}>{formatPesos(r.saldo)}</div>
             </div>
             <div style={{ fontSize: 11, color: 'var(--text-secondary)', marginTop: 10 }}>
               {r.info.validado ? `Saldo validado · ingresos y gastos contados desde ${formatFechaISOCorta(r.info.fecha_corte)}` : `Movimiento neto desde ${formatFechaISOCorta(r.info.fecha_corte)}`}
@@ -1926,7 +2108,7 @@ function TabFinanzas({ pedidos, esquejes, miembro, gastos, presupuestos, setPres
                 Último cambio: {r.info.actualizado_por} · {formatFechaHoraISO(r.info.actualizado_en)}
               </div>
             )}
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '5px 12px', marginTop: 10, paddingTop: 10, borderTop: '0.5px solid var(--border)' }}>
+            <div className="cifra-tabular" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '5px 12px', marginTop: 10, paddingTop: 10, borderTop: '0.5px solid var(--border)' }}>
               <div style={{ display: 'flex', justifyContent: 'space-between' }}>
                 <span style={{ fontSize: 12, color: 'var(--text-secondary)' }}>Ingresos</span>
                 <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--green-dark)' }}>{formatPesos(r.ingresos)}</span>
@@ -1959,6 +2141,23 @@ function TabFinanzas({ pedidos, esquejes, miembro, gastos, presupuestos, setPres
               </button>
             )}
           </div>
+        ))}
+      </div>
+      )}
+      <button className="btn-disclosure" style={{ marginTop: 10 }} onClick={() => setVerDetalleDolares(v => !v)}>
+        <span>{verDetalleDolares ? 'Ocultar cuentas en dólares' : `Ver detalle cuentas en dólares (${resumenDolares.length})`}</span>
+        {verDetalleDolares ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
+      </button>
+      {verDetalleDolares && (
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 10, marginTop: 10 }}>
+        {resumenDolares.map(r => (
+          <TarjetaCuentaDolar
+            key={r.nombre}
+            r={r}
+            onValidarSaldo={actualizarSaldoCuenta}
+            onAgregarMovimiento={agregarMovimientoDolares}
+            onEliminarMovimiento={eliminarMovimientoDolares}
+          />
         ))}
       </div>
       )}
