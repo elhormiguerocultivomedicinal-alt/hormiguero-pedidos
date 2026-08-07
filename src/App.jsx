@@ -100,8 +100,18 @@ const CATEGORIAS_GASTOS_MAP = {
 
 // ─── Finanzas: cuentas ──────────────────────────────────────────
 const CUENTA_EFECTIVO = 'Efectivo - Caja Hormi'
-const CUENTAS_BANCARIAS = ['NaranjaX - Nacho', 'NaranjaX - Nico', 'NaranjaX - Bruno', 'Lemon - Checho']
+// Cuenta bancaria propia del Hormiguero (CUIT), todavía no abierta — se deja montada ya para que
+// las transferencias de membresías tengan dónde caer; renombrar acá cuando exista la cuenta real.
+const CUENTA_HORMIGUERO = 'Cuenta Hormiguero (CUIT)'
+const CUENTAS_BANCARIAS = ['NaranjaX - Nacho', 'NaranjaX - Nico', 'NaranjaX - Bruno', 'Lemon - Checho', CUENTA_HORMIGUERO]
 const CUENTAS = [...CUENTAS_BANCARIAS, CUENTA_EFECTIVO]
+// Transferencia de una venta de membresía: siempre a CUENTA_HORMIGUERO, sin elegir — todas las
+// transferencias de membresías van a la misma cuenta de la organización, no a una personal.
+function opcionesCuenta(metodoPago, esMembresia) {
+  if (metodoPago === 'Efectivo') return [CUENTA_EFECTIVO]
+  if (esMembresia) return [CUENTA_HORMIGUERO]
+  return CUENTAS_BANCARIAS
+}
 const CUENTAS_DOLARES = ['NaranjaX (Dólar) - Nacho', 'NaranjaX (Dólar) - Nico', 'Lemon (Dólar) - Checho']
 const FECHA_CORTE_DEFAULT = '2026-05-31'
 
@@ -390,19 +400,26 @@ function PagosRegistro({ registro, pagos, total, miembro, onAgregarPago, onEdita
   // coincide con lo que falta cobrar. Tildarlo lo completa; destildarlo lo vacía de nuevo.
   const esPagoTotal = montoPagoTotal > 0 && form && form.monto === String(montoPagoTotal)
 
+  const esMembresia = !!registro.membresia
+  function cuentaPara(metodoPago, cuentaPrevia) {
+    if (metodoPago === 'Efectivo') return CUENTA_EFECTIVO
+    if (esMembresia) return CUENTA_HORMIGUERO
+    return cuentaPrevia === CUENTA_EFECTIVO ? '' : cuentaPrevia
+  }
   function abrirAgregar() {
-    setForm({ monto: '', metodoPago: 'Transferencia', cuenta: '', fecha: new Date().toISOString().slice(0, 10) })
+    setForm({ monto: '', metodoPago: 'Transferencia', cuenta: cuentaPara('Transferencia', ''), fecha: new Date().toISOString().slice(0, 10) })
     setError('')
     setFormPara('agregar')
   }
   function abrirEditar(pg) {
-    setForm({ monto: String(pg.monto), metodoPago: pg.metodo_pago || 'Transferencia', cuenta: pg.cuenta || '', fecha: pg.fecha || new Date().toISOString().slice(0, 10) })
+    const metodoPago = pg.metodo_pago || 'Transferencia'
+    setForm({ monto: String(pg.monto), metodoPago, cuenta: cuentaPara(metodoPago, pg.cuenta || ''), fecha: pg.fecha || new Date().toISOString().slice(0, 10) })
     setError('')
     setFormPara(pg.id)
   }
   function cerrar() { setFormPara(null); setForm(null); setError('') }
   function setMetodoPago(val) {
-    setForm(f => ({ ...f, metodoPago: val, cuenta: val === 'Efectivo' ? CUENTA_EFECTIVO : (f.cuenta === CUENTA_EFECTIVO ? '' : f.cuenta) }))
+    setForm(f => ({ ...f, metodoPago: val, cuenta: cuentaPara(val, f.cuenta) }))
   }
   function marcarPagoTotal(marcar) {
     setForm(f => ({ ...f, monto: marcar ? String(montoPagoTotal) : '' }))
@@ -458,10 +475,13 @@ function PagosRegistro({ registro, pagos, total, miembro, onAgregarPago, onEdita
         </div>
         <div className="form-group">
           <label className="form-label">Cuenta</label>
-          <select className="form-control" value={form.cuenta} disabled={form.metodoPago === 'Efectivo'} onChange={e => setForm(f => ({ ...f, cuenta: e.target.value }))}>
+          <select className="form-control" value={form.cuenta} disabled={opcionesCuenta(form.metodoPago, esMembresia).length === 1} onChange={e => setForm(f => ({ ...f, cuenta: e.target.value }))}>
             <option value="">Seleccionar...</option>
-            {(form.metodoPago === 'Efectivo' ? [CUENTA_EFECTIVO] : CUENTAS_BANCARIAS).map(c => <option key={c} value={c}>{c}</option>)}
+            {opcionesCuenta(form.metodoPago, esMembresia).map(c => <option key={c} value={c}>{c}</option>)}
           </select>
+          {esMembresia && form.metodoPago === 'Transferencia' && (
+            <div style={{ fontSize: 11, color: 'var(--text-secondary)', marginTop: 2 }}>Las transferencias de membresías van siempre a esta cuenta.</div>
+          )}
         </div>
         <div className="form-group">
           <label className="form-label">Fecha</label>
@@ -895,9 +915,11 @@ function FormRegistro({ cfg, onGuardar, onAgregarPago, miembro, tipoRegistro = '
     set('filas', [...form.filas, cfg.nuevaFila()])
   }
   function eliminarFila(id) { if (form.filas.length === 1) return; set('filas', form.filas.filter(f => f.id !== id)) }
-  function handleCobradoAhora(val) { setForm(f => ({ ...f, cobradoAhora: val, montoPago: val ? (total ? String(total) : '') : '' })) }
-  function handleMetodoPago(val) { setForm(f => ({ ...f, metodoPago: val, cuenta: val === 'Efectivo' ? CUENTA_EFECTIVO : (f.cuenta === CUENTA_EFECTIVO ? '' : f.cuenta) })) }
-  function handleEsMembresia(val) { setForm(f => ({ ...f, esMembresia: val, tier: null, socioId: val ? f.socioId : '', socio: val ? '' : f.socio })) }
+  function handleCobradoAhora(val) {
+    setForm(f => ({ ...f, cobradoAhora: val, montoPago: val ? (total ? String(total) : '') : '', cuenta: val ? (f.esMembresia ? CUENTA_HORMIGUERO : f.cuenta) : f.cuenta }))
+  }
+  function handleMetodoPago(val) { setForm(f => ({ ...f, metodoPago: val, cuenta: val === 'Efectivo' ? CUENTA_EFECTIVO : (f.esMembresia ? CUENTA_HORMIGUERO : (f.cuenta === CUENTA_EFECTIVO ? '' : f.cuenta)) })) }
+  function handleEsMembresia(val) { setForm(f => ({ ...f, esMembresia: val, tier: null, socioId: val ? f.socioId : '', socio: val ? '' : f.socio, cuenta: val && f.metodoPago === 'Transferencia' ? CUENTA_HORMIGUERO : f.cuenta })) }
   function handleTier(tier) { setForm(f => ({ ...f, tier, filas: f.filas.slice(0, maxGeneticasMembresia(tier)) })) }
   function handleSocioId(id) {
     const s = (socios || []).find(x => String(x.id) === String(id))
@@ -1058,10 +1080,13 @@ function FormRegistro({ cfg, onGuardar, onAgregarPago, miembro, tipoRegistro = '
                   </div>
                   <div className="form-group full">
                     <label className="form-label">Cuenta</label>
-                    <select className="form-control" value={form.cuenta} disabled={form.metodoPago === 'Efectivo'} onChange={e => set('cuenta', e.target.value)}>
+                    <select className="form-control" value={form.cuenta} disabled={opcionesCuenta(form.metodoPago, form.esMembresia).length === 1} onChange={e => set('cuenta', e.target.value)}>
                       <option value="">Seleccionar...</option>
-                      {(form.metodoPago === 'Efectivo' ? [CUENTA_EFECTIVO] : CUENTAS_BANCARIAS).map(c => <option key={c} value={c}>{c}</option>)}
+                      {opcionesCuenta(form.metodoPago, form.esMembresia).map(c => <option key={c} value={c}>{c}</option>)}
                     </select>
+                    {form.esMembresia && form.metodoPago === 'Transferencia' && (
+                      <div style={{ fontSize: 11, color: 'var(--text-secondary)', marginTop: 2 }}>Las transferencias de membresías van siempre a esta cuenta.</div>
+                    )}
                   </div>
                   <div className="form-group full">
                     <label className="form-label">Fecha de cobro</label>
