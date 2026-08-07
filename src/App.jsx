@@ -136,6 +136,19 @@ const CFG_ESQUEJES = {
   fkPagos: 'esqueje_id',
 }
 
+// ─── Membresías de socios (solo Cosecha) ───────────────────────
+// El precio por gramo de cada tier ya deja el total bien puesto con la
+// fórmula que usa cualquier fila de genética (cantidad × precio): no hace
+// falta ningún cálculo de total aparte para una venta de membresía.
+const MEMBRESIAS = {
+  A: { gramos: 5, precio: 57500, precioPorGramo: 11500 },
+  B: { gramos: 10, precio: 105000, precioPorGramo: 10500 },
+  C: { gramos: 15, precio: 142500, precioPorGramo: 9500 },
+  D: { gramos: 20, precio: 170000, precioPorGramo: 8500 },
+}
+const ORDEN_MEMBRESIAS = ['A', 'B', 'C', 'D']
+const maxGeneticasMembresia = tier => ORDEN_MEMBRESIAS.indexOf(tier) + 1
+
 // ─── DatePicker ───────────────────────────────────────────────
 const DIAS_SEMANA = ['Lu', 'Ma', 'Mi', 'Ju', 'Vi', 'Sa', 'Do']
 const NOMBRES_MESES_LARGO = ['Enero', 'Febrero', 'Marzo', 'Abril', 'Mayo', 'Junio', 'Julio', 'Agosto', 'Septiembre', 'Octubre', 'Noviembre', 'Diciembre']
@@ -455,7 +468,7 @@ function PagosRegistro({ registro, pagos, total, miembro, onAgregarPago, onEdita
           <input className="form-control" type="date" value={form.fecha} onChange={e => setForm(f => ({ ...f, fecha: e.target.value }))} />
         </div>
       </div>
-      {haySobrepago && <div style={{ fontSize: 11, color: '#791F1F', marginTop: 6 }}>⚠ Este cobro deja {formatPesos(excedente)} por encima del total del {registro.propio ? 'registro' : 'pedido'}.</div>}
+      {haySobrepago && <div style={{ fontSize: 11, color: '#791F1F', marginTop: 6 }}>⚠ Este cobro deja {formatPesos(excedente)} por encima del total del {registro.tipo && registro.tipo !== 'cliente' ? 'registro' : 'pedido'}.</div>}
       {error && <div style={{ fontSize: 12, color: '#791F1F', marginTop: 4 }}>{error}</div>}
       <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
         <button className="btn-submit" onClick={confirmar} disabled={guardando} style={{ flex: 1 }}>{formPara === 'agregar' ? 'Guardar cobro' : 'Guardar cambios'}</button>
@@ -499,8 +512,9 @@ function PagosRegistro({ registro, pagos, total, miembro, onAgregarPago, onEdita
 }
 
 // ─── Modal edición completa (genérico: pedido o esqueje) ───────
-function ModalEditarRegistro({ cfg, registro, pagos, miembro, onAgregarPago, onEditarPago, onEliminarPago, onGuardar, onEliminar, onCerrar }) {
+function ModalEditarRegistro({ cfg, registro, pagos, miembro, onAgregarPago, onEditarPago, onEliminarPago, onGuardar, onEliminar, onCerrar, permiteMembresia, socios }) {
   useEscape(onCerrar)
+  const esInterno = registro.tipo !== 'cliente'
   const tienePrecioPorFila = registro.geneticas.some(g => g.precio !== undefined && g.precio !== null)
   const [form, setForm] = useState({
     socio: registro.socio,
@@ -509,30 +523,39 @@ function ModalEditarRegistro({ cfg, registro, pagos, miembro, onAgregarPago, onE
     mes: registro.mes || '',
     filas: registro.geneticas.map(g => ({ id: Math.random(), nombre: g.nombre, cantidad: g.cantidad, precio: g.precio ?? '' })),
     precio: registro.precio,
-    propio: registro.propio,
     entregado: registro.entregado,
+    esMembresia: !!registro.membresia,
+    tier: registro.membresia || null,
+    socioId: registro.socioId || '',
   })
   const [confirmando, setConfirmando] = useState(false)
   const [confirmarTotal, setConfirmarTotal] = useState(false)
   const [errorMonto, setErrorMonto] = useState('')
   const [errorCampos, setErrorCampos] = useState('')
 
-  const tienePagos = pagosDe(pagos, registro.id, cfg.fkPagos).length > 0
-
   const set = (k, v) => setForm(f => ({ ...f, [k]: v }))
-  const total = form.propio ? 0 : form.filas.reduce((s, f) => {
-    const precioFila = tienePrecioPorFila ? (parseFloat(f.precio) || 0) : (parseFloat(form.precio) || 0)
-    return s + (parseFloat(f.cantidad) || 0) * precioFila
+  const precioFila = f => form.esMembresia ? (MEMBRESIAS[form.tier]?.precioPorGramo ?? '') : f.precio
+  const total = esInterno ? 0 : form.filas.reduce((s, f) => {
+    const p = tienePrecioPorFila ? (parseFloat(precioFila(f)) || 0) : (parseFloat(form.precio) || 0)
+    return s + (parseFloat(f.cantidad) || 0) * p
   }, 0)
   // Pedidos migrados del historial (sin precio por genética) guardan un total real que no
   // necesariamente coincide con cantidad × precio único — recalcular y pisarlo sin avisar
   // puede cambiar plata real sin que nadie se dé cuenta. Ver auditoria-salud.md punto 1.
-  const totalDifiere = !form.propio && !tienePrecioPorFila && Math.abs(total - (registro.total || 0)) >= 1
+  const totalDifiere = !esInterno && !tienePrecioPorFila && Math.abs(total - (registro.total || 0)) >= 1
 
   function setFila(id, key, val) { set('filas', form.filas.map(f => f.id === id ? { ...f, [key]: val } : f)) }
-  function agregarFila() { set('filas', [...form.filas, { id: Math.random(), nombre: '', cantidad: '', precio: tienePrecioPorFila ? cfg.precioDefaultFila : '' }]) }
+  function agregarFila() {
+    if (form.esMembresia && form.tier && form.filas.length >= maxGeneticasMembresia(form.tier)) return
+    set('filas', [...form.filas, { id: Math.random(), nombre: '', cantidad: '', precio: tienePrecioPorFila ? cfg.precioDefaultFila : '' }])
+  }
   function eliminarFila(id) { if (form.filas.length > 1) set('filas', form.filas.filter(f => f.id !== id)) }
-  function handlePropio(val) { setForm(f => ({ ...f, propio: val, precio: val ? 0 : PRECIO_DEFAULT })) }
+  function handleEsMembresia(val) { setForm(f => ({ ...f, esMembresia: val, tier: null, socioId: val ? f.socioId : '', socio: val ? '' : f.socio })) }
+  function handleTier(tier) { setForm(f => ({ ...f, tier, filas: f.filas.slice(0, maxGeneticasMembresia(tier)) })) }
+  function handleSocioId(id) {
+    const s = (socios || []).find(x => String(x.id) === String(id))
+    setForm(f => ({ ...f, socioId: id, socio: s ? s.nombre : '' }))
+  }
 
   function guardar(confirmarCambioTotal = false) {
     const filasValidas = form.filas.filter(f => f.nombre)
@@ -541,17 +564,30 @@ function ModalEditarRegistro({ cfg, registro, pagos, miembro, onAgregarPago, onE
       setErrorCampos('Completá socio, genética y cantidad.')
       return
     }
+    if (form.esMembresia) {
+      if (!form.tier) { setErrorCampos('Elegí una membresía.'); return }
+      if (!form.socioId) { setErrorCampos('Elegí un socio.'); return }
+      const gramosCargados = filasValidas.reduce((s, f) => s + (parseFloat(f.cantidad) || 0), 0)
+      if (gramosCargados !== MEMBRESIAS[form.tier].gramos) {
+        setErrorCampos(`La suma de gramos tiene que ser ${MEMBRESIAS[form.tier].gramos}g para la membresía ${form.tier}.`)
+        return
+      }
+    }
     setErrorCampos('')
-    if (!form.propio && total <= 0) { setErrorMonto('El total no puede ser $0 — revisá el precio cargado.'); return }
+    if (!esInterno && total <= 0) { setErrorMonto('El total no puede ser $0 — revisá el precio cargado.'); return }
     setErrorMonto('')
     if (totalDifiere && !confirmarCambioTotal) { setConfirmarTotal(true); return }
     const geneticas = filasValidas.map(f => tienePrecioPorFila
-      ? { nombre: f.nombre, cantidad: f.cantidad, precio: f.precio }
+      ? { nombre: f.nombre, cantidad: f.cantidad, precio: precioFila(f) }
       : { nombre: f.nombre, cantidad: f.cantidad })
     let mes = form.mes
     const partes = form.fecha.split('/')
     if (partes.length === 3) mes = `${parseInt(partes[1])}/${partes[2]}`
-    onGuardar({ ...registro, ...form, mes, geneticas, total, precio: form.precio })
+    onGuardar({
+      ...registro, ...form, mes, geneticas, total, precio: form.precio,
+      membresia: form.esMembresia ? form.tier : null,
+      socioId: form.esMembresia ? (form.socioId || null) : null,
+    })
   }
 
   return (
@@ -566,10 +602,42 @@ function ModalEditarRegistro({ cfg, registro, pagos, miembro, onAgregarPago, onE
             <button key={m} className={`miembro-btn${form.miembro === m ? ' active' : ''}`} onClick={() => set('miembro', m)}>{m}</button>
           ))}
         </div>
+        {permiteMembresia && (
+          <div className="form-grid" style={{ marginBottom: 0 }}>
+            <div className="form-group full">
+              <div className="toggle-row">
+                <span className="toggle-label">¿Es membresía?</span>
+                <label className="toggle-switch">
+                  <input type="checkbox" checked={form.esMembresia} onChange={e => handleEsMembresia(e.target.checked)} />
+                  <span className="toggle-slider" />
+                </label>
+              </div>
+            </div>
+            {form.esMembresia && (
+              <div className="form-group full">
+                <label className="form-label">Membresía</label>
+                <div className="miembro-row">
+                  {ORDEN_MEMBRESIAS.map(tier => (
+                    <button key={tier} type="button" className={`miembro-btn${form.tier === tier ? ' active' : ''}`} onClick={() => handleTier(tier)}>
+                      {tier} · {MEMBRESIAS[tier].gramos}g · {formatPesos(MEMBRESIAS[tier].precio)}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+        )}
         <div className="form-grid">
           <div className="form-group full">
             <label className="form-label">Socio</label>
-            <input className="form-control" type="text" value={form.socio} onChange={e => set('socio', e.target.value)} />
+            {form.esMembresia ? (
+              <select className="form-control" value={form.socioId} onChange={e => handleSocioId(e.target.value)}>
+                <option value="">Seleccionar socio...</option>
+                {(socios || []).map(s => <option key={s.id} value={s.id}>{s.nombre}</option>)}
+              </select>
+            ) : (
+              <input className="form-control" type="text" value={form.socio} onChange={e => set('socio', e.target.value)} />
+            )}
           </div>
           <div className="form-group full">
             <label className="form-label">Fecha</label>
@@ -588,19 +656,26 @@ function ModalEditarRegistro({ cfg, registro, pagos, miembro, onAgregarPago, onE
                 </select>
                 <input className="form-control fila-cantidad" type="number" placeholder={cfg.unidad} min="0" value={fila.cantidad} onChange={e => setFila(fila.id, 'cantidad', e.target.value)} />
                 {tienePrecioPorFila && (
-                  <InputMonto className="form-control fila-cantidad" placeholder={`$/${cfg.unidad}`} value={fila.precio} disabled={form.propio} onChange={v => setFila(fila.id, 'precio', v)} />
+                  <InputMonto className="form-control fila-cantidad" placeholder={`$/${cfg.unidad}`} value={precioFila(fila)} disabled={esInterno || form.esMembresia} onChange={v => setFila(fila.id, 'precio', v)} />
                 )}
                 {form.filas.length > 1 && <button className="btn-eliminar-fila" onClick={() => eliminarFila(fila.id)}>✕</button>}
               </div>
             ))}
           </div>
-          <button className="btn-agregar-fila" onClick={agregarFila}>+ Agregar genética</button>
+          {!(form.esMembresia && form.tier && form.filas.length >= maxGeneticasMembresia(form.tier)) && (
+            <button className="btn-agregar-fila" onClick={agregarFila}>+ Agregar genética</button>
+          )}
+          {form.esMembresia && form.tier && (
+            <div style={{ fontSize: 11, marginTop: 4, color: form.filas.reduce((s, f) => s + (parseFloat(f.cantidad) || 0), 0) === MEMBRESIAS[form.tier].gramos ? 'var(--text-secondary)' : '#854F0B' }}>
+              {form.filas.reduce((s, f) => s + (parseFloat(f.cantidad) || 0), 0)}g cargados de {MEMBRESIAS[form.tier].gramos}g de la membresía {form.tier}
+            </div>
+          )}
         </div>
         <div className="form-grid">
           {!tienePrecioPorFila && (
             <div className="form-group">
               <label className="form-label">Precio por {cfg.unidad} ($)</label>
-              <InputMonto value={form.precio} onChange={v => set('precio', v)} disabled={form.propio} />
+              <InputMonto value={form.precio} onChange={v => set('precio', v)} disabled={esInterno} />
             </div>
           )}
           <div className="form-group">
@@ -628,14 +703,6 @@ function ModalEditarRegistro({ cfg, registro, pagos, miembro, onAgregarPago, onE
         )}
         <div className="toggle-group">
           <div className="toggle-row">
-            <span className="toggle-label">Consumo propio</span>
-            <label className="toggle-switch">
-              <input type="checkbox" checked={form.propio} disabled={tienePagos} onChange={e => handlePropio(e.target.checked)} />
-              <span className="toggle-slider" />
-            </label>
-          </div>
-          {tienePagos && <div style={{ fontSize: 11, color: 'var(--text-secondary)', marginTop: -6 }}>Ya tiene pagos registrados — no se puede marcar como consumo propio.</div>}
-          <div className="toggle-row">
             <span className="toggle-label">{cfg.labelEntregado}</span>
             <label className="toggle-switch">
               <input type="checkbox" checked={form.entregado} onChange={e => set('entregado', e.target.checked)} />
@@ -643,7 +710,7 @@ function ModalEditarRegistro({ cfg, registro, pagos, miembro, onAgregarPago, onE
             </label>
           </div>
         </div>
-        {!form.propio && (
+        {!esInterno && (
           <PagosRegistro registro={registro} pagos={pagos} total={total} miembro={miembro} onAgregarPago={onAgregarPago} onEditarPago={onEditarPago} onEliminarPago={onEliminarPago} fkCampo={cfg.fkPagos} compacto={false} />
         )}
         {errorCampos && (
@@ -804,23 +871,36 @@ function ModalEditarGasto({ gasto, categorias, presupuestos, onGuardar, onElimin
 }
 
 // ─── Formulario nuevo registro (genérico: pedido o esqueje) ───
-function FormRegistro({ cfg, onGuardar, onAgregarPago, miembro }) {
+function FormRegistro({ cfg, onGuardar, onAgregarPago, miembro, tipoRegistro = 'cliente', permiteMembresia, socios }) {
+  const esInterno = tipoRegistro !== 'cliente'
   const initial = () => ({
-    socio: '', propio: false, entregado: false, filas: [cfg.nuevaFila()],
+    socio: '', entregado: false, filas: [cfg.nuevaFila()],
     cobradoAhora: false, montoPago: '', metodoPago: 'Transferencia', cuenta: '', fechaPago: new Date().toISOString().slice(0, 10),
+    esMembresia: false, tier: null, socioId: '',
   })
   const [form, setForm] = useState(initial)
   const [toast, showToast] = useToast()
 
   const set = (key, val) => setForm(f => ({ ...f, [key]: val }))
-  const total = form.propio ? 0 : form.filas.reduce((s, f) => s + (parseFloat(f.cantidad) || 0) * (parseFloat(f.precio) || 0), 0)
+  const precioFila = f => form.esMembresia ? (MEMBRESIAS[form.tier]?.precioPorGramo ?? '') : f.precio
+  const total = esInterno ? 0 : form.filas.reduce((s, f) => s + (parseFloat(f.cantidad) || 0) * (parseFloat(precioFila(f)) || 0), 0)
+  const gramosCargados = form.filas.reduce((s, f) => s + (parseFloat(f.cantidad) || 0), 0)
+  const gramosObjetivo = form.esMembresia && form.tier ? MEMBRESIAS[form.tier].gramos : null
 
   function setFila(id, key, val) { set('filas', form.filas.map(f => f.id === id ? { ...f, [key]: val } : f)) }
-  function agregarFila() { set('filas', [...form.filas, cfg.nuevaFila()]) }
+  function agregarFila() {
+    if (form.esMembresia && form.tier && form.filas.length >= maxGeneticasMembresia(form.tier)) return
+    set('filas', [...form.filas, cfg.nuevaFila()])
+  }
   function eliminarFila(id) { if (form.filas.length === 1) return; set('filas', form.filas.filter(f => f.id !== id)) }
-  function handlePropio(val) { setForm(f => ({ ...f, propio: val, cobradoAhora: val ? false : f.cobradoAhora })) }
   function handleCobradoAhora(val) { setForm(f => ({ ...f, cobradoAhora: val, montoPago: val ? (total ? String(total) : '') : '' })) }
   function handleMetodoPago(val) { setForm(f => ({ ...f, metodoPago: val, cuenta: val === 'Efectivo' ? CUENTA_EFECTIVO : (f.cuenta === CUENTA_EFECTIVO ? '' : f.cuenta) })) }
+  function handleEsMembresia(val) { setForm(f => ({ ...f, esMembresia: val, tier: null, socioId: val ? f.socioId : '', socio: val ? '' : f.socio })) }
+  function handleTier(tier) { setForm(f => ({ ...f, tier, filas: f.filas.slice(0, maxGeneticasMembresia(tier)) })) }
+  function handleSocioId(id) {
+    const s = (socios || []).find(x => String(x.id) === String(id))
+    setForm(f => ({ ...f, socioId: id, socio: s ? s.nombre : '' }))
+  }
 
   async function guardar() {
     const filasValidas = form.filas.filter(f => f.nombre)
@@ -829,7 +909,12 @@ function FormRegistro({ cfg, onGuardar, onAgregarPago, miembro }) {
       showToast('Completá socio, genética y cantidad')
       return
     }
-    if (!form.propio && total <= 0) {
+    if (form.esMembresia) {
+      if (!form.tier) { showToast('Elegí una membresía'); return }
+      if (!form.socioId) { showToast('Elegí un socio'); return }
+      if (gramosCargados !== gramosObjetivo) { showToast(`La suma de gramos tiene que ser ${gramosObjetivo}g para la membresía ${form.tier}`); return }
+    }
+    if (!esInterno && total <= 0) {
       showToast('El total no puede ser $0 — revisá el precio cargado')
       return
     }
@@ -842,7 +927,7 @@ function FormRegistro({ cfg, onGuardar, onAgregarPago, miembro }) {
       showToast('Elegí una cuenta para el cobro')
       return
     }
-    const geneticas = filasValidas.map(f => ({ nombre: f.nombre, cantidad: f.cantidad, precio: f.precio }))
+    const geneticas = filasValidas.map(f => ({ nombre: f.nombre, cantidad: f.cantidad, precio: precioFila(f) }))
     const registro = {
       id: Date.now(),
       fecha: hoyCompleto(),
@@ -851,7 +936,9 @@ function FormRegistro({ cfg, onGuardar, onAgregarPago, miembro }) {
       geneticas,
       precio: cfg.precioDefaultFila,
       total,
-      propio: form.propio,
+      tipo: tipoRegistro,
+      membresia: form.esMembresia ? form.tier : null,
+      socioId: form.esMembresia ? (form.socioId || null) : null,
       entregado: form.entregado,
     }
     const res = await onGuardar(registro)
@@ -872,10 +959,42 @@ function FormRegistro({ cfg, onGuardar, onAgregarPago, miembro }) {
         Registrando como <strong style={{ color: 'var(--text-primary)' }}>{miembro || '—'}</strong>
       </div>
       <div className="card">
+        {permiteMembresia && (
+          <div className="form-grid" style={{ marginBottom: 14, paddingBottom: 14, borderBottom: '0.5px solid var(--border)' }}>
+            <div className="form-group full">
+              <div className="toggle-row">
+                <span className="toggle-label">¿Es membresía?</span>
+                <label className="toggle-switch">
+                  <input type="checkbox" checked={form.esMembresia} onChange={e => handleEsMembresia(e.target.checked)} />
+                  <span className="toggle-slider" />
+                </label>
+              </div>
+            </div>
+            {form.esMembresia && (
+              <div className="form-group full">
+                <label className="form-label">Membresía</label>
+                <div className="miembro-row">
+                  {ORDEN_MEMBRESIAS.map(tier => (
+                    <button key={tier} type="button" className={`miembro-btn${form.tier === tier ? ' active' : ''}`} onClick={() => handleTier(tier)}>
+                      {tier} · {MEMBRESIAS[tier].gramos}g · {formatPesos(MEMBRESIAS[tier].precio)}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+        )}
         <div className="form-grid">
           <div className="form-group full">
             <label className="form-label">Socio</label>
-            <input className="form-control" type="text" placeholder="Nombre del socio..." value={form.socio} onChange={e => set('socio', e.target.value)} />
+            {form.esMembresia ? (
+              <select className="form-control" value={form.socioId} onChange={e => handleSocioId(e.target.value)}>
+                <option value="">Seleccionar socio...</option>
+                {(socios || []).map(s => <option key={s.id} value={s.id}>{s.nombre}</option>)}
+              </select>
+            ) : (
+              <input className="form-control" type="text" placeholder="Nombre del socio..." value={form.socio} onChange={e => set('socio', e.target.value)} />
+            )}
           </div>
           <div className="form-group full">
             <label className="form-label">Genética</label>
@@ -887,12 +1006,19 @@ function FormRegistro({ cfg, onGuardar, onAgregarPago, miembro }) {
                     {cfg.geneticas.map(g => <option key={g} value={g}>{g}</option>)}
                   </select>
                   <input className="form-control fila-cantidad" type="number" placeholder={cfg.unidad} min="0" value={fila.cantidad} onChange={e => setFila(fila.id, 'cantidad', e.target.value)} />
-                  <InputMonto className="form-control fila-cantidad" placeholder={`$/${cfg.unidad}`} value={fila.precio} disabled={form.propio} onChange={v => setFila(fila.id, 'precio', v)} />
+                  <InputMonto className="form-control fila-cantidad" placeholder={`$/${cfg.unidad}`} value={precioFila(fila)} disabled={esInterno || form.esMembresia} onChange={v => setFila(fila.id, 'precio', v)} />
                   {form.filas.length > 1 && <button className="btn-eliminar-fila" onClick={() => eliminarFila(fila.id)}>✕</button>}
                 </div>
               ))}
             </div>
-            <button className="btn-agregar-fila" onClick={agregarFila}>+ Agregar genética al {cfg.singular}</button>
+            {!(form.esMembresia && form.tier && form.filas.length >= maxGeneticasMembresia(form.tier)) && (
+              <button className="btn-agregar-fila" onClick={agregarFila}>+ Agregar genética al {cfg.singular}</button>
+            )}
+            {gramosObjetivo != null && (
+              <div style={{ fontSize: 11, marginTop: 4, color: gramosCargados === gramosObjetivo ? 'var(--text-secondary)' : '#854F0B' }}>
+                {gramosCargados}g cargados de {gramosObjetivo}g de la membresía {form.tier}
+              </div>
+            )}
           </div>
           <div className="form-group full">
             <div className="total-row">
@@ -904,14 +1030,7 @@ function FormRegistro({ cfg, onGuardar, onAgregarPago, miembro }) {
       </div>
       <div className="card">
         <div className="toggle-group">
-          <div className="toggle-row">
-            <span className="toggle-label">Consumo propio</span>
-            <label className="toggle-switch">
-              <input type="checkbox" checked={form.propio} onChange={e => handlePropio(e.target.checked)} />
-              <span className="toggle-slider" />
-            </label>
-          </div>
-          {!form.propio && (
+          {!esInterno && (
             <>
               <div className="toggle-row">
                 <span className="toggle-label">Cobrado en el momento</span>
@@ -977,7 +1096,7 @@ function FormRegistro({ cfg, onGuardar, onAgregarPago, miembro }) {
 // en acordeón. Mismo patrón que Gastos, pero acá todos los meses arrancan
 // cerrados (ni siquiera el actual se auto-abre): el usuario elige qué
 // mes abrir en vez de ver el mes en curso expandido de entrada.
-function ListaRegistrosPorMes({ cfg, registros, onActualizar, onEliminar, pagos, miembro, onAgregarPago, onEditarPago, onEliminarPago, target }) {
+function ListaRegistrosPorMes({ cfg, registros, onActualizar, onEliminar, pagos, miembro, onAgregarPago, onEditarPago, onEliminarPago, target, permiteMembresia, socios }) {
   const [filtroEstado, setFiltroEstado] = useState('todos')
   const [mesesAbiertos, setMesesAbiertos] = useState(() => target ? new Set([target.mes]) : new Set())
   const [editando, setEditando] = useState(() => target ? (registros.find(r => r.id === target.id) || null) : null)
@@ -991,7 +1110,7 @@ function ListaRegistrosPorMes({ cfg, registros, onActualizar, onEliminar, pagos,
   }
 
   function estadoDe(r) {
-    return r.propio ? 'propio' : estadoCobro(r.total, totalCobrado(pagos, r.id, cfg.fkPagos))
+    return r.tipo !== 'cliente' ? r.tipo : estadoCobro(r.total, totalCobrado(pagos, r.id, cfg.fkPagos))
   }
 
   const filtrados = registros.filter(r => {
@@ -1001,7 +1120,7 @@ function ListaRegistrosPorMes({ cfg, registros, onActualizar, onEliminar, pagos,
     return true
   })
 
-  const totalVendido = filtrados.filter(r => !r.propio).reduce((s, r) => s + (r.total || 0), 0)
+  const totalVendido = filtrados.filter(r => r.tipo === 'cliente').reduce((s, r) => s + (r.total || 0), 0)
   const sinEntregar = filtrados.filter(r => !r.entregado).length
   const meses = ordenarMesesDesc([...new Set(filtrados.map(r => r.mes).filter(Boolean))])
 
@@ -1022,7 +1141,7 @@ function ListaRegistrosPorMes({ cfg, registros, onActualizar, onEliminar, pagos,
           ? <div className="empty-state">No hay {cfg.plural} para mostrar.</div>
           : meses.map(mes => {
             const delMes = filtrados.filter(r => r.mes === mes)
-            const subtotalMes = delMes.filter(r => !r.propio).reduce((s, r) => s + (r.total || 0), 0)
+            const subtotalMes = delMes.filter(r => r.tipo === 'cliente').reduce((s, r) => s + (r.total || 0), 0)
             const abierto = mesesAbiertos.has(mes)
             return (
               <div key={mes}>
@@ -1049,8 +1168,8 @@ function ListaRegistrosPorMes({ cfg, registros, onActualizar, onEliminar, pagos,
                             <div className="pedido-sub">{r.geneticas.map(g => `${g.nombre} ${g.cantidad}${cfg.unidad}`).join(' · ')} · {r.fecha} · {r.miembro}</div>
                             <div className="pedido-badges">
                               <span className={`badge ${r.entregado ? 'badge-entregado' : 'badge-no-entregado'}`}>{r.entregado ? 'Entregado' : 'No entregado'}</span>
-                              {r.propio
-                                ? <span className="badge badge-propio">Consumo propio</span>
+                              {r.tipo !== 'cliente'
+                                ? <span className="badge badge-propio">{r.tipo === 'regalo' ? 'Regalo' : 'Consumo propio'}</span>
                                 : estado === 'sobrepago'
                                   ? <span className="badge badge-sobrepago">⚠ Sobrepago: +{formatPesos(cobrado - r.total)}</span>
                                   : estado === 'pagado'
@@ -1059,10 +1178,11 @@ function ListaRegistrosPorMes({ cfg, registros, onActualizar, onEliminar, pagos,
                                       ? <span className="badge badge-parcial">Parcial: {formatPesos(cobrado)} de {formatPesos(r.total)}</span>
                                       : <span className="badge badge-sin-cobrar">Sin cobrar</span>
                               }
+                              {r.membresia && <span className="badge badge-pagado">Membresía {r.membresia}</span>}
                             </div>
                           </div>
                           <div className="pedido-right">
-                            <span className="pedido-total">{r.propio ? '—' : formatPesos(r.total)}</span>
+                            <span className="pedido-total">{r.tipo !== 'cliente' ? '—' : formatPesos(r.total)}</span>
                             {cobrado > 0 && (
                               <span
                                 className="pedido-metodo"
@@ -1073,7 +1193,7 @@ function ListaRegistrosPorMes({ cfg, registros, onActualizar, onEliminar, pagos,
                             )}
                             <span className="pedido-editar-hint">Tocar para editar</span>
                           </div>
-                          {!r.propio && (
+                          {r.tipo === 'cliente' && (
                             <div style={{ gridColumn: '1 / -1' }}>
                               <PagosRegistro registro={r} pagos={pagos} total={r.total} miembro={miembro} onAgregarPago={onAgregarPago} onEditarPago={onEditarPago} onEliminarPago={onEliminarPago} fkCampo={cfg.fkPagos} compacto />
                             </div>
@@ -1100,6 +1220,8 @@ function ListaRegistrosPorMes({ cfg, registros, onActualizar, onEliminar, pagos,
           onGuardar={actualizado => { onActualizar(actualizado, editando); setEditando(null) }}
           onEliminar={r => { onEliminar(r, editando); setEditando(null) }}
           onCerrar={() => setEditando(null)}
+          permiteMembresia={permiteMembresia}
+          socios={socios}
         />
       )}
     </div>
@@ -1210,14 +1332,14 @@ function PanelStock({ stock, inicial, cfg, ajustesFallidos, onEditar, onEditarIn
 // disponible por genética (colapsado, se abre con un click, igual que un
 // mes en la lista de abajo) y 3) los pedidos registrados mes a mes (el
 // acordeón que ya existe, con cada mes oculto hasta que se lo abre).
-function PanelDominio({ cfg, registros, miembro, onGuardar, onActualizar, onEliminar, stock, stockInicial, ajustesFallidos, onEditarStock, onEditarInicial, pagos, onAgregarPago, onEditarPago, onEliminarPago, target }) {
+function PanelDominio({ cfg, registros, miembro, onGuardar, onActualizar, onEliminar, stock, stockInicial, ajustesFallidos, onEditarStock, onEditarInicial, pagos, onAgregarPago, onEditarPago, onEliminarPago, target, tipoRegistro = 'cliente', permiteMembresia, socios }) {
   const [stockAbierto, setStockAbierto] = useState(false)
   const seccionTitulo = { fontSize: 15, fontWeight: 600, color: 'var(--text-primary)', marginBottom: 8 }
   const plural = cfg.plural[0].toUpperCase() + cfg.plural.slice(1)
   return (
     <div>
       <div style={seccionTitulo}>Registro de nuevo {cfg.singular}</div>
-      <FormRegistro cfg={cfg} onGuardar={onGuardar} miembro={miembro} onAgregarPago={onAgregarPago} />
+      <FormRegistro cfg={cfg} onGuardar={onGuardar} miembro={miembro} onAgregarPago={onAgregarPago} tipoRegistro={tipoRegistro} permiteMembresia={permiteMembresia} socios={socios} />
 
       <div style={{ marginTop: 18 }}>
         <div className="pedido-card" onClick={() => setStockAbierto(o => !o)} style={{ cursor: 'pointer' }}>
@@ -1238,48 +1360,314 @@ function PanelDominio({ cfg, registros, miembro, onGuardar, onActualizar, onElim
 
       <div style={{ marginTop: 18 }}>
         <div style={seccionTitulo}>{plural} registrados</div>
-        <ListaRegistrosPorMes cfg={cfg} registros={registros} onActualizar={onActualizar} onEliminar={onEliminar} pagos={pagos} miembro={miembro} onAgregarPago={onAgregarPago} onEditarPago={onEditarPago} onEliminarPago={onEliminarPago} target={target} />
+        <ListaRegistrosPorMes cfg={cfg} registros={registros} onActualizar={onActualizar} onEliminar={onEliminar} pagos={pagos} miembro={miembro} onAgregarPago={onAgregarPago} onEditarPago={onEditarPago} onEliminarPago={onEliminarPago} target={target} permiteMembresia={permiteMembresia} socios={socios} />
       </div>
     </div>
   )
 }
 
-// ─── Tab Pedidos: agrupa Cosecha y Esquejes, cada uno con su PanelDominio ──
+// ─── Tab Pedidos: Cosecha / Esquejes / Propio / Socios ─────────
 function TabPedidos({
   pedidos, stock, stockInicial, onGuardarPedido, onActualizarPedido, onEliminarPedido,
   esquejes, stockEsquejes, stockEsquejesInicial, onGuardarEsqueje, onActualizarEsqueje, onEliminarEsqueje,
   miembro, ajustesFallidos,
   onEditarStock, onEditarStockEsquejes, onEditarInicial, onEditarInicialEsquejes,
   pedidoPagos, esquejePagos, onAgregarPagoPedido, onEditarPagoPedido, onEliminarPagoPedido, onAgregarPagoEsqueje, onEditarPagoEsqueje, onEliminarPagoEsqueje,
+  socios, onGuardarSocio, onActualizarSocio, onEliminarSocio,
   target,
 }) {
   const [tipo, setTipo] = useState(() => target?.tipoRegistro || 'cosecha')
-  const cfg = tipo === 'cosecha' ? CFG_COSECHA : CFG_ESQUEJES
+  const cfg = tipo === 'esquejes' ? CFG_ESQUEJES : CFG_COSECHA
   const activeStyle = tipo === 'esquejes' ? { background: COLOR_ESQUEJES_LIGHT, borderColor: COLOR_ESQUEJES_BORDER, color: COLOR_ESQUEJES } : {}
   return (
     <div className="content">
       <div className="miembro-row">
         <button className={`miembro-btn${tipo === 'cosecha' ? ' active' : ''}`} onClick={() => setTipo('cosecha')}>Cosecha</button>
         <button className={`miembro-btn${tipo === 'esquejes' ? ' active' : ''}`} style={tipo === 'esquejes' ? activeStyle : {}} onClick={() => setTipo('esquejes')}>Esquejes</button>
+        <button className={`miembro-btn${tipo === 'propio' ? ' active' : ''}`} onClick={() => setTipo('propio')}>Propio</button>
+        <button className={`miembro-btn${tipo === 'socios' ? ' active' : ''}`} onClick={() => setTipo('socios')}>Socios</button>
       </div>
-      <PanelDominio
-        cfg={cfg}
-        registros={tipo === 'cosecha' ? pedidos : esquejes}
-        miembro={miembro}
-        onGuardar={tipo === 'cosecha' ? onGuardarPedido : onGuardarEsqueje}
-        onActualizar={tipo === 'cosecha' ? onActualizarPedido : onActualizarEsqueje}
-        onEliminar={tipo === 'cosecha' ? onEliminarPedido : onEliminarEsqueje}
-        stock={tipo === 'cosecha' ? stock : stockEsquejes}
-        stockInicial={tipo === 'cosecha' ? stockInicial : stockEsquejesInicial}
-        ajustesFallidos={ajustesFallidos}
-        onEditarStock={tipo === 'cosecha' ? onEditarStock : onEditarStockEsquejes}
-        onEditarInicial={tipo === 'cosecha' ? onEditarInicial : onEditarInicialEsquejes}
-        pagos={tipo === 'cosecha' ? pedidoPagos : esquejePagos}
-        onAgregarPago={tipo === 'cosecha' ? onAgregarPagoPedido : onAgregarPagoEsqueje}
-        onEditarPago={tipo === 'cosecha' ? onEditarPagoPedido : onEditarPagoEsqueje}
-        onEliminarPago={tipo === 'cosecha' ? onEliminarPagoPedido : onEliminarPagoEsqueje}
-        target={target}
-      />
+      {(tipo === 'cosecha' || tipo === 'esquejes') && (
+        <PanelDominio
+          cfg={cfg}
+          registros={(tipo === 'cosecha' ? pedidos : esquejes).filter(r => r.tipo === 'cliente')}
+          miembro={miembro}
+          onGuardar={tipo === 'cosecha' ? onGuardarPedido : onGuardarEsqueje}
+          onActualizar={tipo === 'cosecha' ? onActualizarPedido : onActualizarEsqueje}
+          onEliminar={tipo === 'cosecha' ? onEliminarPedido : onEliminarEsqueje}
+          stock={tipo === 'cosecha' ? stock : stockEsquejes}
+          stockInicial={tipo === 'cosecha' ? stockInicial : stockEsquejesInicial}
+          ajustesFallidos={ajustesFallidos}
+          onEditarStock={tipo === 'cosecha' ? onEditarStock : onEditarStockEsquejes}
+          onEditarInicial={tipo === 'cosecha' ? onEditarInicial : onEditarInicialEsquejes}
+          pagos={tipo === 'cosecha' ? pedidoPagos : esquejePagos}
+          onAgregarPago={tipo === 'cosecha' ? onAgregarPagoPedido : onAgregarPagoEsqueje}
+          onEditarPago={tipo === 'cosecha' ? onEditarPagoPedido : onEditarPagoEsqueje}
+          onEliminarPago={tipo === 'cosecha' ? onEliminarPagoPedido : onEliminarPagoEsqueje}
+          target={target}
+          tipoRegistro="cliente"
+          permiteMembresia={tipo === 'cosecha'}
+          socios={socios}
+        />
+      )}
+      {tipo === 'propio' && (
+        <TabPropio
+          pedidos={pedidos} stock={stock} stockInicial={stockInicial}
+          onGuardarPedido={onGuardarPedido} onActualizarPedido={onActualizarPedido} onEliminarPedido={onEliminarPedido}
+          esquejes={esquejes} stockEsquejes={stockEsquejes} stockEsquejesInicial={stockEsquejesInicial}
+          onGuardarEsqueje={onGuardarEsqueje} onActualizarEsqueje={onActualizarEsqueje} onEliminarEsqueje={onEliminarEsqueje}
+          miembro={miembro} ajustesFallidos={ajustesFallidos}
+          onEditarStock={onEditarStock} onEditarStockEsquejes={onEditarStockEsquejes}
+          onEditarInicial={onEditarInicial} onEditarInicialEsquejes={onEditarInicialEsquejes}
+          pedidoPagos={pedidoPagos} esquejePagos={esquejePagos}
+          onAgregarPagoPedido={onAgregarPagoPedido} onEditarPagoPedido={onEditarPagoPedido} onEliminarPagoPedido={onEliminarPagoPedido}
+          onAgregarPagoEsqueje={onAgregarPagoEsqueje} onEditarPagoEsqueje={onEditarPagoEsqueje} onEliminarPagoEsqueje={onEliminarPagoEsqueje}
+        />
+      )}
+      {tipo === 'socios' && (
+        <TabSocios
+          socios={socios} pedidos={pedidos} pedidoPagos={pedidoPagos} miembro={miembro}
+          onGuardarSocio={onGuardarSocio} onActualizarSocio={onActualizarSocio} onEliminarSocio={onEliminarSocio}
+          onActualizarPedido={onActualizarPedido} onEliminarPedido={onEliminarPedido}
+          onAgregarPagoPedido={onAgregarPagoPedido} onEditarPagoPedido={onEditarPagoPedido} onEliminarPagoPedido={onEliminarPagoPedido}
+        />
+      )}
+    </div>
+  )
+}
+
+// ─── Tab Propio: Consumo propio (solo cosecha) + Regalo (cosecha/esquejes) ──
+function TabPropio({
+  pedidos, stock, stockInicial, onGuardarPedido, onActualizarPedido, onEliminarPedido,
+  esquejes, stockEsquejes, stockEsquejesInicial, onGuardarEsqueje, onActualizarEsqueje, onEliminarEsqueje,
+  miembro, ajustesFallidos,
+  onEditarStock, onEditarStockEsquejes, onEditarInicial, onEditarInicialEsquejes,
+  pedidoPagos, esquejePagos, onAgregarPagoPedido, onEditarPagoPedido, onEliminarPagoPedido, onAgregarPagoEsqueje, onEditarPagoEsqueje, onEliminarPagoEsqueje,
+}) {
+  const [tipoPropio, setTipoPropio] = useState('propio') // 'propio' | 'regalo'
+  const [dominio, setDominio] = useState('cosecha') // solo relevante si tipoPropio === 'regalo'
+  const dominioEfectivo = tipoPropio === 'propio' ? 'cosecha' : dominio
+  const esCosecha = dominioEfectivo === 'cosecha'
+  const cfg = esCosecha ? CFG_COSECHA : CFG_ESQUEJES
+  return (
+    <div>
+      <div className="miembro-row">
+        <button className={`miembro-btn${tipoPropio === 'propio' ? ' active' : ''}`} onClick={() => setTipoPropio('propio')}>Consumo propio</button>
+        <button className={`miembro-btn${tipoPropio === 'regalo' ? ' active' : ''}`} onClick={() => setTipoPropio('regalo')}>Regalo</button>
+      </div>
+      {tipoPropio === 'regalo' && (
+        <div className="miembro-row" style={{ marginTop: 8 }}>
+          <button className={`miembro-btn${dominio === 'cosecha' ? ' active' : ''}`} onClick={() => setDominio('cosecha')}>Cosecha</button>
+          <button className={`miembro-btn${dominio === 'esquejes' ? ' active' : ''}`} onClick={() => setDominio('esquejes')}>Esquejes</button>
+        </div>
+      )}
+      <div style={{ marginTop: 18 }}>
+        <PanelDominio
+          cfg={cfg}
+          registros={(esCosecha ? pedidos : esquejes).filter(r => r.tipo === tipoPropio)}
+          miembro={miembro}
+          onGuardar={esCosecha ? onGuardarPedido : onGuardarEsqueje}
+          onActualizar={esCosecha ? onActualizarPedido : onActualizarEsqueje}
+          onEliminar={esCosecha ? onEliminarPedido : onEliminarEsqueje}
+          stock={esCosecha ? stock : stockEsquejes}
+          stockInicial={esCosecha ? stockInicial : stockEsquejesInicial}
+          ajustesFallidos={ajustesFallidos}
+          onEditarStock={esCosecha ? onEditarStock : onEditarStockEsquejes}
+          onEditarInicial={esCosecha ? onEditarInicial : onEditarInicialEsquejes}
+          pagos={esCosecha ? pedidoPagos : esquejePagos}
+          onAgregarPago={esCosecha ? onAgregarPagoPedido : onAgregarPagoEsqueje}
+          onEditarPago={esCosecha ? onEditarPagoPedido : onEditarPagoEsqueje}
+          onEliminarPago={esCosecha ? onEliminarPagoPedido : onEliminarPagoEsqueje}
+          tipoRegistro={tipoPropio}
+          permiteMembresia={false}
+        />
+      </div>
+    </div>
+  )
+}
+
+// ─── Tab Socios: padrón de socios con Reprocann vinculado a la ONG +
+// historial de membresías compradas (derivado de pedidos.socio_id/membresia,
+// no se duplica precio/método de pago/estado de cobro en ningún lado nuevo).
+function TabSocios({ socios, pedidos, pedidoPagos, miembro, onGuardarSocio, onActualizarSocio, onEliminarSocio, onActualizarPedido, onEliminarPedido, onAgregarPagoPedido, onEditarPagoPedido, onEliminarPagoPedido }) {
+  const [nuevo, setNuevo] = useState({ nombre: '', fechaRegistroOng: '' })
+  const [toast, showToast] = useToast()
+  const [abiertos, setAbiertos] = useState(() => new Set())
+  const [editandoSocio, setEditandoSocio] = useState(null)
+  const [formEdit, setFormEdit] = useState(null)
+  const [confirmandoElim, setConfirmandoElim] = useState(null)
+  const [editandoPedido, setEditandoPedido] = useState(null)
+
+  async function guardarNuevo() {
+    if (!nuevo.nombre.trim()) { showToast('Ingresá el nombre del socio'); return }
+    const res = await onGuardarSocio({ nombre: nuevo.nombre.trim(), fechaRegistroOng: nuevo.fechaRegistroOng || null })
+    if (!res?.ok) { showToast('No se pudo guardar. Intentá de nuevo.'); return }
+    setNuevo({ nombre: '', fechaRegistroOng: '' })
+    showToast('Socio guardado ✓')
+  }
+
+  function toggle(id) {
+    setAbiertos(prev => {
+      const next = new Set(prev)
+      next.has(id) ? next.delete(id) : next.add(id)
+      return next
+    })
+  }
+
+  function abrirEdicion(s) {
+    setEditandoSocio(s.id)
+    setFormEdit({ nombre: s.nombre, fechaRegistroOng: s.fechaRegistroOng || '' })
+  }
+
+  async function guardarEdicion(s) {
+    if (!formEdit.nombre.trim()) { showToast('El nombre no puede estar vacío'); return }
+    const res = await onActualizarSocio({ ...s, nombre: formEdit.nombre.trim(), fechaRegistroOng: formEdit.fechaRegistroOng || null })
+    if (!res?.ok) { showToast('No se pudo guardar. Intentá de nuevo.'); return }
+    setEditandoSocio(null)
+    showToast('Socio actualizado ✓')
+  }
+
+  async function eliminar(s) {
+    await onEliminarSocio(s)
+    setConfirmandoElim(null)
+  }
+
+  const sociosOrdenados = [...socios].sort((a, b) => a.nombre.localeCompare(b.nombre))
+
+  return (
+    <div>
+      <div style={{ fontSize: 15, fontWeight: 600, color: 'var(--text-primary)', marginBottom: 8 }}>Registrar nuevo socio</div>
+      <div className="card">
+        <div className="form-grid">
+          <div className="form-group full">
+            <label className="form-label">Nombre</label>
+            <input className="form-control" type="text" placeholder="Nombre del socio..." value={nuevo.nombre} onChange={e => setNuevo(f => ({ ...f, nombre: e.target.value }))} />
+          </div>
+          <div className="form-group full">
+            <label className="form-label">Fecha de registro en la ONG</label>
+            <input className="form-control" type="date" value={nuevo.fechaRegistroOng} onChange={e => setNuevo(f => ({ ...f, fechaRegistroOng: e.target.value }))} />
+          </div>
+        </div>
+      </div>
+      <button className="btn-submit" onClick={guardarNuevo}>Guardar socio</button>
+
+      <div style={{ marginTop: 18 }}>
+        <div style={{ fontSize: 15, fontWeight: 600, color: 'var(--text-primary)', marginBottom: 8 }}>Socios registrados</div>
+        {sociosOrdenados.length === 0 ? (
+          <div className="empty-state">No hay socios registrados.</div>
+        ) : (
+          <div className="pedidos-list">
+            {sociosOrdenados.map(s => {
+              const historial = pedidos.filter(p => p.socioId === s.id && p.membresia).sort((a, b) => b.id - a.id)
+              const abierto = abiertos.has(s.id)
+              return (
+                <div key={s.id}>
+                  <div className="pedido-card" onClick={() => toggle(s.id)} style={{ cursor: 'pointer' }}>
+                    <div>
+                      <div className="pedido-nombre">{s.nombre}</div>
+                      <div className="pedido-sub">
+                        {s.fechaRegistroOng ? `Reprocann desde ${formatFechaDateISO(s.fechaRegistroOng)}` : 'Sin fecha de registro en la ONG'} · {historial.length} membresía{historial.length !== 1 ? 's' : ''}
+                      </div>
+                    </div>
+                    <div className="pedido-right">
+                      <span className="pedido-editar-hint">{abierto ? 'Ocultar ▴' : 'Ver ▾'}</span>
+                    </div>
+                  </div>
+                  {abierto && (
+                    <div style={{ marginTop: 8, marginLeft: 12 }} onClick={e => e.stopPropagation()}>
+                      {editandoSocio === s.id ? (
+                        <div className="card">
+                          <div className="form-grid">
+                            <div className="form-group full">
+                              <label className="form-label">Nombre</label>
+                              <input className="form-control" type="text" value={formEdit.nombre} onChange={e => setFormEdit(f => ({ ...f, nombre: e.target.value }))} />
+                            </div>
+                            <div className="form-group full">
+                              <label className="form-label">Fecha de registro en la ONG</label>
+                              <input className="form-control" type="date" value={formEdit.fechaRegistroOng} onChange={e => setFormEdit(f => ({ ...f, fechaRegistroOng: e.target.value }))} />
+                            </div>
+                          </div>
+                          <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
+                            <button className="btn-submit" style={{ flex: 1 }} onClick={() => guardarEdicion(s)}>Guardar cambios</button>
+                            <button onClick={() => setEditandoSocio(null)} style={{ padding: '0 16px', border: '0.5px solid var(--border-mid)', borderRadius: 'var(--radius-md)', background: 'transparent', cursor: 'pointer', fontSize: 13, color: 'var(--text-secondary)' }}>Cancelar</button>
+                          </div>
+                        </div>
+                      ) : (
+                        <div style={{ display: 'flex', gap: 16, alignItems: 'center', marginBottom: 10 }}>
+                          <button onClick={() => abrirEdicion(s)} style={btnLinkStyle('var(--text-secondary)')}>Editar datos</button>
+                          {confirmandoElim === s.id ? (
+                            <>
+                              <span style={{ fontSize: 12, color: '#791F1F' }}>¿Eliminar socio?</span>
+                              <button onClick={() => eliminar(s)} style={btnLinkStyle('#791F1F')}>Sí, eliminar</button>
+                              <button onClick={() => setConfirmandoElim(null)} style={btnLinkStyle('var(--text-secondary)')}>Cancelar</button>
+                            </>
+                          ) : (
+                            <button onClick={() => setConfirmandoElim(s.id)} style={btnLinkStyle('#791F1F')}>Eliminar socio</button>
+                          )}
+                        </div>
+                      )}
+
+                      <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-secondary)', marginBottom: 6 }}>Historial de membresías</div>
+                      {historial.length === 0 ? (
+                        <div className="empty-state">Todavía no compró ninguna membresía.</div>
+                      ) : (
+                        <div className="pedidos-list">
+                          {historial.map(p => {
+                            const pagosDelRegistro = pagosDe(pedidoPagos, p.id, 'pedido_id')
+                            const cobrado = pagosDelRegistro.reduce((s2, pg) => s2 + (parseFloat(pg.monto) || 0), 0)
+                            const estado = estadoCobro(p.total, cobrado)
+                            return (
+                              <div className="pedido-card" key={p.id} onClick={() => setEditandoPedido(p)} style={{ cursor: 'pointer' }}>
+                                <div>
+                                  <div className="pedido-nombre">Membresía {p.membresia}</div>
+                                  <div className="pedido-sub">{p.geneticas.map(g => `${g.nombre} ${g.cantidad}g`).join(' · ')} · {p.fecha}</div>
+                                  <div className="pedido-badges">
+                                    <span className={`badge ${p.entregado ? 'badge-entregado' : 'badge-no-entregado'}`}>{p.entregado ? 'Entregado' : 'No entregado'}</span>
+                                    {estado === 'sobrepago'
+                                      ? <span className="badge badge-sobrepago">⚠ Sobrepago: +{formatPesos(cobrado - p.total)}</span>
+                                      : estado === 'pagado'
+                                        ? <span className="badge badge-pagado">Pagado</span>
+                                        : estado === 'parcial'
+                                          ? <span className="badge badge-parcial">Parcial: {formatPesos(cobrado)} de {formatPesos(p.total)}</span>
+                                          : <span className="badge badge-sin-cobrar">Sin cobrar</span>
+                                    }
+                                  </div>
+                                </div>
+                                <div className="pedido-right">
+                                  <span className="pedido-total">{formatPesos(p.total)}</span>
+                                  <span className="pedido-editar-hint">Tocar para editar</span>
+                                </div>
+                              </div>
+                            )
+                          })}
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+              )
+            })}
+          </div>
+        )}
+      </div>
+
+      {editandoPedido && (
+        <ModalEditarRegistro
+          cfg={CFG_COSECHA}
+          registro={editandoPedido}
+          pagos={pedidoPagos}
+          miembro={miembro}
+          onAgregarPago={onAgregarPagoPedido}
+          onEditarPago={onEditarPagoPedido}
+          onEliminarPago={onEliminarPagoPedido}
+          onGuardar={actualizado => { onActualizarPedido(actualizado, editandoPedido); setEditandoPedido(null) }}
+          onEliminar={r => { onEliminarPedido(r, editandoPedido); setEditandoPedido(null) }}
+          onCerrar={() => setEditandoPedido(null)}
+          permiteMembresia
+          socios={socios}
+        />
+      )}
+      <div className={`toast${toast.show ? ' show' : ''}`}>{toast.msg}</div>
     </div>
   )
 }
@@ -3251,19 +3639,22 @@ async function actualizarInicialDirecto(genetica, nuevoValor, tabla, setInicialF
 // ─── Mapeo DB (snake_case) ↔ app (camelCase) ──────────────────
 // Fuente única de verdad: evita repetir metodoPago/metodo_pago y
 // cuentaEstimada/cuenta_estimada por todo el código.
-const conAliasPago = row => ({ ...row, metodoPago: row.metodo_pago, fechaCobro: row.fecha_cobro })
+const conAliasPago = row => ({ ...row, metodoPago: row.metodo_pago, fechaCobro: row.fecha_cobro, socioId: row.socio_id })
+const conAliasSocio = row => ({ ...row, fechaRegistroOng: row.fecha_registro_ong })
 
-// pagado/metodo_pago/fecha_cobro/cuenta/cuenta_estimada/divisiones ya no se escriben acá: el
-// historial de pagos (pedido_pagos/esqueje_pagos) es la única fuente de verdad de ahora en más.
-// Esas columnas quedan en la base como respaldo histórico congelado de antes de este cambio.
+// pagado/metodo_pago/fecha_cobro/cuenta/cuenta_estimada/divisiones/propio ya no se escriben acá:
+// el historial de pagos (pedido_pagos/esqueje_pagos) es la única fuente de verdad de ahora en más,
+// y "propio" quedó reemplazado por "tipo" (cliente/propio/regalo). Esas columnas quedan en la
+// base como respaldo histórico congelado de antes de estos cambios.
 const pedidoToDB = p => ({
   fecha: p.fecha, mes: p.mes || mesActual(), miembro: p.miembro, socio: p.socio,
-  geneticas: p.geneticas, precio: p.precio, total: p.total, propio: p.propio, entregado: p.entregado,
+  geneticas: p.geneticas, precio: p.precio, total: p.total, entregado: p.entregado,
+  tipo: p.tipo || 'cliente', membresia: p.membresia || null, socio_id: p.socioId || null,
 })
 
 const esquejeToDB = e => ({
   fecha: e.fecha, mes: e.mes || mesActual(), miembro: e.miembro, socio: e.socio,
-  geneticas: e.geneticas, total: e.total, propio: e.propio, entregado: e.entregado,
+  geneticas: e.geneticas, total: e.total, entregado: e.entregado, tipo: e.tipo || 'cliente',
 })
 
 const gastoToDB = g => ({
@@ -3297,6 +3688,7 @@ export default function App() {
   const [gastosFijos, setGastosFijos] = useState([])
   const [pedidoPagos, setPedidoPagos] = useState([])
   const [esquejePagos, setEsquejePagos] = useState([])
+  const [socios, setSocios] = useState([])
   const [stockEsquejes, setStockEsquejes] = useState(STOCK_ESQUEJES_INICIAL)
   const [stockEsquejesInicial, setStockEsquejesInicial] = useState(STOCK_ESQUEJES_INICIAL)
   const [stockAjustesFallidos, setStockAjustesFallidos] = useState([])
@@ -3332,7 +3724,7 @@ export default function App() {
     async function cargarDatos() {
       setCargando(true)
       setErrorCarga(false)
-      const [pedidosRes, stockRes, esquejesRes, stockEsquejesRes, gastosRes, presupuestosRes, aportesRes, gastosFijosRes, pedidoPagosRes, esquejePagosRes] = await Promise.all([
+      const [pedidosRes, stockRes, esquejesRes, stockEsquejesRes, gastosRes, presupuestosRes, aportesRes, gastosFijosRes, pedidoPagosRes, esquejePagosRes, sociosRes] = await Promise.all([
         supabase.from('pedidos').select('*').order('created_at', { ascending: false }),
         supabase.from('stock').select('*'),
         supabase.from('esquejes').select('*').order('created_at', { ascending: false }),
@@ -3343,9 +3735,10 @@ export default function App() {
         supabase.from('gastos_fijos').select('*').order('created_at', { ascending: false }),
         supabase.from('pedido_pagos').select('*').order('created_at', { ascending: false }),
         supabase.from('esqueje_pagos').select('*').order('created_at', { ascending: false }),
+        supabase.from('socios').select('*').order('nombre', { ascending: true }),
       ])
       if (cancelado) return
-      const conError = [pedidosRes, stockRes, esquejesRes, stockEsquejesRes, gastosRes, presupuestosRes, aportesRes, gastosFijosRes, pedidoPagosRes, esquejePagosRes].filter(r => r.error)
+      const conError = [pedidosRes, stockRes, esquejesRes, stockEsquejesRes, gastosRes, presupuestosRes, aportesRes, gastosFijosRes, pedidoPagosRes, esquejePagosRes, sociosRes].filter(r => r.error)
       if (conError.length > 0) {
         console.error('Error al cargar datos', conError.map(r => r.error))
         setErrorCarga(true)
@@ -3372,6 +3765,7 @@ export default function App() {
       setGastosFijos(gastosFijosRes.data || [])
       setPedidoPagos(pedidoPagosRes.data || [])
       setEsquejePagos(esquejePagosRes.data || [])
+      setSocios((sociosRes.data || []).map(conAliasSocio))
       setCargando(false)
     }
     cargarDatos()
@@ -3462,6 +3856,27 @@ export default function App() {
         await aplicarDeltas(acumularCantidades(esqueje.geneticas, 1, {}), 'ajustar_stock_esquejes', setStockEsquejes)
       }
     }
+  }, [])
+
+  const guardarSocio = useCallback(async s => {
+    const { data, error } = await supabase.from('socios').insert({ nombre: s.nombre, fecha_registro_ong: s.fechaRegistroOng }).select().single()
+    if (error || !data) { console.error('Error al guardar socio', error); return { ok: false, error } }
+    setSocios(prev => [...prev, conAliasSocio(data)].sort((a, b) => a.nombre.localeCompare(b.nombre)))
+    return { ok: true, data: conAliasSocio(data) }
+  }, [])
+
+  const actualizarSocio = useCallback(async s => {
+    const { data, error } = await supabase.from('socios').update({ nombre: s.nombre, fecha_registro_ong: s.fechaRegistroOng }).eq('id', s.id).select().single()
+    if (error || !data) { console.error('Error al actualizar socio', error); return { ok: false, error } }
+    setSocios(prev => prev.map(x => x.id === data.id ? conAliasSocio(data) : x).sort((a, b) => a.nombre.localeCompare(b.nombre)))
+    return { ok: true, data: conAliasSocio(data) }
+  }, [])
+
+  const eliminarSocio = useCallback(async s => {
+    const { error } = await supabase.from('socios').delete().eq('id', s.id)
+    if (error) { console.error('Error al eliminar socio', error); return { ok: false, error } }
+    setSocios(prev => prev.filter(x => x.id !== s.id))
+    return { ok: true }
   }, [])
 
   const agregarPagoPedido = useCallback(async (pedido, pago) => {
@@ -3626,6 +4041,10 @@ export default function App() {
           onAgregarPagoEsqueje={agregarPagoEsqueje}
           onEditarPagoEsqueje={editarPagoEsqueje}
           onEliminarPagoEsqueje={eliminarPagoEsqueje}
+          socios={socios}
+          onGuardarSocio={guardarSocio}
+          onActualizarSocio={actualizarSocio}
+          onEliminarSocio={eliminarSocio}
         />
       )}
       {tab === 'gastos' && <TabGastos target={objetivoRevision} miembro={miembro} gastos={gastos} presupuestos={presupuestos} onGuardarGasto={guardarGasto} onActualizarGasto={actualizarGasto} onEliminarGasto={eliminarGasto} />}
