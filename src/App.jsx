@@ -560,8 +560,8 @@ function ModalEditarRegistro({ cfg, registro, pagos, miembro, onAgregarPago, onE
   function guardar(confirmarCambioTotal = false) {
     const filasValidas = form.filas.filter(f => f.nombre)
     const sinCantidad = filasValidas.some(f => !parseFloat(f.cantidad))
-    if (!form.socio.trim() || filasValidas.length === 0 || sinCantidad) {
-      setErrorCampos('Completá socio, genética y cantidad.')
+    if ((!esInterno && !form.socio.trim()) || filasValidas.length === 0 || sinCantidad) {
+      setErrorCampos(esInterno ? 'Completá genética y cantidad.' : 'Completá socio, genética y cantidad.')
       return
     }
     if (form.esMembresia) {
@@ -628,17 +628,19 @@ function ModalEditarRegistro({ cfg, registro, pagos, miembro, onAgregarPago, onE
           </div>
         )}
         <div className="form-grid">
-          <div className="form-group full">
-            <label className="form-label">Socio</label>
-            {form.esMembresia ? (
-              <select className="form-control" value={form.socioId} onChange={e => handleSocioId(e.target.value)}>
-                <option value="">Seleccionar socio...</option>
-                {(socios || []).map(s => <option key={s.id} value={s.id}>{s.nombre}</option>)}
-              </select>
-            ) : (
-              <input className="form-control" type="text" value={form.socio} onChange={e => set('socio', e.target.value)} />
-            )}
-          </div>
+          {!esInterno && (
+            <div className="form-group full">
+              <label className="form-label">Socio</label>
+              {form.esMembresia ? (
+                <select className="form-control" value={form.socioId} onChange={e => handleSocioId(e.target.value)}>
+                  <option value="">Seleccionar socio...</option>
+                  {(socios || []).map(s => <option key={s.id} value={s.id}>{s.nombre}</option>)}
+                </select>
+              ) : (
+                <input className="form-control" type="text" value={form.socio} onChange={e => set('socio', e.target.value)} />
+              )}
+            </div>
+          )}
           <div className="form-group full">
             <label className="form-label">Fecha</label>
             <DatePicker value={form.fecha} onChange={v => set('fecha', v)} />
@@ -905,8 +907,8 @@ function FormRegistro({ cfg, onGuardar, onAgregarPago, miembro, tipoRegistro = '
   async function guardar() {
     const filasValidas = form.filas.filter(f => f.nombre)
     const sinCantidad = filasValidas.some(f => !parseFloat(f.cantidad))
-    if (!form.socio.trim() || filasValidas.length === 0 || sinCantidad) {
-      showToast('Completá socio, genética y cantidad')
+    if ((!esInterno && !form.socio.trim()) || filasValidas.length === 0 || sinCantidad) {
+      showToast(esInterno ? 'Completá genética y cantidad' : 'Completá socio, genética y cantidad')
       return
     }
     if (form.esMembresia) {
@@ -932,7 +934,7 @@ function FormRegistro({ cfg, onGuardar, onAgregarPago, miembro, tipoRegistro = '
       id: Date.now(),
       fecha: hoyCompleto(),
       miembro,
-      socio: form.socio.trim(),
+      socio: esInterno ? miembro : form.socio.trim(),
       geneticas,
       precio: cfg.precioDefaultFila,
       total,
@@ -985,17 +987,19 @@ function FormRegistro({ cfg, onGuardar, onAgregarPago, miembro, tipoRegistro = '
           </div>
         )}
         <div className="form-grid">
-          <div className="form-group full">
-            <label className="form-label">Socio</label>
-            {form.esMembresia ? (
-              <select className="form-control" value={form.socioId} onChange={e => handleSocioId(e.target.value)}>
-                <option value="">Seleccionar socio...</option>
-                {(socios || []).map(s => <option key={s.id} value={s.id}>{s.nombre}</option>)}
-              </select>
-            ) : (
-              <input className="form-control" type="text" placeholder="Nombre del socio..." value={form.socio} onChange={e => set('socio', e.target.value)} />
-            )}
-          </div>
+          {!esInterno && (
+            <div className="form-group full">
+              <label className="form-label">Socio</label>
+              {form.esMembresia ? (
+                <select className="form-control" value={form.socioId} onChange={e => handleSocioId(e.target.value)}>
+                  <option value="">Seleccionar socio...</option>
+                  {(socios || []).map(s => <option key={s.id} value={s.id}>{s.nombre}</option>)}
+                </select>
+              ) : (
+                <input className="form-control" type="text" placeholder="Nombre del socio..." value={form.socio} onChange={e => set('socio', e.target.value)} />
+              )}
+            </div>
+          )}
           <div className="form-group full">
             <label className="form-label">Genética</label>
             <div className="filas-genetica">
@@ -1164,20 +1168,19 @@ function ListaRegistrosPorMes({ cfg, registros, onActualizar, onEliminar, pagos,
                       return (
                         <div className="pedido-card" key={r.id} onClick={() => setEditando(r)} style={{ cursor: 'pointer' }}>
                           <div>
-                            <div className="pedido-nombre">{r.socio}</div>
+                            <div className="pedido-nombre">{r.tipo === 'cliente' ? r.socio : (r.tipo === 'regalo' ? 'Regalo' : 'Consumo propio')}</div>
                             <div className="pedido-sub">{r.geneticas.map(g => `${g.nombre} ${g.cantidad}${cfg.unidad}`).join(' · ')} · {r.fecha} · {r.miembro}</div>
                             <div className="pedido-badges">
                               <span className={`badge ${r.entregado ? 'badge-entregado' : 'badge-no-entregado'}`}>{r.entregado ? 'Entregado' : 'No entregado'}</span>
-                              {r.tipo !== 'cliente'
-                                ? <span className="badge badge-propio">{r.tipo === 'regalo' ? 'Regalo' : 'Consumo propio'}</span>
-                                : estado === 'sobrepago'
+                              {r.tipo === 'cliente' && (
+                                estado === 'sobrepago'
                                   ? <span className="badge badge-sobrepago">⚠ Sobrepago: +{formatPesos(cobrado - r.total)}</span>
                                   : estado === 'pagado'
                                     ? <span className="badge badge-pagado">Pagado</span>
                                     : estado === 'parcial'
                                       ? <span className="badge badge-parcial">Parcial: {formatPesos(cobrado)} de {formatPesos(r.total)}</span>
                                       : <span className="badge badge-sin-cobrar">Sin cobrar</span>
-                              }
+                              )}
                               {r.membresia && <span className="badge badge-pagado">Membresía {r.membresia}</span>}
                             </div>
                           </div>
@@ -1451,16 +1454,22 @@ function TabPropio({
   const cfg = esCosecha ? CFG_COSECHA : CFG_ESQUEJES
   return (
     <div>
-      <div className="miembro-row">
-        <button className={`miembro-btn${tipoPropio === 'propio' ? ' active' : ''}`} onClick={() => setTipoPropio('propio')}>Consumo propio</button>
-        <button className={`miembro-btn${tipoPropio === 'regalo' ? ' active' : ''}`} onClick={() => setTipoPropio('regalo')}>Regalo</button>
-      </div>
-      {tipoPropio === 'regalo' && (
-        <div className="miembro-row" style={{ marginTop: 8 }}>
-          <button className={`miembro-btn${dominio === 'cosecha' ? ' active' : ''}`} onClick={() => setDominio('cosecha')}>Cosecha</button>
-          <button className={`miembro-btn${dominio === 'esquejes' ? ' active' : ''}`} onClick={() => setDominio('esquejes')}>Esquejes</button>
+      <div className="card" style={{ marginBottom: 0 }}>
+        <div className="form-label" style={{ marginBottom: 8 }}>Tipo de registro</div>
+        <div className="segmented-row">
+          <button className={`segmented-btn${tipoPropio === 'propio' ? ' active' : ''}`} onClick={() => setTipoPropio('propio')}>Consumo propio</button>
+          <button className={`segmented-btn${tipoPropio === 'regalo' ? ' active' : ''}`} onClick={() => setTipoPropio('regalo')}>Regalo</button>
         </div>
-      )}
+        {tipoPropio === 'regalo' && (
+          <>
+            <div className="form-label" style={{ marginTop: 14, marginBottom: 8 }}>Producto</div>
+            <div className="segmented-row segmented-row-sm">
+              <button className={`segmented-btn${dominio === 'cosecha' ? ' active' : ''}`} style={dominio === 'cosecha' ? { color: 'var(--green-dark)' } : {}} onClick={() => setDominio('cosecha')}>Cosecha</button>
+              <button className={`segmented-btn${dominio === 'esquejes' ? ' active' : ''}`} style={dominio === 'esquejes' ? { color: COLOR_ESQUEJES } : {}} onClick={() => setDominio('esquejes')}>Esquejes</button>
+            </div>
+          </>
+        )}
+      </div>
       <div style={{ marginTop: 18 }}>
         <PanelDominio
           cfg={cfg}

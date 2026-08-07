@@ -39,6 +39,27 @@
   color: var(--green-dark); font-weight: 500;
 }
 
+/* Segmented control: para elegir un modo/sub-tipo dentro de una sección
+   (p.ej. Propio → Consumo propio/Regalo), visualmente distinto de .miembro-row
+   (navegación entre pestañas) para que no se confundan como el mismo nivel. */
+.segmented-row {
+  display: flex; gap: 3px; padding: 3px;
+  background: var(--bg-secondary); border-radius: var(--radius-md);
+}
+.segmented-btn {
+  flex: 1; padding: 8px 10px; border: none;
+  border-radius: calc(var(--radius-md) - 2px);
+  background: transparent; font-size: 13px; font-weight: 500;
+  color: var(--text-secondary); cursor: pointer; transition: all 0.15s;
+  text-align: center;
+}
+.segmented-btn.active {
+  background: var(--bg-card); color: var(--text-primary);
+  box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+}
+.segmented-row-sm { padding: 2px; }
+.segmented-row-sm .segmented-btn { padding: 6px 8px; font-size: 12px; }
+
 /* Form */
 .card {
   background: var(--bg-card); border: 0.5px solid var(--border);
@@ -205,7 +226,6 @@ select.form-control { cursor: pointer; }
 .badge-sin-cobrar { background: #FCEBEB; color: #791F1F; }
 .badge-parcial { background: #FAEEDA; color: #854F0B; }
 .badge-sobrepago { background: #FCEBEB; color: #791F1F; font-weight: 600; }
-.badge-propio { background: var(--bg-secondary); color: var(--text-secondary); }
 .badge-param-ok { background: #E1F5EE; color: #0F6E56; }
 .badge-param-atencion { background: #FAEEDA; color: #854F0B; }
 .badge-param-fuera { background: #FCEBEB; color: #791F1F; }
