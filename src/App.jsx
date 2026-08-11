@@ -38,6 +38,14 @@ function hoyCompleto() {
   return `${d.getDate()}/${d.getMonth() + 1}/${d.getFullYear()}`
 }
 
+function parseFechaCompleta(str) {
+  const partes = String(str || '').split('/')
+  if (partes.length !== 3) return null
+  const [d, m, y] = partes.map(Number)
+  if (!d || !m || !y) return null
+  return new Date(y, m - 1, d).getTime()
+}
+
 const mesActual = () => {
   const d = new Date()
   return `${d.getMonth() + 1}/${d.getFullYear()}`
@@ -3376,6 +3384,11 @@ function TabRiegos({ onRiegosChange }) {
   }
 
   const riegosFiltrados = riegos.filter(r => r.semana === semanaFiltro)
+  const fechaInicioCiclo = riegos.reduce((min, r) => {
+    const t = parseFechaCompleta(r.fecha)
+    if (t == null) return min
+    return (!min || t < min.t) ? { t, fecha: r.fecha } : min
+  }, null)
 
   return (
     <div className="content">
@@ -3388,6 +3401,7 @@ function TabRiegos({ onRiegosChange }) {
         <div style={{ textAlign: 'center' }}>
           <div style={{ fontSize: 16, fontWeight: 700, color }}>Semana {semanaFiltro}</div>
           <div style={{ fontSize: 11, color: 'var(--text-secondary)' }}>{riegosFiltrados.length} riego{riegosFiltrados.length !== 1 ? 's' : ''} registrado{riegosFiltrados.length !== 1 ? 's' : ''}</div>
+          {fechaInicioCiclo && <div style={{ fontSize: 10, color: 'var(--text-secondary)', opacity: 0.75, marginTop: 1 }}>Ciclo iniciado {fechaInicioCiclo.fecha}</div>}
         </div>
         <button onClick={() => setSemanaFiltro(s => s + 1)} style={{ background: 'none', border: 'none', fontSize: 22, cursor: 'pointer', color, padding: '0 8px', lineHeight: 1 }}>›</button>
       </div>
