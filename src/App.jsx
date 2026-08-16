@@ -6,6 +6,7 @@ import { evaluarRegistro, colorPorIntensidad } from './parametrosTurba'
 
 const GENETICAS = ['OG24K', 'Choco OG', 'Z-Kiem', 'Fancy', 'Gorilla Rainbow']
 const GENETICAS_ESQUEJES = ['OG24K', 'Black Domina', 'Z-Kiem', 'Fancy', 'Gorilla Rainbow', 'Dosichoc']
+const GENETICAS_CULTIVO = ['OG24K', 'Choco OG', 'Z-Kiem', 'R-Kiem', 'Fancy', 'Gorilla Rainbow', 'Black Domina', 'Dosichoc', 'Silver', 'Tanner']
 const MIEMBROS = ['Bruno', 'Checho', 'Nacho', 'Nico']
 const PRECIO_DEFAULT = 12500
 
@@ -44,6 +45,22 @@ function parseFechaCompleta(str) {
   const [d, m, y] = partes.map(Number)
   if (!d || !m || !y) return null
   return new Date(y, m - 1, d).getTime()
+}
+
+// Semana de calendario (7 días) de una fecha respecto al inicio del ciclo. Nunca por debajo de 1.
+function semanaDesdeFecha(fecha, fechaInicio) {
+  const inicio = parseFechaCompleta(fechaInicio)
+  const t = parseFechaCompleta(fecha)
+  if (inicio == null || t == null) return 1
+  const dias = Math.round((t - inicio) / 86400000)
+  return Math.max(1, Math.floor(dias / 7) + 1)
+}
+
+// Fecha aproximada (inicio de esa semana) para prellenar el formulario al registrar un riego en una semana pasada.
+function fechaDeSemana(fechaInicio, semana) {
+  const inicio = parseFechaCompleta(fechaInicio)
+  if (inicio == null) return hoyCompleto()
+  return formatFechaCompleta(new Date(inicio + (semana - 1) * 7 * 86400000))
 }
 
 const mesActual = () => {
@@ -3050,97 +3067,7 @@ function TabGastos({ miembro, gastos, presupuestos, onGuardarGasto, onActualizar
   )
 }
 
-// ─── Tab Calendario de Cultivo ────────────────────────────────
-const paramsCultivo = [
-  { key: 'fertilizante', label: 'Fertilizante', placeholder: 'Ej: Calcium + Grow + PH-' },
-  { key: 'ec', label: 'EC', placeholder: 'Ej: 1.4' },
-  { key: 'ph', label: 'pH', placeholder: 'Ej: 6.0' },
-  { key: 'maceta', label: 'Maceta', placeholder: 'Ej: 1L' },
-  { key: 'luz', label: 'Intensidad lumínica', placeholder: 'Ej: 300 ppfd' },
-  { key: 'temperatura', label: 'Temperatura promedio', placeholder: 'Ej: 24°C' },
-  { key: 'humedad', label: 'Humedad promedio', placeholder: 'Ej: 60%' },
-  { key: 'tareas', label: 'Tareas / Notas', placeholder: 'Ej: Insecticida aplicado' },
-]
-const cicloVacio = (tipo) => ({ nombre: '', tipo, semanaActual: 1, semanas: {} })
-
-function SeccionCiclo({ ciclo, onChange, riegoPromedios = {} }) {
-  const semana = ciclo.semanaActual
-  const datos = ciclo.semanas[semana] || {}
-  const [editandoNombre, setEditandoNombre] = useState(false)
-  const [toast, showToast] = useToast()
-  function setParam(key, val) { onChange({ ...ciclo, semanas: { ...ciclo.semanas, [semana]: { ...datos, [key]: val } } }) }
-  const color = ciclo.tipo === 'vegetativo' ? 'var(--green-dark)' : '#7B4F9E'
-  const colorLight = ciclo.tipo === 'vegetativo' ? 'var(--green-light)' : '#F3EAF9'
-  const colorBorder = ciclo.tipo === 'vegetativo' ? 'var(--green-border)' : '#D4B8E8'
-  const tieneDatos = ciclo.semanas[semana] && Object.values(ciclo.semanas[semana]).some(v => v)
-
-  return (
-    <div className="card">
-      <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', marginBottom: 14 }}>
-        <div style={{ flex: 1 }}>
-          <span style={{ fontSize: 11, fontWeight: 500, color, textTransform: 'uppercase', letterSpacing: '0.04em' }}>{ciclo.tipo === 'vegetativo' ? 'Vegetativo' : 'Floración'}</span>
-          {editandoNombre ? (
-            <input className="form-control" style={{ marginTop: 4, height: 32, fontSize: 14, fontWeight: 600 }} value={ciclo.nombre} placeholder="Nombre del ciclo..." onChange={e => onChange({ ...ciclo, nombre: e.target.value })} onBlur={() => setEditandoNombre(false)} autoFocus />
-          ) : (
-            <div style={{ fontSize: 15, fontWeight: 600, color: 'var(--text-primary)', marginTop: 2, cursor: 'pointer' }} onClick={() => setEditandoNombre(true)}>
-              {ciclo.nombre || <span style={{ color: 'var(--text-secondary)', fontWeight: 400, fontSize: 13 }}>Tocá para nombrar el ciclo...</span>}
-            </div>
-          )}
-        </div>
-      </div>
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 14, background: colorLight, borderRadius: 8, padding: '8px 12px', border: `0.5px solid ${colorBorder}` }}>
-        <button onClick={() => onChange({ ...ciclo, semanaActual: Math.max(1, semana - 1) })} disabled={semana === 1} style={{ background: 'none', border: 'none', fontSize: 22, cursor: semana === 1 ? 'not-allowed' : 'pointer', color: semana === 1 ? 'var(--text-secondary)' : color, opacity: semana === 1 ? 0.4 : 1, padding: '0 8px', lineHeight: 1 }}>‹</button>
-        <div style={{ textAlign: 'center' }}>
-          <div style={{ fontSize: 16, fontWeight: 700, color }}>{`Semana ${semana}`}</div>
-          {tieneDatos && <div style={{ fontSize: 10, color, opacity: 0.7, marginTop: 1 }}>● datos cargados</div>}
-        </div>
-        <button onClick={() => onChange({ ...ciclo, semanaActual: semana + 1 })} style={{ background: 'none', border: 'none', fontSize: 22, cursor: 'pointer', color, padding: '0 8px', lineHeight: 1 }}>›</button>
-      </div>
-      {riegoPromedios[semana] && Object.keys(riegoPromedios[semana]).length > 0 && (() => {
-        const prom = riegoPromedios[semana]
-        return (
-          <div style={{ background: colorLight, border: `0.5px solid ${colorBorder}`, borderRadius: 8, padding: '10px 12px', marginBottom: 10 }}>
-            <div style={{ fontSize: 11, fontWeight: 500, color, textTransform: 'uppercase', letterSpacing: '0.04em', marginBottom: 8 }}>Promedio riegos · Semana {semana}</div>
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '5px 12px' }}>
-              {[['EC', prom.ec], ['pH', prom.ph], ['PPFD', prom.ppfd], ['Pulsos', prom.pulsos], ['ML', prom.ml], ['VPD', prom.vpd], ['HR', prom.hr ? prom.hr + '%' : null], ['Temp', prom.temp ? prom.temp + '°C' : null]].map(([label, val]) => val ? (
-                <div key={label} style={{ display: 'flex', justifyContent: 'space-between' }}>
-                  <span style={{ fontSize: 12, color: 'var(--text-secondary)' }}>{label}</span>
-                  <span style={{ fontSize: 12, fontWeight: 600, color }}>{val}</span>
-                </div>
-              ) : null)}
-            </div>
-            <BadgesParametros etapa={ciclo.tipo} semana={semana} valores={prom} />
-          </div>
-        )
-      })()}
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-        {paramsCultivo.map(p => (
-          <div key={p.key} className="form-group">
-            <label className="form-label">{p.label}</label>
-            <input className="form-control" type="text" placeholder={p.placeholder} value={datos[p.key] || ''} onChange={e => setParam(p.key, e.target.value)} />
-          </div>
-        ))}
-      </div>
-      <button className="btn-submit" style={{ marginTop: 14, background: color }} onClick={() => showToast(`Semana ${semana} guardada ✓`, 2000)}>
-        Guardar semana {semana}
-      </button>
-      <div className={`toast${toast.show ? ' show' : ''}`}>{toast.msg}</div>
-    </div>
-  )
-}
-
-function TabCalendario({ riegoPromediosVege, riegoPromediosFlora }) {
-  const [vege, setVege] = useState(cicloVacio('vegetativo'))
-  const [flora, setFlora] = useState(cicloVacio('floracion'))
-  return (
-    <div className="content">
-      <SeccionCiclo ciclo={vege} onChange={setVege} riegoPromedios={riegoPromediosVege} />
-      <SeccionCiclo ciclo={flora} onChange={setFlora} riegoPromedios={riegoPromediosFlora} />
-    </div>
-  )
-}
-
-// ─── Tab Riegos ───────────────────────────────────────────────
+// ─── Tab Cultivo (riegos + ciclos) ─────────────────────────────
 const paramsRiego = [
   { key: 'ec', label: 'EC', placeholder: 'Ej: 1.4' },
   { key: 'ph', label: 'pH', placeholder: 'Ej: 6.0' },
@@ -3219,7 +3146,7 @@ function BadgesParametros({ etapa, semana, valores }) {
   )
 }
 
-function ModalEditarRiego({ riego, onGuardar, onEliminar, onCerrar }) {
+function ModalEditarRiego({ riego, fechaInicioCiclo, onGuardar, onEliminar, onCerrar }) {
   useEscape(onCerrar)
   const [form, setForm] = useState({
     semana: riego.semana, fecha: riego.fecha || '',
@@ -3230,6 +3157,7 @@ function ModalEditarRiego({ riego, onGuardar, onEliminar, onCerrar }) {
   })
   const [confirmando, setConfirmando] = useState(false)
   const set = (k, v) => setForm(f => ({ ...f, [k]: v }))
+  const setFecha = v => setForm(f => ({ ...f, fecha: v, semana: fechaInicioCiclo ? semanaDesdeFecha(v, fechaInicioCiclo) : f.semana }))
 
   function guardar() {
     if (!form.fecha) return
@@ -3245,12 +3173,12 @@ function ModalEditarRiego({ riego, onGuardar, onEliminar, onCerrar }) {
         </div>
         <div className="form-grid">
           <div className="form-group">
-            <label className="form-label">Semana</label>
-            <input className="form-control" type="number" min="1" value={form.semana} onChange={e => set('semana', parseInt(e.target.value) || 1)} />
+            <label className="form-label">Fecha</label>
+            <DatePicker value={form.fecha} onChange={setFecha} />
           </div>
           <div className="form-group">
-            <label className="form-label">Fecha</label>
-            <DatePicker value={form.fecha} onChange={v => set('fecha', v)} />
+            <label className="form-label">Semana (automática)</label>
+            <input className="form-control" type="number" min="1" value={form.semana} onChange={e => set('semana', parseInt(e.target.value) || 1)} />
           </div>
           {paramsRiego.map(p => (
             <div key={p.key} className="form-group">
@@ -3278,11 +3206,99 @@ function ModalEditarRiego({ riego, onGuardar, onEliminar, onCerrar }) {
   )
 }
 
-function TabRiegos({ onRiegosChange }) {
+function FormCiclo({ modo, cicloInicial, color, onGuardar, onCancelar }) {
+  const [fechaInicio, setFechaInicio] = useState(cicloInicial?.fecha_inicio || hoyCompleto())
+  const [geneticas, setGeneticas] = useState(cicloInicial?.geneticas || [])
+  const [otra, setOtra] = useState('')
+  const catalogo = [...new Set([...GENETICAS_CULTIVO, ...geneticas])]
+
+  function toggleGenetica(g) {
+    setGeneticas(prev => prev.includes(g) ? prev.filter(x => x !== g) : [...prev, g])
+  }
+  function agregarOtra() {
+    const val = otra.trim()
+    if (val && !geneticas.includes(val)) setGeneticas(prev => [...prev, val])
+    setOtra('')
+  }
+
+  return (
+    <div className="card">
+      <div className="form-label" style={{ marginBottom: 10 }}>{modo === 'nuevo' ? 'Empezar ciclo nuevo' : 'Editar ciclo'}</div>
+      <div className="form-group" style={{ marginBottom: 12 }}>
+        <label className="form-label">Fecha de inicio</label>
+        <DatePicker value={fechaInicio} onChange={setFechaInicio} />
+      </div>
+      <div className="form-group">
+        <label className="form-label">Genéticas</label>
+        <div className="miembro-row">
+          {catalogo.map(g => (
+            <button key={g} type="button" className={`miembro-btn${geneticas.includes(g) ? ' active' : ''}`} onClick={() => toggleGenetica(g)}>{g}</button>
+          ))}
+        </div>
+        <div style={{ display: 'flex', gap: 6, marginTop: 8 }}>
+          <input className="form-control" placeholder="Agregar otra genética..." value={otra} onChange={e => setOtra(e.target.value)} onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); agregarOtra() } }} />
+          <button type="button" onClick={agregarOtra} style={{ flexShrink: 0, padding: '0 16px', border: '0.5px solid var(--border-mid)', borderRadius: 'var(--radius-md)', background: 'transparent', cursor: 'pointer', fontSize: 16, color: 'var(--text-secondary)' }}>+</button>
+        </div>
+      </div>
+      <div style={{ display: 'flex', gap: 8, marginTop: 14 }}>
+        <button className="btn-submit" style={{ flex: 1, background: color, marginTop: 0 }} onClick={() => fechaInicio && onGuardar({ fechaInicio, geneticas })}>Guardar</button>
+        {onCancelar && (
+          <button onClick={onCancelar} style={{ flex: 1, background: 'transparent', border: '0.5px solid var(--border-mid)', borderRadius: 'var(--radius-md)', fontSize: 14, cursor: 'pointer' }}>Cancelar</button>
+        )}
+      </div>
+    </div>
+  )
+}
+
+function CicloHeader({ ciclo, esActivo, color, colorLight, colorBorder, onEditar, onCerrar, cerrando, setCerrando }) {
+  return (
+    <div className="card" style={{ borderColor: colorBorder }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+        <div>
+          <div style={{ fontSize: 11, fontWeight: 500, color, textTransform: 'uppercase', letterSpacing: '0.04em' }}>
+            {esActivo ? 'Ciclo activo' : 'Ciclo cerrado'}
+          </div>
+          <div style={{ fontSize: 13, color: 'var(--text-secondary)', marginTop: 2 }}>
+            Iniciado {ciclo.fecha_inicio}{ciclo.fecha_cierre ? ` · cerrado ${ciclo.fecha_cierre}` : ''}
+          </div>
+        </div>
+        {esActivo && <button onClick={onEditar} style={{ background: 'none', border: 'none', color, fontSize: 12, cursor: 'pointer', fontWeight: 500 }}>Editar</button>}
+      </div>
+      {ciclo.geneticas?.length > 0 && (
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 5, marginTop: 10 }}>
+          {ciclo.geneticas.map(g => <span key={g} className="badge" style={{ background: colorLight, color }}>{g}</span>)}
+        </div>
+      )}
+      {esActivo && (
+        !cerrando ? (
+          <button onClick={() => setCerrando(true)} style={{ width: '100%', marginTop: 12, padding: '9px', border: '0.5px solid #791F1F', borderRadius: 'var(--radius-md)', background: 'transparent', color: '#791F1F', fontSize: 13, fontWeight: 500, cursor: 'pointer' }}>
+            Cerrar periodo
+          </button>
+        ) : (
+          <div style={{ marginTop: 12, background: '#FCEBEB', border: '0.5px solid #791F1F', borderRadius: 'var(--radius-md)', padding: 12 }}>
+            <div style={{ fontSize: 13, color: '#791F1F', fontWeight: 500, marginBottom: 10, textAlign: 'center' }}>¿Cerrar este ciclo? Vas a poder ver el historial pero no vas a poder cargar más riegos acá.</div>
+            <div style={{ display: 'flex', gap: 8 }}>
+              <button onClick={onCerrar} style={{ flex: 1, padding: '9px', background: '#791F1F', color: 'white', border: 'none', borderRadius: 'var(--radius-md)', fontSize: 13, fontWeight: 600, cursor: 'pointer' }}>Sí, cerrar</button>
+              <button onClick={() => setCerrando(false)} style={{ flex: 1, padding: '9px', background: 'transparent', border: '0.5px solid var(--border-mid)', borderRadius: 'var(--radius-md)', fontSize: 13, cursor: 'pointer' }}>Cancelar</button>
+            </div>
+          </div>
+        )
+      )}
+    </div>
+  )
+}
+
+function TabCultivo() {
   const [etapa, setEtapa] = useState('vegetativo')
   const [riegosVege, setRiegosVege] = useState([])
   const [riegosFlora, setRiegosFlora] = useState([])
+  const [ciclos, setCiclos] = useState([])
+  const [cicloSeleccionadoId, setCicloSeleccionadoId] = useState(null)
+  const [mostrarCiclosCerrados, setMostrarCiclosCerrados] = useState(false)
+  const [editandoCiclo, setEditandoCiclo] = useState(false)
+  const [cerrandoCiclo, setCerrandoCiclo] = useState(false)
   const [semanaFiltro, setSemanaFiltro] = useState(1)
+  const [cicloIdSemanaSync, setCicloIdSemanaSync] = useState(undefined)
   const [mostrarForm, setMostrarForm] = useState(false)
   const [form, setForm] = useState({ ...riegoVacio(), fecha: hoyCompleto(), semana: 1 })
   const [toast, showToast] = useToast()
@@ -3298,22 +3314,16 @@ function TabRiegos({ onRiegosChange }) {
   }
 
   useEffect(() => {
-    supabase.from('riegos').select('*').order('created_at', { ascending: false })
-      .then(({ data }) => {
-        if (data) {
-          const vege = data.filter(r => r.etapa === 'vegetativo')
-          const flora = data.filter(r => r.etapa === 'floracion')
-          setRiegosVege(vege)
-          setRiegosFlora(flora)
-          ;['vegetativo', 'floracion'].forEach(et => {
-            const riegos = et === 'vegetativo' ? vege : flora
-            const semanas = [...new Set(riegos.map(r => r.semana))]
-            const promedios = {}
-            semanas.forEach(s => { promedios[s] = promediarRiegos(riegos.filter(r => r.semana === s)) })
-            onRiegosChange(et, promedios)
-          })
-        }
-      })
+    Promise.all([
+      supabase.from('riegos').select('*').order('created_at', { ascending: false }),
+      supabase.from('ciclos').select('*').order('created_at', { ascending: false }),
+    ]).then(([riegosRes, ciclosRes]) => {
+      if (riegosRes.data) {
+        setRiegosVege(riegosRes.data.filter(r => r.etapa === 'vegetativo'))
+        setRiegosFlora(riegosRes.data.filter(r => r.etapa === 'floracion'))
+      }
+      if (ciclosRes.data) setCiclos(ciclosRes.data)
+    })
   }, [])
 
   const riegos = etapa === 'vegetativo' ? riegosVege : riegosFlora
@@ -3323,11 +3333,49 @@ function TabRiegos({ onRiegosChange }) {
   const colorBorder = etapa === 'vegetativo' ? 'var(--green-border)' : '#D4B8E8'
   const set = (k, v) => setForm(f => ({ ...f, [k]: v }))
 
+  const cicloActivo = ciclos.find(c => c.etapa === etapa && !c.fecha_cierre) || null
+  const ciclosCerrados = ciclos
+    .filter(c => c.etapa === etapa && c.fecha_cierre)
+    .sort((a, b) => (parseFechaCompleta(b.fecha_inicio) || 0) - (parseFechaCompleta(a.fecha_inicio) || 0))
+  const cicloMostrado = (cicloSeleccionadoId && ciclos.find(c => c.id === cicloSeleccionadoId)) || cicloActivo
+  const esCicloActivo = !!cicloMostrado && cicloMostrado.id === cicloActivo?.id
+
+  // Semana "de hoy" del ciclo que se está mostrando. Se recalcula durante el render (no en un
+  // efecto) cada vez que cambia el ciclo mostrado, y desde ahí queda editable con ‹ ›.
+  let semana = semanaFiltro
+  if ((cicloMostrado?.id ?? null) !== cicloIdSemanaSync) {
+    semana = !cicloMostrado
+      ? 1
+      : cicloMostrado.id === cicloActivo?.id
+        ? semanaDesdeFecha(hoyCompleto(), cicloMostrado.fecha_inicio)
+        : Math.max(1, ...riegos.filter(r => r.ciclo_id === cicloMostrado.id).map(r => r.semana || 1))
+    setCicloIdSemanaSync(cicloMostrado?.id ?? null)
+    setSemanaFiltro(semana)
+  }
+
+  function cambiarEtapa(nueva) {
+    setEtapa(nueva)
+    setCicloSeleccionadoId(null)
+    setEditandoCiclo(false)
+    setCerrandoCiclo(false)
+    setMostrarForm(false)
+    setMostrarCiclosCerrados(false)
+  }
+
+  function seleccionarCiclo(id) {
+    setCicloSeleccionadoId(id)
+    setEditandoCiclo(false)
+    setCerrandoCiclo(false)
+    setMostrarForm(false)
+  }
+
+  const setFechaConSemana = v => setForm(f => ({ ...f, fecha: v, semana: cicloMostrado ? semanaDesdeFecha(v, cicloMostrado.fecha_inicio) : f.semana }))
 
   async function guardarRiego() {
     if (!form.fecha) { showToast('Completá la fecha'); return }
+    if (!cicloActivo) { showToast('No hay un ciclo activo'); return }
     const { data, error } = await supabase.from('riegos').insert({
-      etapa, semana: form.semana, fecha: form.fecha,
+      etapa, semana: form.semana, fecha: form.fecha, ciclo_id: cicloActivo.id,
       ec: form.ec, ph: form.ph, ppfd: form.ppfd,
       pulsos: form.pulsos, tiempo_pulso: form.tiempoPulso,
       ml: form.ml, vpd: form.vpd, hr: form.hr,
@@ -3335,13 +3383,8 @@ function TabRiegos({ onRiegosChange }) {
     }).select().single()
     if (!error && data) {
       const nuevo = { ...data, tiempoPulso: data.tiempo_pulso }
-      const nuevosRiegos = [nuevo, ...riegos]
-      setRiegos(nuevosRiegos)
+      setRiegos([nuevo, ...riegos])
       setRiegosAbiertos(prev => new Set(prev).add(nuevo.id))
-      const semanas = [...new Set(nuevosRiegos.map(r => r.semana))]
-      const promedios = {}
-      semanas.forEach(s => { promedios[s] = promediarRiegos(nuevosRiegos.filter(r => r.semana === s)) })
-      onRiegosChange(etapa, promedios)
       setForm({ ...riegoVacio(), fecha: hoyCompleto(), semana: form.semana })
       setMostrarForm(false)
       showToast('Riego registrado ✓')
@@ -3358,12 +3401,7 @@ function TabRiegos({ onRiegosChange }) {
     }).eq('id', actualizado.id).select().single()
     if (!error && data) {
       const editado = { ...data, tiempoPulso: data.tiempo_pulso }
-      const nuevosRiegos = riegos.map(r => r.id === editado.id ? editado : r)
-      setRiegos(nuevosRiegos)
-      const semanas = [...new Set(nuevosRiegos.map(r => r.semana))]
-      const promedios = {}
-      semanas.forEach(s => { promedios[s] = promediarRiegos(nuevosRiegos.filter(r => r.semana === s)) })
-      onRiegosChange(etapa, promedios)
+      setRiegos(riegos.map(r => r.id === editado.id ? editado : r))
       setEditando(null)
       showToast('Riego actualizado ✓')
     } else showToast('Error al actualizar')
@@ -3372,40 +3410,97 @@ function TabRiegos({ onRiegosChange }) {
   async function eliminarRiego(id) {
     const { error } = await supabase.from('riegos').delete().eq('id', id)
     if (!error) {
-      const nuevosRiegos = riegos.filter(r => r.id !== id)
-      setRiegos(nuevosRiegos)
-      const semanas = [...new Set(nuevosRiegos.map(r => r.semana))]
-      const promedios = {}
-      semanas.forEach(s => { promedios[s] = promediarRiegos(nuevosRiegos.filter(r => r.semana === s)) })
-      onRiegosChange(etapa, promedios)
+      setRiegos(riegos.filter(r => r.id !== id))
       setEditando(null)
       showToast('Riego eliminado')
     } else showToast('Error al eliminar')
   }
 
-  const riegosFiltrados = riegos.filter(r => r.semana === semanaFiltro)
-  const fechaInicioCiclo = riegos.reduce((min, r) => {
-    const t = parseFechaCompleta(r.fecha)
-    if (t == null) return min
-    return (!min || t < min.t) ? { t, fecha: r.fecha } : min
-  }, null)
+  async function empezarCiclo({ fechaInicio, geneticas }) {
+    const { data, error } = await supabase.from('ciclos').insert({ etapa, fecha_inicio: fechaInicio, fecha_cierre: null, geneticas }).select().single()
+    if (!error && data) {
+      setCiclos(prev => [data, ...prev])
+      setCicloSeleccionadoId(null)
+      showToast('Ciclo iniciado ✓')
+    } else showToast('Error al iniciar el ciclo')
+  }
+
+  async function guardarEdicionCiclo({ fechaInicio, geneticas }) {
+    if (!cicloActivo) return
+    const { data, error } = await supabase.from('ciclos').update({ fecha_inicio: fechaInicio, geneticas }).eq('id', cicloActivo.id).select().single()
+    if (!error && data) {
+      setCiclos(prev => prev.map(c => c.id === data.id ? data : c))
+      setEditandoCiclo(false)
+      showToast('Ciclo actualizado ✓')
+    } else showToast('Error al actualizar el ciclo')
+  }
+
+  async function cerrarCiclo() {
+    if (!cicloActivo) return
+    const { data, error } = await supabase.from('ciclos').update({ fecha_cierre: hoyCompleto() }).eq('id', cicloActivo.id).select().single()
+    if (!error && data) {
+      setCiclos(prev => prev.map(c => c.id === data.id ? data : c))
+      setCerrandoCiclo(false)
+      showToast('Periodo cerrado ✓')
+    } else showToast('Error al cerrar el periodo')
+  }
+
+  const riegosFiltrados = riegos.filter(r => r.ciclo_id === cicloMostrado?.id && r.semana === semana)
 
   return (
     <div className="content">
       <div className="miembro-row">
-        <button className={`miembro-btn${etapa === 'vegetativo' ? ' active' : ''}`} onClick={() => setEtapa('vegetativo')}>Vegetativo</button>
-        <button className={`miembro-btn${etapa === 'floracion' ? ' active' : ''}`} style={etapa === 'floracion' ? { background: '#F3EAF9', borderColor: '#D4B8E8', color: '#7B4F9E' } : {}} onClick={() => setEtapa('floracion')}>Floración</button>
+        <button className={`miembro-btn${etapa === 'vegetativo' ? ' active' : ''}`} onClick={() => cambiarEtapa('vegetativo')}>Vegetativo</button>
+        <button className={`miembro-btn${etapa === 'floracion' ? ' active' : ''}`} style={etapa === 'floracion' ? { background: '#F3EAF9', borderColor: '#D4B8E8', color: '#7B4F9E' } : {}} onClick={() => cambiarEtapa('floracion')}>Floración</button>
       </div>
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', background: colorLight, borderRadius: 8, padding: '8px 12px', border: `0.5px solid ${colorBorder}` }}>
-        <button onClick={() => setSemanaFiltro(s => Math.max(1, s - 1))} disabled={semanaFiltro === 1} style={{ background: 'none', border: 'none', fontSize: 22, cursor: semanaFiltro === 1 ? 'not-allowed' : 'pointer', color: semanaFiltro === 1 ? 'var(--text-secondary)' : color, opacity: semanaFiltro === 1 ? 0.4 : 1, padding: '0 8px', lineHeight: 1 }}>‹</button>
-        <div style={{ textAlign: 'center' }}>
-          <div style={{ fontSize: 16, fontWeight: 700, color }}>Semana {semanaFiltro}</div>
-          <div style={{ fontSize: 11, color: 'var(--text-secondary)' }}>{riegosFiltrados.length} riego{riegosFiltrados.length !== 1 ? 's' : ''} registrado{riegosFiltrados.length !== 1 ? 's' : ''}</div>
-          {fechaInicioCiclo && <div style={{ fontSize: 10, color: 'var(--text-secondary)', opacity: 0.75, marginTop: 1 }}>Ciclo iniciado {fechaInicioCiclo.fecha}</div>}
+
+      {cicloMostrado ? (
+        editandoCiclo ? (
+          <FormCiclo modo="editar" cicloInicial={cicloMostrado} color={color} onGuardar={guardarEdicionCiclo} onCancelar={() => setEditandoCiclo(false)} />
+        ) : (
+          <CicloHeader
+            ciclo={cicloMostrado} esActivo={esCicloActivo} color={color} colorLight={colorLight} colorBorder={colorBorder}
+            onEditar={() => setEditandoCiclo(true)} onCerrar={cerrarCiclo} cerrando={cerrandoCiclo} setCerrando={setCerrandoCiclo}
+          />
+        )
+      ) : (
+        <FormCiclo modo="nuevo" cicloInicial={null} color={color} onGuardar={empezarCiclo} />
+      )}
+
+      {ciclosCerrados.length > 0 && (
+        <button onClick={() => setMostrarCiclosCerrados(v => !v)} style={{ background: 'none', border: 'none', color: 'var(--text-secondary)', fontSize: 12, cursor: 'pointer', textAlign: 'left', padding: '2px 2px' }}>
+          {mostrarCiclosCerrados ? '▴' : '▾'} Ciclos anteriores ({ciclosCerrados.length})
+        </button>
+      )}
+      {mostrarCiclosCerrados && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+          {ciclosCerrados.map(c => (
+            <div key={c.id} className="pedido-card" style={{ cursor: 'pointer', opacity: cicloMostrado?.id === c.id ? 1 : 0.7 }} onClick={() => seleccionarCiclo(c.id)}>
+              <div>
+                <div className="pedido-sub">{c.fecha_inicio} — {c.fecha_cierre}</div>
+                {c.geneticas?.length > 0 && <div className="pedido-sub" style={{ marginTop: 2 }}>{c.geneticas.join(', ')}</div>}
+              </div>
+              <span className="pedido-editar-hint">{cicloMostrado?.id === c.id ? 'Viendo ▾' : 'Ver ▾'}</span>
+            </div>
+          ))}
+          {cicloSeleccionadoId && (
+            <button onClick={() => seleccionarCiclo(null)} style={{ background: 'none', border: 'none', color, fontSize: 12, cursor: 'pointer', padding: '2px 0', textAlign: 'left' }}>← Volver al ciclo activo</button>
+          )}
         </div>
-        <button onClick={() => setSemanaFiltro(s => s + 1)} style={{ background: 'none', border: 'none', fontSize: 22, cursor: 'pointer', color, padding: '0 8px', lineHeight: 1 }}>›</button>
-      </div>
-      {mostrarForm && (
+      )}
+
+      {cicloMostrado && (
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', background: colorLight, borderRadius: 8, padding: '8px 12px', border: `0.5px solid ${colorBorder}` }}>
+          <button onClick={() => setSemanaFiltro(s => Math.max(1, s - 1))} disabled={semana === 1} style={{ background: 'none', border: 'none', fontSize: 22, cursor: semana === 1 ? 'not-allowed' : 'pointer', color: semana === 1 ? 'var(--text-secondary)' : color, opacity: semana === 1 ? 0.4 : 1, padding: '0 8px', lineHeight: 1 }}>‹</button>
+          <div style={{ textAlign: 'center' }}>
+            <div style={{ fontSize: 16, fontWeight: 700, color }}>Semana {semana}</div>
+            <div style={{ fontSize: 11, color: 'var(--text-secondary)' }}>{riegosFiltrados.length} riego{riegosFiltrados.length !== 1 ? 's' : ''} registrado{riegosFiltrados.length !== 1 ? 's' : ''}</div>
+          </div>
+          <button onClick={() => setSemanaFiltro(s => s + 1)} style={{ background: 'none', border: 'none', fontSize: 22, cursor: 'pointer', color, padding: '0 8px', lineHeight: 1 }}>›</button>
+        </div>
+      )}
+
+      {esCicloActivo && (mostrarForm ? (
         <div className="card">
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
             <span className="form-label">Nuevo riego — Semana {form.semana}</span>
@@ -3413,12 +3508,12 @@ function TabRiegos({ onRiegosChange }) {
           </div>
           <div className="form-grid">
             <div className="form-group">
-              <label className="form-label">Semana</label>
-              <input className="form-control" type="number" min="1" value={form.semana} onChange={e => set('semana', parseInt(e.target.value) || 1)} />
+              <label className="form-label">Fecha</label>
+              <DatePicker value={form.fecha} onChange={setFechaConSemana} />
             </div>
             <div className="form-group">
-              <label className="form-label">Fecha</label>
-              <DatePicker value={form.fecha} onChange={v => set('fecha', v)} />
+              <label className="form-label">Semana (automática)</label>
+              <input className="form-control" type="number" min="1" value={form.semana} onChange={e => set('semana', parseInt(e.target.value) || 1)} />
             </div>
             {paramsRiego.map(p => (
               <div key={p.key} className="form-group">
@@ -3429,15 +3524,17 @@ function TabRiegos({ onRiegosChange }) {
           </div>
           <button className="btn-submit" style={{ marginTop: 14, background: color }} onClick={guardarRiego}>Guardar riego</button>
         </div>
-      )}
-      {!mostrarForm && (
-        <button className="btn-agregar-fila" onClick={() => { setForm(f => ({ ...f, semana: semanaFiltro })); setMostrarForm(true) }}>
-          + Registrar riego semana {semanaFiltro}
+      ) : (
+        <button className="btn-agregar-fila" onClick={() => { setForm(f => ({ ...f, fecha: fechaDeSemana(cicloMostrado.fecha_inicio, semana), semana })); setMostrarForm(true) }}>
+          + Registrar riego semana {semana}
         </button>
-      )}
+      ))}
+
       <div className="pedidos-list">
-        {riegosFiltrados.length === 0
-          ? <div className="empty-state">No hay riegos registrados para la semana {semanaFiltro}.</div>
+        {!cicloMostrado
+          ? null
+          : riegosFiltrados.length === 0
+          ? <div className="empty-state">No hay riegos registrados para la semana {semana}.</div>
           : riegosFiltrados.map(r => {
             const abierto = riegosAbiertos.has(r.id)
             return (
@@ -3474,7 +3571,7 @@ function TabRiegos({ onRiegosChange }) {
         return (
           <>
             <div className="card" style={{ borderColor: colorBorder, background: colorLight }}>
-              <div className="form-label" style={{ marginBottom: 10 }}>Promedio semana {semanaFiltro}</div>
+              <div className="form-label" style={{ marginBottom: 10 }}>Promedio semana {semana}</div>
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '6px 12px' }}>
                 {[['EC', prom.ec], ['pH', prom.ph], ['PPFD', prom.ppfd], ['Pulsos', prom.pulsos], ['ML', prom.ml], ['VPD', prom.vpd], ['HR', prom.hr ? prom.hr + '%' : null], ['Temp', prom.temp ? prom.temp + '°C' : null]].map(([label, val]) => val ? (
                   <div key={label} style={{ display: 'flex', justifyContent: 'space-between' }}>
@@ -3485,8 +3582,8 @@ function TabRiegos({ onRiegosChange }) {
               </div>
             </div>
             <div className="card" style={{ marginTop: 10 }}>
-              <div className="form-label" style={{ marginBottom: 10 }}>Evaluación vs. tabla — Semana {semanaFiltro}</div>
-              <GrillaParametros etapa={etapa} semana={semanaFiltro} valores={prom} />
+              <div className="form-label" style={{ marginBottom: 10 }}>Evaluación vs. tabla — Semana {semana}</div>
+              <GrillaParametros etapa={etapa} semana={semana} valores={prom} />
             </div>
           </>
         )
@@ -3494,6 +3591,7 @@ function TabRiegos({ onRiegosChange }) {
       {editando && (
         <ModalEditarRiego
           riego={editando}
+          fechaInicioCiclo={ciclos.find(c => c.id === editando.ciclo_id)?.fecha_inicio}
           onGuardar={actualizarRiego}
           onEliminar={eliminarRiego}
           onCerrar={() => setEditando(null)}
@@ -3740,8 +3838,6 @@ export default function App() {
   const [stockEsquejes, setStockEsquejes] = useState(STOCK_ESQUEJES_INICIAL)
   const [stockEsquejesInicial, setStockEsquejesInicial] = useState(STOCK_ESQUEJES_INICIAL)
   const [stockAjustesFallidos, setStockAjustesFallidos] = useState([])
-  const [riegoPromediosVege, setRiegoPromediosVege] = useState({})
-  const [riegoPromediosFlora, setRiegoPromediosFlora] = useState({})
   const [cargando, setCargando] = useState(true)
   const [errorCarga, setErrorCarga] = useState(false)
   const [intentoCarga, setIntentoCarga] = useState(0)
@@ -3824,11 +3920,6 @@ export default function App() {
     })
     return () => { cancelado = true }
   }, [sesion?.user?.id, intentoCarga])
-
-  function handleRiegosChange(etapa, promedios) {
-    if (etapa === 'vegetativo') setRiegoPromediosVege(promedios)
-    else setRiegoPromediosFlora(promedios)
-  }
 
   const guardarPedido = useCallback(async p => {
     const { data, error } = await supabase.from('pedidos').insert(pedidoToDB(p)).select().single()
@@ -4056,8 +4147,7 @@ export default function App() {
           <button className={`tab${tab === 'pedidos' ? ' active' : ''}`} onClick={() => irATab('pedidos')}>Pedidos</button>
           <button className={`tab${tab === 'gastos' ? ' active' : ''}`} onClick={() => irATab('gastos')}>Gastos</button>
           <button className={`tab${tab === 'finanzas' ? ' active' : ''}`} onClick={() => irATab('finanzas')}>Finanzas</button>
-          <button className={`tab${tab === 'riegos' ? ' active' : ''}`} onClick={() => irATab('riegos')}>Riegos</button>
-          <button className={`tab${tab === 'calendario' ? ' active' : ''}`} onClick={() => irATab('calendario')}>Cultivo</button>
+          <button className={`tab${tab === 'cultivo' ? ' active' : ''}`} onClick={() => irATab('cultivo')}>Cultivo</button>
         </div>
       </div>
       {tab === 'pedidos' && (
@@ -4097,8 +4187,7 @@ export default function App() {
       )}
       {tab === 'gastos' && <TabGastos target={objetivoRevision} miembro={miembro} gastos={gastos} presupuestos={presupuestos} onGuardarGasto={guardarGasto} onActualizarGasto={actualizarGasto} onEliminarGasto={eliminarGasto} />}
       {tab === 'finanzas' && <TabFinanzas onRevisar={irARevisar} pedidos={pedidos} esquejes={esquejes} miembro={miembro} gastos={gastos} presupuestos={presupuestos} setPresupuestos={setPresupuestos} aportes={aportes} setAportes={setAportes} gastosFijos={gastosFijos} setGastosFijos={setGastosFijos} pedidoPagos={pedidoPagos} esquejePagos={esquejePagos} />}
-      {tab === 'riegos' && <TabRiegos onRiegosChange={handleRiegosChange} />}
-      {tab === 'calendario' && <TabCalendario riegoPromediosVege={riegoPromediosVege} riegoPromediosFlora={riegoPromediosFlora} />}
+      {tab === 'cultivo' && <TabCultivo />}
       {mostrarCambiarPass && <ModalCambiarPassword onCerrar={() => setMostrarCambiarPass(false)} />}
     </div>
   )
