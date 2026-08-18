@@ -560,6 +560,8 @@ function PagosRegistro({ registro, pagos, total, miembro, onAgregarPago, onEdita
 function ModalEditarRegistro({ cfg, registro, pagos, miembro, onAgregarPago, onEditarPago, onEliminarPago, onGuardar, onEliminar, onCerrar, permiteMembresia, socios }) {
   useEscape(onCerrar)
   const esInterno = registro.tipo !== 'cliente'
+  const esRegalo = registro.tipo === 'regalo'
+  const requiereNombre = !esInterno || esRegalo
   const tienePrecioPorFila = registro.geneticas.some(g => g.precio !== undefined && g.precio !== null)
   const [form, setForm] = useState({
     socio: registro.socio,
@@ -605,8 +607,8 @@ function ModalEditarRegistro({ cfg, registro, pagos, miembro, onAgregarPago, onE
   function guardar(confirmarCambioTotal = false) {
     const filasValidas = form.filas.filter(f => f.nombre)
     const sinCantidad = filasValidas.some(f => !parseFloat(f.cantidad))
-    if ((!esInterno && !form.socio.trim()) || filasValidas.length === 0 || sinCantidad) {
-      setErrorCampos(esInterno ? 'Completá genética y cantidad.' : 'Completá socio, genética y cantidad.')
+    if ((requiereNombre && !form.socio.trim()) || filasValidas.length === 0 || sinCantidad) {
+      setErrorCampos(esRegalo ? 'Completá a quién es el regalo, genética y cantidad.' : (esInterno ? 'Completá genética y cantidad.' : 'Completá socio, genética y cantidad.'))
       return
     }
     if (form.esMembresia) {
@@ -632,6 +634,7 @@ function ModalEditarRegistro({ cfg, registro, pagos, miembro, onAgregarPago, onE
       ...registro, ...form, mes, geneticas, total, precio: form.precio,
       membresia: form.esMembresia ? form.tier : null,
       socioId: form.esMembresia ? (form.socioId || null) : null,
+      entregado: esRegalo ? true : form.entregado,
     })
   }
 
@@ -684,6 +687,12 @@ function ModalEditarRegistro({ cfg, registro, pagos, miembro, onAgregarPago, onE
               ) : (
                 <input className="form-control" type="text" value={form.socio} onChange={e => set('socio', e.target.value)} />
               )}
+            </div>
+          )}
+          {esRegalo && (
+            <div className="form-group full">
+              <label className="form-label">¿Para quién es el regalo?</label>
+              <input className="form-control" type="text" value={form.socio} onChange={e => set('socio', e.target.value)} />
             </div>
           )}
           <div className="form-group full">
@@ -748,15 +757,17 @@ function ModalEditarRegistro({ cfg, registro, pagos, miembro, onAgregarPago, onE
             )}
           </div>
         )}
-        <div className="toggle-group">
-          <div className="toggle-row">
-            <span className="toggle-label">{cfg.labelEntregado}</span>
-            <label className="toggle-switch">
-              <input type="checkbox" checked={form.entregado} onChange={e => set('entregado', e.target.checked)} />
-              <span className="toggle-slider" />
-            </label>
+        {!esRegalo && (
+          <div className="toggle-group">
+            <div className="toggle-row">
+              <span className="toggle-label">{cfg.labelEntregado}</span>
+              <label className="toggle-switch">
+                <input type="checkbox" checked={form.entregado} onChange={e => set('entregado', e.target.checked)} />
+                <span className="toggle-slider" />
+              </label>
+            </div>
           </div>
-        </div>
+        )}
         {!esInterno && (
           <PagosRegistro registro={registro} pagos={pagos} total={total} miembro={miembro} onAgregarPago={onAgregarPago} onEditarPago={onEditarPago} onEliminarPago={onEliminarPago} fkCampo={cfg.fkPagos} compacto={false} />
         )}
@@ -920,6 +931,9 @@ function ModalEditarGasto({ gasto, categorias, presupuestos, onGuardar, onElimin
 // ─── Formulario nuevo registro (genérico: pedido o esqueje) ───
 function FormRegistro({ cfg, onGuardar, onAgregarPago, miembro, tipoRegistro = 'cliente', permiteMembresia, socios }) {
   const esInterno = tipoRegistro !== 'cliente'
+  const esRegalo = tipoRegistro === 'regalo'
+  const esPropio = tipoRegistro === 'propio'
+  const requiereNombre = !esInterno || esRegalo
   const initial = () => ({
     socio: '', entregado: false, filas: [cfg.nuevaFila()],
     cobradoAhora: false, montoPago: '', metodoPago: 'Transferencia', cuenta: '', fechaPago: new Date().toISOString().slice(0, 10),
@@ -954,8 +968,8 @@ function FormRegistro({ cfg, onGuardar, onAgregarPago, miembro, tipoRegistro = '
   async function guardar() {
     const filasValidas = form.filas.filter(f => f.nombre)
     const sinCantidad = filasValidas.some(f => !parseFloat(f.cantidad))
-    if ((!esInterno && !form.socio.trim()) || filasValidas.length === 0 || sinCantidad) {
-      showToast(esInterno ? 'Completá genética y cantidad' : 'Completá socio, genética y cantidad')
+    if ((requiereNombre && !form.socio.trim()) || filasValidas.length === 0 || sinCantidad) {
+      showToast(esRegalo ? 'Completá a quién es el regalo, genética y cantidad' : (esInterno ? 'Completá genética y cantidad' : 'Completá socio, genética y cantidad'))
       return
     }
     if (form.esMembresia) {
@@ -981,14 +995,14 @@ function FormRegistro({ cfg, onGuardar, onAgregarPago, miembro, tipoRegistro = '
       id: Date.now(),
       fecha: hoyCompleto(),
       miembro,
-      socio: esInterno ? miembro : form.socio.trim(),
+      socio: esPropio ? miembro : form.socio.trim(),
       geneticas,
       precio: cfg.precioDefaultFila,
       total,
       tipo: tipoRegistro,
       membresia: form.esMembresia ? form.tier : null,
       socioId: form.esMembresia ? (form.socioId || null) : null,
-      entregado: form.entregado,
+      entregado: esRegalo ? true : form.entregado,
     }
     const res = await onGuardar(registro)
     if (!res?.ok) {
@@ -999,7 +1013,7 @@ function FormRegistro({ cfg, onGuardar, onAgregarPago, miembro, tipoRegistro = '
       await onAgregarPago(res.data, { monto: montoPago, metodo_pago: form.metodoPago, cuenta: form.cuenta, fecha: form.fechaPago, cuenta_estimada: false, creado_por: miembro || null })
     }
     setForm(initial())
-    showToast(`${cfg.singular[0].toUpperCase()}${cfg.singular.slice(1)} guardado ✓`)
+    showToast(esRegalo ? 'Regalo guardado ✓' : `${cfg.singular[0].toUpperCase()}${cfg.singular.slice(1)} guardado ✓`)
   }
 
   return (
@@ -1047,6 +1061,12 @@ function FormRegistro({ cfg, onGuardar, onAgregarPago, miembro, tipoRegistro = '
               )}
             </div>
           )}
+          {esRegalo && (
+            <div className="form-group full">
+              <label className="form-label">¿Para quién es el regalo?</label>
+              <input className="form-control" type="text" placeholder="Nombre..." value={form.socio} onChange={e => set('socio', e.target.value)} />
+            </div>
+          )}
           <div className="form-group full">
             <label className="form-label">Genética</label>
             <div className="filas-genetica">
@@ -1079,6 +1099,7 @@ function FormRegistro({ cfg, onGuardar, onAgregarPago, miembro, tipoRegistro = '
           </div>
         </div>
       </div>
+      {!esRegalo && (
       <div className="card">
         <div className="toggle-group">
           {!esInterno && (
@@ -1140,7 +1161,8 @@ function FormRegistro({ cfg, onGuardar, onAgregarPago, miembro, tipoRegistro = '
           </div>
         </div>
       </div>
-      <button className="btn-submit" style={cfg.btnBg ? { background: cfg.btnBg } : undefined} onClick={guardar}>Guardar {cfg.singular}</button>
+      )}
+      <button className="btn-submit" style={cfg.btnBg ? { background: cfg.btnBg } : undefined} onClick={guardar}>{esRegalo ? 'Guardar regalo' : `Guardar ${cfg.singular}`}</button>
       <div className={`toast${toast.show ? ' show' : ''}`}>{toast.msg}</div>
     </div>
   )
@@ -1218,7 +1240,7 @@ function ListaRegistrosPorMes({ cfg, registros, onActualizar, onEliminar, pagos,
                       return (
                         <div className="pedido-card" key={r.id} onClick={() => setEditando(r)} style={{ cursor: 'pointer' }}>
                           <div>
-                            <div className="pedido-nombre">{r.tipo === 'cliente' ? r.socio : (r.tipo === 'regalo' ? 'Regalo' : 'Consumo propio')}</div>
+                            <div className="pedido-nombre">{r.tipo === 'cliente' ? r.socio : (r.tipo === 'regalo' ? `Regalo · ${r.socio || 'Sin nombre'}` : 'Consumo propio')}</div>
                             <div className="pedido-sub">{r.geneticas.map(g => `${g.nombre} ${g.cantidad}${cfg.unidad}`).join(' · ')} · {r.fecha} · {r.miembro}</div>
                             <div className="pedido-badges">
                               <span className={`badge ${r.entregado ? 'badge-entregado' : 'badge-no-entregado'}`}>{r.entregado ? 'Entregado' : 'No entregado'}</span>
