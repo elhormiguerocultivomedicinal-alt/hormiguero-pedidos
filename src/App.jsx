@@ -3,6 +3,7 @@ import { Landmark, Wallet, ChevronDown, ChevronUp, Target, TriangleAlert, Info, 
 import './App.css'
 import { supabase } from './supabase'
 import { evaluarRegistro, colorPorIntensidad } from './parametrosTurba'
+import { evaluarFinanzas } from './agenteFinanzas'
 
 const GENETICAS = ['OG24K', 'Choco OG', 'Z-Kiem', 'Fancy', 'Gorilla Rainbow']
 const GENETICAS_ESQUEJES = ['OG24K', 'Black Domina', 'Z-Kiem', 'Fancy', 'Gorilla Rainbow', 'Dosichoc']
@@ -2071,14 +2072,6 @@ function montosPorCuenta(registro, campoMonto) {
   return registro.cuenta ? [{ cuenta: registro.cuenta, monto: registro[campoMonto] || 0 }] : []
 }
 
-function tieneAsignacionValida(registro, campoMonto) {
-  if (registro.cuenta) return true
-  if (!Array.isArray(registro.divisiones) || registro.divisiones.length === 0) return false
-  if (!registro.divisiones.every(d => d && d.cuenta)) return false
-  const suma = registro.divisiones.reduce((s, d) => s + (parseFloat(d?.monto) || 0), 0)
-  return Math.abs(suma - (registro[campoMonto] || 0)) < 0.5
-}
-
 function IconoCuenta({ nombre, size = 34 }) {
   const esEfectivo = nombre === CUENTA_EFECTIVO
   const esDolar = CUENTAS_DOLARES.includes(nombre)
@@ -2412,26 +2405,12 @@ function TabFinanzas({ pedidos, esquejes, insumos, miembro, gastos, presupuestos
     return d >= corte
   }
 
-  // Para la alerta de "sin cuenta" el criterio es al revés que en esDesdeCorte: ahí una fecha
-  // ilegible (imports viejos tipo "06/08" sin año) se cuenta como plata igual para no perderla
-  // del saldo. Acá, en cambio, una fecha ilegible o anterior al corte más viejo configurado es
-  // exactamente lo que identifica a un registro migrado del historial (nunca va a tener cuenta
-  // asignada) — y no tiene sentido reclamarlo para siempre. Ver auditoria-salud.md punto 2.
-  function esLegado(fechaStr, corteMinimo) {
-    const d = parseFechaDP(fechaStr)
-    if (!d) return true
-    return !esDesdeCorte(fechaStr, corteMinimo)
-  }
-
   // Los pagos de pedidos/esquejes ya guardan una fecha ISO real por evento (a diferencia de
   // fecha/fecha_cobro, que son texto legado dd/mm/aaaa) — comparar contra el corte es una
   // simple comparación de strings ISO, sin pasar por parseFechaDP.
   function esDesdeCorteISO(fechaISO, corteISO) {
     if (!fechaISO) return true
     return fechaISO >= (corteISO || FECHA_CORTE_DEFAULT)
-  }
-  function esLegadoISO(fechaISO, corteMinimo) {
-    return !fechaISO || fechaISO < corteMinimo
   }
 
   // Ingresos de pedidos/esquejes: se suman directo desde el historial de pagos (pedido_pagos/
@@ -2456,47 +2435,6 @@ function TabFinanzas({ pedidos, esquejes, insumos, miembro, gastos, presupuestos
   }), [pedidoPagos, esquejePagos, insumoPagos, gastos, cuentas])
 
   const totalGeneral = resumen.reduce((s, r) => s + r.saldo, 0)
-
-  // Independiente del desglose por cuenta de arriba (que agrupa por nombre de cuenta y por
-  // eso se pierde los gastos divididos entre varias, que no tienen un "cuenta" único): acá
-  // contamos directo sobre los 3 orígenes, así el total y el listado de abajo son exactos.
-  const registrosARevisar = useMemo(() => {
-    const items = []
-    pedidoPagos.filter(pg => pg.cuenta_estimada).forEach(pg => {
-      const pedido = pedidos.find(p => p.id === pg.pedido_id)
-      items.push({
-        key: `pedido-${pg.id}`,
-        label: `Pedido de ${pedido?.socio || '(no encontrado)'} · ${formatPesos(pg.monto)} · ${formatFechaISOCorta(pg.fecha)}`,
-        objetivo: { tab: 'pedidos', tipoRegistro: 'cosecha', mes: pedido?.mes, id: pg.pedido_id },
-      })
-    })
-    esquejePagos.filter(pg => pg.cuenta_estimada).forEach(pg => {
-      const esqueje = esquejes.find(e => e.id === pg.esqueje_id)
-      items.push({
-        key: `esqueje-${pg.id}`,
-        label: `Esqueje de ${esqueje?.socio || '(no encontrado)'} · ${formatPesos(pg.monto)} · ${formatFechaISOCorta(pg.fecha)}`,
-        objetivo: { tab: 'pedidos', tipoRegistro: 'esquejes', mes: esqueje?.mes, id: pg.esqueje_id },
-      })
-    })
-    insumoPagos.filter(pg => pg.cuenta_estimada).forEach(pg => {
-      const insumo = insumos.find(i => i.id === pg.insumo_id)
-      items.push({
-        key: `insumo-${pg.id}`,
-        label: `Insumo de ${insumo?.socio || '(no encontrado)'} · ${formatPesos(pg.monto)} · ${formatFechaISOCorta(pg.fecha)}`,
-        objetivo: { tab: 'pedidos', tipoRegistro: 'insumos', mes: insumo?.mes, id: pg.insumo_id },
-      })
-    })
-    gastos.filter(g => g.cuenta_estimada).forEach(g => {
-      items.push({
-        key: `gasto-${g.id}`,
-        label: `${g.descripcion} · ${formatPesos(g.monto)} · ${g.fecha}`,
-        objetivo: { tab: 'gastos', locacion: g.locacion, mes: g.mes, id: g.id },
-      })
-    })
-    return items
-  }, [pedidoPagos, esquejePagos, insumoPagos, gastos, pedidos, esquejes, insumos])
-
-  const totalEstimados = registrosARevisar.length
 
   // Presupuestos activos (no cerrados) de ambas locaciones, para los KPIs generales.
   // "Asignado" es un compromiso de gasto planeado — aportar capital a un presupuesto no
@@ -2548,20 +2486,25 @@ function TabFinanzas({ pedidos, esquejes, insumos, miembro, gastos, presupuestos
 
   const totalDolares = resumenDolares.reduce((s, r) => s + r.saldo, 0)
 
-  // Pagos/gastos sin cuenta asignada no entran en ningún saldo de arriba y por eso no deben
-  // quedar invisibles — se muestran aparte para que se corrijan. Se excluye lo anterior al
-  // corte más viejo entre las cuentas configuradas: es plata migrada del historial que nunca
-  // va a tener cuenta.
+  // Corte más viejo entre las cuentas configuradas: lo anterior a esto es plata migrada del
+  // historial que nunca va a tener cuenta, así que el agente no la reclama.
   const corteMinimo = cuentas.length > 0
     ? cuentas.reduce((min, c) => (c.fecha_corte && c.fecha_corte < min ? c.fecha_corte : min), cuentas[0].fecha_corte || FECHA_CORTE_DEFAULT)
     : FECHA_CORTE_DEFAULT
-  const pagosPedidosSinCuenta = pedidoPagos.filter(pg => !pg.cuenta && !esLegadoISO(pg.fecha, corteMinimo))
-  const pagosEsquejesSinCuenta = esquejePagos.filter(pg => !pg.cuenta && !esLegadoISO(pg.fecha, corteMinimo))
-  const pagosInsumosSinCuenta = insumoPagos.filter(pg => !pg.cuenta && !esLegadoISO(pg.fecha, corteMinimo))
-  const gastosSinCuenta = gastos.filter(g => !tieneAsignacionValida(g, 'monto') && !esLegado(g.fecha, corteMinimo))
-  const ingresosSinCuenta = pagosPedidosSinCuenta.reduce((s, pg) => s + (pg.monto || 0), 0) + pagosEsquejesSinCuenta.reduce((s, pg) => s + (pg.monto || 0), 0) + pagosInsumosSinCuenta.reduce((s, pg) => s + (pg.monto || 0), 0)
-  const egresosSinCuenta = gastosSinCuenta.reduce((s, g) => s + (g.monto || 0), 0)
-  const cantidadSinCuenta = pagosPedidosSinCuenta.length + pagosEsquejesSinCuenta.length + pagosInsumosSinCuenta.length + gastosSinCuenta.length
+
+  // Agente de salud financiera: mismo patrón que el agente de cultivo (reglas
+  // determinísticas, nunca inventa un dato, siempre señala el registro puntual y quién puede
+  // corregirlo). Corre siempre que se carga la pestaña, sobre los mismos datos que ya están
+  // en memoria — ver src/agenteFinanzas.js.
+  const hallazgosFinanzas = useMemo(() => evaluarFinanzas({
+    cuentas, dolaresMovimientos, gastos, presupuestos, aportes,
+    pedidoPagos, esquejePagos, insumoPagos, pedidos, esquejes, insumos,
+    resumen, resumenDolares, corteMinimo,
+    cuentasConocidas: CUENTAS, cuentasDolaresConocidas: CUENTAS_DOLARES,
+    cuentaEfectivo: CUENTA_EFECTIVO, cuentaHormiguero: CUENTA_HORMIGUERO,
+  }, { pesos: formatPesos, dolares: formatDolares, fechaISO: formatFechaISOCorta }),
+  [cuentas, dolaresMovimientos, gastos, presupuestos, aportes, pedidoPagos, esquejePagos, insumoPagos, pedidos, esquejes, insumos, resumen, resumenDolares, corteMinimo])
+  const totalEstimados = hallazgosFinanzas.length
 
   async function actualizarSaldoCuenta(nombre, valorStr, corteStr) {
     const valor = parseFloat(valorStr)
@@ -2694,40 +2637,42 @@ function TabFinanzas({ pedidos, esquejes, insumos, miembro, gastos, presupuestos
           </div>
         </div>
       )}
-      <div className="card" style={{ marginTop: 14, background: totalEstimados > 0 ? '#FFF8ED' : 'var(--bg-card)', borderColor: totalEstimados > 0 ? '#E8C77E' : 'var(--border)' }}>
-        {totalEstimados > 0 ? (
-          <>
-            <div style={{ display: 'flex', gap: 8, alignItems: 'flex-start' }}>
-              <TriangleAlert size={15} color="#854F0B" style={{ marginTop: 1, flexShrink: 0 }} />
-              <div style={{ fontSize: 12, color: '#854F0B', lineHeight: 1.5 }}>
-                <strong>Registros a revisar</strong> · {totalEstimados} con cuenta estimada.
-              </div>
-            </div>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginTop: 10 }}>
-              {registrosARevisar.map(item => (
-                <div key={item.key} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, paddingTop: 8, borderTop: '0.5px solid #E8C77E' }}>
-                  <span style={{ fontSize: 12, color: '#854F0B' }}>{item.label}</span>
-                  <button onClick={() => onRevisar(item.objetivo)} style={{ ...btnLinkStyle('#854F0B'), flexShrink: 0 }}>Revisar</button>
+      {(() => {
+        const hayError = hallazgosFinanzas.some(h => h.severidad === 'error')
+        const hayAlgo = hallazgosFinanzas.length > 0
+        const colorFondo = hayError ? '#FCEBEB' : hayAlgo ? '#FFF8ED' : 'var(--bg-card)'
+        const colorBorde = hayError ? '#791F1F' : hayAlgo ? '#E8C77E' : 'var(--border)'
+        const colorTitulo = hayError ? '#791F1F' : '#854F0B'
+        return (
+          <div className="card" style={{ marginTop: 14, background: colorFondo, borderColor: colorBorde }}>
+            {hayAlgo ? (
+              <>
+                <div style={{ display: 'flex', gap: 8, alignItems: 'flex-start' }}>
+                  <TriangleAlert size={15} color={colorTitulo} style={{ marginTop: 1, flexShrink: 0 }} />
+                  <div style={{ fontSize: 12, color: colorTitulo, lineHeight: 1.5 }}>
+                    <strong>Registros a revisar</strong> · {hallazgosFinanzas.length}
+                  </div>
                 </div>
-              ))}
-            </div>
-          </>
-        ) : (
-          <div style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
-            <strong style={{ color: 'var(--text-primary)' }}>Registros a revisar</strong> · Sin registros a validar.
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginTop: 10 }}>
+                  {hallazgosFinanzas.map((h, i) => {
+                    const color = h.severidad === 'error' ? '#791F1F' : '#854F0B'
+                    return (
+                      <div key={i} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, paddingTop: 8, borderTop: `0.5px solid ${h.severidad === 'error' ? '#e8b4b4' : '#E8C77E'}` }}>
+                        <span style={{ fontSize: 12, color }}><strong>{h.responsable}</strong>: {h.mensaje}</span>
+                        {h.objetivo && <button onClick={() => onRevisar(h.objetivo)} style={{ ...btnLinkStyle(color), flexShrink: 0 }}>Revisar</button>}
+                      </div>
+                    )
+                  })}
+                </div>
+              </>
+            ) : (
+              <div style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
+                <strong style={{ color: 'var(--text-primary)' }}>Registros a revisar</strong> · Sin registros a validar.
+              </div>
+            )}
           </div>
-        )}
-      </div>
-      {cantidadSinCuenta > 0 && (
-        <div className="card" style={{ marginTop: 14, background: '#FCEBEB', borderColor: '#791F1F' }}>
-          <div style={{ display: 'flex', gap: 8, alignItems: 'flex-start' }}>
-            <TriangleAlert size={15} color="#791F1F" style={{ marginTop: 1, flexShrink: 0 }} />
-            <div style={{ fontSize: 12, color: '#791F1F', lineHeight: 1.5 }}>
-              <strong>Atención:</strong> hay <strong>{cantidadSinCuenta}</strong> pago(s)/gasto(s) SIN cuenta asignada, por eso <strong>no están sumados en ningún total de arriba</strong> (ingresos sin contar: {formatPesos(ingresosSinCuenta)} · gastos sin contar: {formatPesos(egresosSinCuenta)}). Los pagos se corrigen desde Pedidos (Cosecha/Esquejes): abrí el registro, borrá el pago sin cuenta y volvé a cargarlo con la cuenta confirmada. Los gastos se corrigen desde Gastos → Lista, abriendo cada uno y eligiendo su cuenta.
-            </div>
-          </div>
-        </div>
-      )}
+        )
+      })()}
       <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 14 }}>
       <button className="btn-disclosure" onClick={() => setVerDetalleCuentas(v => !v)}>
         <span>{verDetalleCuentas ? 'Ocultar cuentas en pesos' : `Ver detalle cuentas en pesos (${resumen.length})`}</span>
