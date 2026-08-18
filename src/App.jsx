@@ -171,6 +171,24 @@ const CFG_ESQUEJES = {
   fkPagos: 'esqueje_id',
 }
 
+// ─── Insumos: venta puntual de equipos/instrumental de cultivo (leds, carpas,
+// extracción, etc.) — sin stock/catálogo fijo, texto libre por ítem, pero mismo
+// carrito + ledger de pagos que Cosecha/Esquejes ─────────────────────────────
+const COLOR_INSUMOS = '#2C5282'
+const COLOR_INSUMOS_LIGHT = '#EBF2FA'
+const COLOR_INSUMOS_BORDER = '#90B4DE'
+const CFG_INSUMOS = {
+  unidad: 'u', geneticas: null, tieneStock: false,
+  nuevaFila: filaEsquejeVacia, precioDefaultFila: '',
+  color: COLOR_INSUMOS, colorBorde: COLOR_INSUMOS_BORDER, btnBg: COLOR_INSUMOS,
+  singular: 'venta', plural: 'ventas',
+  labelEntregado: 'Entregado', txtEliminar: 'Eliminar venta',
+  labelFilas: 'Insumo', labelSocio: 'Comprador', placeholderSocio: 'Nombre del comprador...',
+  tituloNuevo: 'Registro de nueva venta', tituloLista: 'Ventas registradas',
+  txtAgregarFila: '+ Agregar insumo a la venta', txtGuardado: 'Venta guardada ✓',
+  fkPagos: 'insumo_id',
+}
+
 // ─── Membresías de socios (solo Cosecha) ───────────────────────
 // El precio por gramo de cada tier ya deja el total bien puesto con la
 // fórmula que usa cualquier fila de genética (cantidad × precio): no hace
@@ -678,14 +696,14 @@ function ModalEditarRegistro({ cfg, registro, pagos, miembro, onAgregarPago, onE
         <div className="form-grid">
           {!esInterno && (
             <div className="form-group full">
-              <label className="form-label">Socio</label>
+              <label className="form-label">{cfg.labelSocio || 'Socio'}</label>
               {form.esMembresia ? (
                 <select className="form-control" value={form.socioId} onChange={e => handleSocioId(e.target.value)}>
                   <option value="">Seleccionar socio...</option>
                   {(socios || []).map(s => <option key={s.id} value={s.id}>{s.nombre}</option>)}
                 </select>
               ) : (
-                <input className="form-control" type="text" value={form.socio} onChange={e => set('socio', e.target.value)} />
+                <input className="form-control" type="text" placeholder={cfg.placeholderSocio || 'Nombre del socio...'} value={form.socio} onChange={e => set('socio', e.target.value)} />
               )}
             </div>
           )}
@@ -701,15 +719,19 @@ function ModalEditarRegistro({ cfg, registro, pagos, miembro, onAgregarPago, onE
           </div>
         </div>
         <div className="form-group full">
-          <label className="form-label">Genética</label>
+          <label className="form-label">{cfg.labelFilas || 'Genética'}</label>
           <div className="filas-genetica">
             {form.filas.map(fila => (
               <div key={fila.id} className="fila-genetica">
-                <select className="form-control" value={fila.nombre} onChange={e => setFila(fila.id, 'nombre', e.target.value)}>
-                  <option value="">Seleccionar...</option>
-                  {cfg.geneticas.map(g => <option key={g} value={g}>{g}</option>)}
-                  {fila.nombre && !cfg.geneticas.includes(fila.nombre) && <option value={fila.nombre}>{fila.nombre} (fuera de catálogo)</option>}
-                </select>
+                {cfg.geneticas ? (
+                  <select className="form-control" value={fila.nombre} onChange={e => setFila(fila.id, 'nombre', e.target.value)}>
+                    <option value="">Seleccionar...</option>
+                    {cfg.geneticas.map(g => <option key={g} value={g}>{g}</option>)}
+                    {fila.nombre && !cfg.geneticas.includes(fila.nombre) && <option value={fila.nombre}>{fila.nombre} (fuera de catálogo)</option>}
+                  </select>
+                ) : (
+                  <input className="form-control" type="text" placeholder="Nombre del insumo..." value={fila.nombre} onChange={e => setFila(fila.id, 'nombre', e.target.value)} />
+                )}
                 <input className="form-control fila-cantidad" type="number" placeholder={cfg.unidad} min="0" value={fila.cantidad} onChange={e => setFila(fila.id, 'cantidad', e.target.value)} />
                 {tienePrecioPorFila && (
                   <InputMonto className="form-control fila-cantidad" placeholder={`$/${cfg.unidad}`} value={precioFila(fila)} disabled={esInterno || form.esMembresia} onChange={v => setFila(fila.id, 'precio', v)} />
@@ -719,7 +741,7 @@ function ModalEditarRegistro({ cfg, registro, pagos, miembro, onAgregarPago, onE
             ))}
           </div>
           {!(form.esMembresia && form.tier && form.filas.length >= maxGeneticasMembresia(form.tier)) && (
-            <button className="btn-agregar-fila" onClick={agregarFila}>+ Agregar genética</button>
+            <button className="btn-agregar-fila" onClick={agregarFila}>+ Agregar {(cfg.labelFilas || 'genética').toLowerCase()}</button>
           )}
           {form.esMembresia && form.tier && (
             <div style={{ fontSize: 11, marginTop: 4, color: form.filas.reduce((s, f) => s + (parseFloat(f.cantidad) || 0), 0) === MEMBRESIAS[form.tier].gramos ? 'var(--text-secondary)' : '#854F0B' }}>
@@ -1013,7 +1035,7 @@ function FormRegistro({ cfg, onGuardar, onAgregarPago, miembro, tipoRegistro = '
       await onAgregarPago(res.data, { monto: montoPago, metodo_pago: form.metodoPago, cuenta: form.cuenta, fecha: form.fechaPago, cuenta_estimada: false, creado_por: miembro || null })
     }
     setForm(initial())
-    showToast(esRegalo ? 'Regalo guardado ✓' : `${cfg.singular[0].toUpperCase()}${cfg.singular.slice(1)} guardado ✓`)
+    showToast(esRegalo ? 'Regalo guardado ✓' : (cfg.txtGuardado || `${cfg.singular[0].toUpperCase()}${cfg.singular.slice(1)} guardado ✓`))
   }
 
   return (
@@ -1050,14 +1072,14 @@ function FormRegistro({ cfg, onGuardar, onAgregarPago, miembro, tipoRegistro = '
         <div className="form-grid">
           {!esInterno && (
             <div className="form-group full">
-              <label className="form-label">Socio</label>
+              <label className="form-label">{cfg.labelSocio || 'Socio'}</label>
               {form.esMembresia ? (
                 <select className="form-control" value={form.socioId} onChange={e => handleSocioId(e.target.value)}>
                   <option value="">Seleccionar socio...</option>
                   {(socios || []).map(s => <option key={s.id} value={s.id}>{s.nombre}</option>)}
                 </select>
               ) : (
-                <input className="form-control" type="text" placeholder="Nombre del socio..." value={form.socio} onChange={e => set('socio', e.target.value)} />
+                <input className="form-control" type="text" placeholder={cfg.placeholderSocio || 'Nombre del socio...'} value={form.socio} onChange={e => set('socio', e.target.value)} />
               )}
             </div>
           )}
@@ -1068,14 +1090,18 @@ function FormRegistro({ cfg, onGuardar, onAgregarPago, miembro, tipoRegistro = '
             </div>
           )}
           <div className="form-group full">
-            <label className="form-label">Genética</label>
+            <label className="form-label">{cfg.labelFilas || 'Genética'}</label>
             <div className="filas-genetica">
               {form.filas.map(fila => (
                 <div key={fila.id} className="fila-genetica">
-                  <select className="form-control" value={fila.nombre} onChange={e => setFila(fila.id, 'nombre', e.target.value)}>
-                    <option value="">Seleccionar...</option>
-                    {cfg.geneticas.map(g => <option key={g} value={g}>{g}</option>)}
-                  </select>
+                  {cfg.geneticas ? (
+                    <select className="form-control" value={fila.nombre} onChange={e => setFila(fila.id, 'nombre', e.target.value)}>
+                      <option value="">Seleccionar...</option>
+                      {cfg.geneticas.map(g => <option key={g} value={g}>{g}</option>)}
+                    </select>
+                  ) : (
+                    <input className="form-control" type="text" placeholder="Nombre del insumo..." value={fila.nombre} onChange={e => setFila(fila.id, 'nombre', e.target.value)} />
+                  )}
                   <input className="form-control fila-cantidad" type="number" placeholder={cfg.unidad} min="0" value={fila.cantidad} onChange={e => setFila(fila.id, 'cantidad', e.target.value)} />
                   <InputMonto className="form-control fila-cantidad" placeholder={`$/${cfg.unidad}`} value={precioFila(fila)} disabled={esInterno || form.esMembresia} onChange={v => setFila(fila.id, 'precio', v)} />
                   {form.filas.length > 1 && <button className="btn-eliminar-fila" onClick={() => eliminarFila(fila.id)}>✕</button>}
@@ -1083,7 +1109,7 @@ function FormRegistro({ cfg, onGuardar, onAgregarPago, miembro, tipoRegistro = '
               ))}
             </div>
             {!(form.esMembresia && form.tier && form.filas.length >= maxGeneticasMembresia(form.tier)) && (
-              <button className="btn-agregar-fila" onClick={agregarFila}>+ Agregar genética al {cfg.singular}</button>
+              <button className="btn-agregar-fila" onClick={agregarFila}>{cfg.txtAgregarFila || `+ Agregar genética al ${cfg.singular}`}</button>
             )}
             {gramosObjetivo != null && (
               <div style={{ fontSize: 11, marginTop: 4, color: gramosCargados === gramosObjetivo ? 'var(--text-secondary)' : '#854F0B' }}>
@@ -1413,38 +1439,41 @@ function PanelDominio({ cfg, registros, miembro, onGuardar, onActualizar, onElim
   const plural = cfg.plural[0].toUpperCase() + cfg.plural.slice(1)
   return (
     <div>
-      <div style={seccionTitulo}>Registro de nuevo {cfg.singular}</div>
+      <div style={seccionTitulo}>{cfg.tituloNuevo || `Registro de nuevo ${cfg.singular}`}</div>
       <FormRegistro cfg={cfg} onGuardar={onGuardar} miembro={miembro} onAgregarPago={onAgregarPago} tipoRegistro={tipoRegistro} permiteMembresia={permiteMembresia} socios={socios} />
 
-      <div style={{ marginTop: 18 }}>
-        <div className="pedido-card" onClick={() => setStockAbierto(o => !o)} style={{ cursor: 'pointer' }}>
-          <div>
-            <div className="pedido-nombre">Stock disponible por genética</div>
-            <div className="pedido-sub">{cfg.geneticas.length} genéticas</div>
+      {cfg.tieneStock !== false && (
+        <div style={{ marginTop: 18 }}>
+          <div className="pedido-card" onClick={() => setStockAbierto(o => !o)} style={{ cursor: 'pointer' }}>
+            <div>
+              <div className="pedido-nombre">Stock disponible por genética</div>
+              <div className="pedido-sub">{cfg.geneticas.length} genéticas</div>
+            </div>
+            <div className="pedido-right">
+              <span className="pedido-editar-hint">{stockAbierto ? 'Ocultar ▴' : 'Ver ▾'}</span>
+            </div>
           </div>
-          <div className="pedido-right">
-            <span className="pedido-editar-hint">{stockAbierto ? 'Ocultar ▴' : 'Ver ▾'}</span>
-          </div>
+          {stockAbierto && (
+            <div style={{ marginTop: 8 }}>
+              <PanelStock stock={stock} inicial={stockInicial} cfg={cfg} ajustesFallidos={ajustesFallidos} onEditar={onEditarStock} onEditarInicial={onEditarInicial} />
+            </div>
+          )}
         </div>
-        {stockAbierto && (
-          <div style={{ marginTop: 8 }}>
-            <PanelStock stock={stock} inicial={stockInicial} cfg={cfg} ajustesFallidos={ajustesFallidos} onEditar={onEditarStock} onEditarInicial={onEditarInicial} />
-          </div>
-        )}
-      </div>
+      )}
 
       <div style={{ marginTop: 18 }}>
-        <div style={seccionTitulo}>{plural} registrados</div>
+        <div style={seccionTitulo}>{cfg.tituloLista || `${plural} registrados`}</div>
         <ListaRegistrosPorMes cfg={cfg} registros={registros} onActualizar={onActualizar} onEliminar={onEliminar} pagos={pagos} miembro={miembro} onAgregarPago={onAgregarPago} onEditarPago={onEditarPago} onEliminarPago={onEliminarPago} target={target} permiteMembresia={permiteMembresia} socios={socios} />
       </div>
     </div>
   )
 }
 
-// ─── Tab Pedidos: Cosecha / Esquejes / Propio / Socios ─────────
-function TabPedidos({
+// ─── Tab Ventas: Cosecha / Esquejes / Insumos / Propio / Socios ─
+function TabVentas({
   pedidos, stock, stockInicial, onGuardarPedido, onActualizarPedido, onEliminarPedido,
   esquejes, stockEsquejes, stockEsquejesInicial, onGuardarEsqueje, onActualizarEsqueje, onEliminarEsqueje,
+  insumos, onGuardarInsumo, onActualizarInsumo, onEliminarInsumo, insumoPagos, onAgregarPagoInsumo, onEditarPagoInsumo, onEliminarPagoInsumo,
   miembro, ajustesFallidos,
   onEditarStock, onEditarStockEsquejes, onEditarInicial, onEditarInicialEsquejes,
   pedidoPagos, esquejePagos, onAgregarPagoPedido, onEditarPagoPedido, onEliminarPagoPedido, onAgregarPagoEsqueje, onEditarPagoEsqueje, onEliminarPagoEsqueje,
@@ -1454,14 +1483,33 @@ function TabPedidos({
   const [tipo, setTipo] = useState(() => target?.tipoRegistro || 'cosecha')
   const cfg = tipo === 'esquejes' ? CFG_ESQUEJES : CFG_COSECHA
   const activeStyle = tipo === 'esquejes' ? { background: COLOR_ESQUEJES_LIGHT, borderColor: COLOR_ESQUEJES_BORDER, color: COLOR_ESQUEJES } : {}
+  const activeStyleInsumos = tipo === 'insumos' ? { background: COLOR_INSUMOS_LIGHT, borderColor: COLOR_INSUMOS_BORDER, color: COLOR_INSUMOS } : {}
   return (
     <div className="content">
       <div className="miembro-row">
         <button className={`miembro-btn${tipo === 'cosecha' ? ' active' : ''}`} onClick={() => setTipo('cosecha')}>Cosecha</button>
         <button className={`miembro-btn${tipo === 'esquejes' ? ' active' : ''}`} style={tipo === 'esquejes' ? activeStyle : {}} onClick={() => setTipo('esquejes')}>Esquejes</button>
+        <button className={`miembro-btn${tipo === 'insumos' ? ' active' : ''}`} style={tipo === 'insumos' ? activeStyleInsumos : {}} onClick={() => setTipo('insumos')}>Insumos</button>
         <button className={`miembro-btn${tipo === 'propio' ? ' active' : ''}`} onClick={() => setTipo('propio')}>Propio</button>
         <button className={`miembro-btn${tipo === 'socios' ? ' active' : ''}`} onClick={() => setTipo('socios')}>Socios</button>
       </div>
+      {tipo === 'insumos' && (
+        <PanelDominio
+          cfg={CFG_INSUMOS}
+          registros={insumos.filter(r => r.tipo === 'cliente')}
+          miembro={miembro}
+          onGuardar={onGuardarInsumo}
+          onActualizar={onActualizarInsumo}
+          onEliminar={onEliminarInsumo}
+          pagos={insumoPagos}
+          onAgregarPago={onAgregarPagoInsumo}
+          onEditarPago={onEditarPagoInsumo}
+          onEliminarPago={onEliminarPagoInsumo}
+          target={target}
+          tipoRegistro="cliente"
+          permiteMembresia={false}
+        />
+      )}
       {(tipo === 'cosecha' || tipo === 'esquejes') && (
         <PanelDominio
           cfg={cfg}
@@ -2315,7 +2363,7 @@ function TarjetaCuentaDolar({ r, onValidarSaldo, onAgregarMovimiento, onEliminar
   )
 }
 
-function TabFinanzas({ pedidos, esquejes, miembro, gastos, presupuestos, setPresupuestos, aportes, setAportes, gastosFijos, setGastosFijos, pedidoPagos, esquejePagos, onRevisar }) {
+function TabFinanzas({ pedidos, esquejes, insumos, miembro, gastos, presupuestos, setPresupuestos, aportes, setAportes, gastosFijos, setGastosFijos, pedidoPagos, esquejePagos, insumoPagos, onRevisar }) {
   const [subTab, setSubTab] = useState('general')
   const [cuentas, setCuentas] = useState([])
   const [dolaresMovimientos, setDolaresMovimientos] = useState([])
@@ -2390,16 +2438,18 @@ function TabFinanzas({ pedidos, esquejes, miembro, gastos, presupuestos, setPres
     const info = cuentas.find(c => c.nombre === nombre) || { nombre, saldo_inicial: 0, fecha_corte: FECHA_CORTE_DEFAULT, validado: false }
     const ingresosPedidos = pedidoPagos.filter(pg => pg.cuenta === nombre && esDesdeCorteISO(pg.fecha, info.fecha_corte)).reduce((s, pg) => s + (pg.monto || 0), 0)
     const ingresosEsquejes = esquejePagos.filter(pg => pg.cuenta === nombre && esDesdeCorteISO(pg.fecha, info.fecha_corte)).reduce((s, pg) => s + (pg.monto || 0), 0)
+    const ingresosInsumos = insumoPagos.filter(pg => pg.cuenta === nombre && esDesdeCorteISO(pg.fecha, info.fecha_corte)).reduce((s, pg) => s + (pg.monto || 0), 0)
     const egresos = gastos.filter(g => esDesdeCorte(g.fecha, info.fecha_corte))
       .flatMap(g => montosPorCuenta(g, 'monto')).filter(m => m.cuenta === nombre).reduce((s, m) => s + m.monto, 0)
-    const ingresos = ingresosPedidos + ingresosEsquejes
+    const ingresos = ingresosPedidos + ingresosEsquejes + ingresosInsumos
     const saldo = (info.saldo_inicial || 0) + ingresos - egresos
     const estimados =
       pedidoPagos.filter(pg => pg.cuenta === nombre && pg.cuenta_estimada).length +
       esquejePagos.filter(pg => pg.cuenta === nombre && pg.cuenta_estimada).length +
+      insumoPagos.filter(pg => pg.cuenta === nombre && pg.cuenta_estimada).length +
       gastos.filter(g => g.cuenta === nombre && g.cuenta_estimada).length
     return { nombre, info, ingresos, egresos, saldo, estimados }
-  }), [pedidoPagos, esquejePagos, gastos, cuentas])
+  }), [pedidoPagos, esquejePagos, insumoPagos, gastos, cuentas])
 
   const totalGeneral = resumen.reduce((s, r) => s + r.saldo, 0)
 
@@ -2424,6 +2474,14 @@ function TabFinanzas({ pedidos, esquejes, miembro, gastos, presupuestos, setPres
         objetivo: { tab: 'pedidos', tipoRegistro: 'esquejes', mes: esqueje?.mes, id: pg.esqueje_id },
       })
     })
+    insumoPagos.filter(pg => pg.cuenta_estimada).forEach(pg => {
+      const insumo = insumos.find(i => i.id === pg.insumo_id)
+      items.push({
+        key: `insumo-${pg.id}`,
+        label: `Insumo de ${insumo?.socio || '(no encontrado)'} · ${formatPesos(pg.monto)} · ${formatFechaISOCorta(pg.fecha)}`,
+        objetivo: { tab: 'pedidos', tipoRegistro: 'insumos', mes: insumo?.mes, id: pg.insumo_id },
+      })
+    })
     gastos.filter(g => g.cuenta_estimada).forEach(g => {
       items.push({
         key: `gasto-${g.id}`,
@@ -2432,7 +2490,7 @@ function TabFinanzas({ pedidos, esquejes, miembro, gastos, presupuestos, setPres
       })
     })
     return items
-  }, [pedidoPagos, esquejePagos, gastos, pedidos, esquejes])
+  }, [pedidoPagos, esquejePagos, insumoPagos, gastos, pedidos, esquejes, insumos])
 
   const totalEstimados = registrosARevisar.length
 
@@ -2495,10 +2553,11 @@ function TabFinanzas({ pedidos, esquejes, miembro, gastos, presupuestos, setPres
     : FECHA_CORTE_DEFAULT
   const pagosPedidosSinCuenta = pedidoPagos.filter(pg => !pg.cuenta && !esLegadoISO(pg.fecha, corteMinimo))
   const pagosEsquejesSinCuenta = esquejePagos.filter(pg => !pg.cuenta && !esLegadoISO(pg.fecha, corteMinimo))
+  const pagosInsumosSinCuenta = insumoPagos.filter(pg => !pg.cuenta && !esLegadoISO(pg.fecha, corteMinimo))
   const gastosSinCuenta = gastos.filter(g => !tieneAsignacionValida(g, 'monto') && !esLegado(g.fecha, corteMinimo))
-  const ingresosSinCuenta = pagosPedidosSinCuenta.reduce((s, pg) => s + (pg.monto || 0), 0) + pagosEsquejesSinCuenta.reduce((s, pg) => s + (pg.monto || 0), 0)
+  const ingresosSinCuenta = pagosPedidosSinCuenta.reduce((s, pg) => s + (pg.monto || 0), 0) + pagosEsquejesSinCuenta.reduce((s, pg) => s + (pg.monto || 0), 0) + pagosInsumosSinCuenta.reduce((s, pg) => s + (pg.monto || 0), 0)
   const egresosSinCuenta = gastosSinCuenta.reduce((s, g) => s + (g.monto || 0), 0)
-  const cantidadSinCuenta = pagosPedidosSinCuenta.length + pagosEsquejesSinCuenta.length + gastosSinCuenta.length
+  const cantidadSinCuenta = pagosPedidosSinCuenta.length + pagosEsquejesSinCuenta.length + pagosInsumosSinCuenta.length + gastosSinCuenta.length
 
   async function actualizarSaldoCuenta(nombre, valorStr, corteStr) {
     const valor = parseFloat(valorStr)
@@ -3825,6 +3884,11 @@ const esquejeToDB = e => ({
   geneticas: e.geneticas, total: e.total, entregado: e.entregado, tipo: e.tipo || 'cliente',
 })
 
+const insumoToDB = i => ({
+  fecha: i.fecha, mes: i.mes || mesActual(), miembro: i.miembro, socio: i.socio,
+  geneticas: i.geneticas, total: i.total, entregado: i.entregado, tipo: 'cliente',
+})
+
 const gastoToDB = g => ({
   descripcion: g.descripcion, categoria: g.categoria, monto: g.monto,
   fecha: g.fecha, mes: g.mes, miembro: g.miembro || null,
@@ -3850,6 +3914,8 @@ export default function App() {
   const [stock, setStock] = useState(STOCK_INICIAL)
   const [stockInicial, setStockInicial] = useState(STOCK_INICIAL)
   const [esquejes, setEsquejes] = useState([])
+  const [insumos, setInsumos] = useState([])
+  const [insumoPagos, setInsumoPagos] = useState([])
   const [gastos, setGastos] = useState([])
   const [presupuestos, setPresupuestos] = useState([])
   const [aportes, setAportes] = useState([])
@@ -3890,11 +3956,13 @@ export default function App() {
     async function cargarDatos() {
       setCargando(true)
       setErrorCarga(false)
-      const [pedidosRes, stockRes, esquejesRes, stockEsquejesRes, gastosRes, presupuestosRes, aportesRes, gastosFijosRes, pedidoPagosRes, esquejePagosRes, sociosRes] = await Promise.all([
+      const [pedidosRes, stockRes, esquejesRes, stockEsquejesRes, insumosRes, insumoPagosRes, gastosRes, presupuestosRes, aportesRes, gastosFijosRes, pedidoPagosRes, esquejePagosRes, sociosRes] = await Promise.all([
         supabase.from('pedidos').select('*').order('created_at', { ascending: false }),
         supabase.from('stock').select('*'),
         supabase.from('esquejes').select('*').order('created_at', { ascending: false }),
         supabase.from('stock_esquejes').select('*'),
+        supabase.from('insumos').select('*').order('created_at', { ascending: false }),
+        supabase.from('insumo_pagos').select('*').order('created_at', { ascending: false }),
         supabase.from('gastos').select('*').order('created_at', { ascending: false }),
         supabase.from('presupuestos').select('*').order('created_at', { ascending: false }),
         supabase.from('presupuesto_aportes').select('*').order('created_at', { ascending: false }),
@@ -3904,7 +3972,7 @@ export default function App() {
         supabase.from('socios').select('*').order('nombre', { ascending: true }),
       ])
       if (cancelado) return
-      const conError = [pedidosRes, stockRes, esquejesRes, stockEsquejesRes, gastosRes, presupuestosRes, aportesRes, gastosFijosRes, pedidoPagosRes, esquejePagosRes, sociosRes].filter(r => r.error)
+      const conError = [pedidosRes, stockRes, esquejesRes, stockEsquejesRes, insumosRes, insumoPagosRes, gastosRes, presupuestosRes, aportesRes, gastosFijosRes, pedidoPagosRes, esquejePagosRes, sociosRes].filter(r => r.error)
       if (conError.length > 0) {
         console.error('Error al cargar datos', conError.map(r => r.error))
         setErrorCarga(true)
@@ -3919,6 +3987,8 @@ export default function App() {
         setStockInicial(inicialObj)
       }
       setEsquejes((esquejesRes.data || []).map(conAliasPago))
+      setInsumos((insumosRes.data || []).map(conAliasPago))
+      setInsumoPagos(insumoPagosRes.data || [])
       if (stockEsquejesRes.data) {
         const obj = {}, inicialObj = {}
         stockEsquejesRes.data.forEach(s => { obj[s.genetica] = Number(s.unidades); inicialObj[s.genetica] = Number(s.inicial) })
@@ -4017,6 +4087,50 @@ export default function App() {
         await aplicarDeltas(acumularCantidades(esqueje.geneticas, 1, {}), 'ajustar_stock_esquejes', setStockEsquejes)
       }
     }
+  }, [])
+
+  // Insumos: sin catálogo/stock — solo insert/update/delete, sin RPC de ajuste.
+  const guardarInsumo = useCallback(async i => {
+    const { data, error } = await supabase.from('insumos').insert(insumoToDB(i)).select().single()
+    if (error || !data) { console.error('Error al guardar insumo', error); return { ok: false, error } }
+    setInsumos(prev => [conAliasPago(data), ...prev])
+    return { ok: true, data }
+  }, [])
+
+  const actualizarInsumo = useCallback(async actualizado => {
+    const { data, error } = await supabase.from('insumos').update(insumoToDB(actualizado)).eq('id', actualizado.id).select().single()
+    if (error || !data) { console.error('Error al actualizar insumo', error); return { ok: false, error } }
+    setInsumos(prev => prev.map(x => x.id === data.id ? conAliasPago(data) : x))
+    return { ok: true }
+  }, [])
+
+  const eliminarInsumo = useCallback(async insumo => {
+    const { error } = await supabase.from('insumos').delete().eq('id', insumo.id)
+    if (!error) {
+      setInsumos(prev => prev.filter(x => x.id !== insumo.id))
+      setInsumoPagos(prev => prev.filter(pg => pg.insumo_id !== insumo.id))
+    }
+  }, [])
+
+  const agregarPagoInsumo = useCallback(async (insumo, pago) => {
+    const { data, error } = await supabase.from('insumo_pagos').insert({ insumo_id: insumo.id, ...pago }).select().single()
+    if (error || !data) { console.error('Error al guardar pago', error); return { ok: false, error } }
+    setInsumoPagos(prev => [data, ...prev])
+    return { ok: true, data }
+  }, [])
+
+  const eliminarPagoInsumo = useCallback(async id => {
+    const { error } = await supabase.from('insumo_pagos').delete().eq('id', id)
+    if (error) { console.error('Error al eliminar pago', error); return { ok: false, error } }
+    setInsumoPagos(prev => prev.filter(pg => pg.id !== id))
+    return { ok: true }
+  }, [])
+
+  const editarPagoInsumo = useCallback(async (id, cambios) => {
+    const { data, error } = await supabase.from('insumo_pagos').update(cambios).eq('id', id).select().single()
+    if (error || !data) { console.error('Error al editar pago', error); return { ok: false, error } }
+    setInsumoPagos(prev => prev.map(pg => pg.id === id ? data : pg))
+    return { ok: true, data }
   }, [])
 
   const guardarSocio = useCallback(async s => {
@@ -4166,14 +4280,14 @@ export default function App() {
           </div>
         </div>
         <div className="tab-bar">
-          <button className={`tab${tab === 'pedidos' ? ' active' : ''}`} onClick={() => irATab('pedidos')}>Pedidos</button>
+          <button className={`tab${tab === 'pedidos' ? ' active' : ''}`} onClick={() => irATab('pedidos')}>Ventas</button>
           <button className={`tab${tab === 'gastos' ? ' active' : ''}`} onClick={() => irATab('gastos')}>Gastos</button>
           <button className={`tab${tab === 'finanzas' ? ' active' : ''}`} onClick={() => irATab('finanzas')}>Finanzas</button>
           <button className={`tab${tab === 'cultivo' ? ' active' : ''}`} onClick={() => irATab('cultivo')}>Cultivo</button>
         </div>
       </div>
       {tab === 'pedidos' && (
-        <TabPedidos
+        <TabVentas
           target={objetivoRevision}
           pedidos={pedidos}
           stock={stock}
@@ -4187,6 +4301,14 @@ export default function App() {
           onGuardarEsqueje={guardarEsqueje}
           onActualizarEsqueje={actualizarEsqueje}
           onEliminarEsqueje={eliminarEsqueje}
+          insumos={insumos}
+          onGuardarInsumo={guardarInsumo}
+          onActualizarInsumo={actualizarInsumo}
+          onEliminarInsumo={eliminarInsumo}
+          insumoPagos={insumoPagos}
+          onAgregarPagoInsumo={agregarPagoInsumo}
+          onEditarPagoInsumo={editarPagoInsumo}
+          onEliminarPagoInsumo={eliminarPagoInsumo}
           miembro={miembro}
           ajustesFallidos={stockAjustesFallidos}
           onEditarStock={editarStock}
@@ -4208,7 +4330,7 @@ export default function App() {
         />
       )}
       {tab === 'gastos' && <TabGastos target={objetivoRevision} miembro={miembro} gastos={gastos} presupuestos={presupuestos} onGuardarGasto={guardarGasto} onActualizarGasto={actualizarGasto} onEliminarGasto={eliminarGasto} />}
-      {tab === 'finanzas' && <TabFinanzas onRevisar={irARevisar} pedidos={pedidos} esquejes={esquejes} miembro={miembro} gastos={gastos} presupuestos={presupuestos} setPresupuestos={setPresupuestos} aportes={aportes} setAportes={setAportes} gastosFijos={gastosFijos} setGastosFijos={setGastosFijos} pedidoPagos={pedidoPagos} esquejePagos={esquejePagos} />}
+      {tab === 'finanzas' && <TabFinanzas onRevisar={irARevisar} pedidos={pedidos} esquejes={esquejes} insumos={insumos} miembro={miembro} gastos={gastos} presupuestos={presupuestos} setPresupuestos={setPresupuestos} aportes={aportes} setAportes={setAportes} gastosFijos={gastosFijos} setGastosFijos={setGastosFijos} pedidoPagos={pedidoPagos} esquejePagos={esquejePagos} insumoPagos={insumoPagos} />}
       {tab === 'cultivo' && <TabCultivo />}
       {mostrarCambiarPass && <ModalCambiarPassword onCerrar={() => setMostrarCambiarPass(false)} />}
     </div>
