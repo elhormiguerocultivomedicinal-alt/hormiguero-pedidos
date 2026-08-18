@@ -626,7 +626,9 @@ function ModalEditarRegistro({ cfg, registro, pagos, miembro, onAgregarPago, onE
     const filasValidas = form.filas.filter(f => f.nombre)
     const sinCantidad = filasValidas.some(f => !parseFloat(f.cantidad))
     if ((requiereNombre && !form.socio.trim()) || filasValidas.length === 0 || sinCantidad) {
-      setErrorCampos(esRegalo ? 'Completá a quién es el regalo, genética y cantidad.' : (esInterno ? 'Completá genética y cantidad.' : 'Completá socio, genética y cantidad.'))
+      const nomSocio = (cfg.labelSocio || 'socio').toLowerCase()
+      const nomFilas = (cfg.labelFilas || 'genética').toLowerCase()
+      setErrorCampos(esRegalo ? `Completá a quién es el regalo, ${nomFilas} y cantidad.` : (esInterno ? `Completá ${nomFilas} y cantidad.` : `Completá ${nomSocio}, ${nomFilas} y cantidad.`))
       return
     }
     if (form.esMembresia) {
@@ -991,7 +993,9 @@ function FormRegistro({ cfg, onGuardar, onAgregarPago, miembro, tipoRegistro = '
     const filasValidas = form.filas.filter(f => f.nombre)
     const sinCantidad = filasValidas.some(f => !parseFloat(f.cantidad))
     if ((requiereNombre && !form.socio.trim()) || filasValidas.length === 0 || sinCantidad) {
-      showToast(esRegalo ? 'Completá a quién es el regalo, genética y cantidad' : (esInterno ? 'Completá genética y cantidad' : 'Completá socio, genética y cantidad'))
+      const nomSocio = (cfg.labelSocio || 'socio').toLowerCase()
+      const nomFilas = (cfg.labelFilas || 'genética').toLowerCase()
+      showToast(esRegalo ? `Completá a quién es el regalo, ${nomFilas} y cantidad` : (esInterno ? `Completá ${nomFilas} y cantidad` : `Completá ${nomSocio}, ${nomFilas} y cantidad`))
       return
     }
     if (form.esMembresia) {
