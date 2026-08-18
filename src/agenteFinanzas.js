@@ -2,11 +2,15 @@
 // determinísticas, nunca inventa un dato que no está, siempre señala el
 // registro puntual y quién puede corregirlo. Solo lee, nunca escribe nada.
 //
+// Cada hallazgo tiene { severidad, responsable, titulo, mensaje, objetivo }:
+// `titulo` es la etiqueta corta que se ve colapsada, `mensaje` es el detalle
+// completo que aparece al desplegarla.
+//
 // Módulo autocontenido a propósito (no importa nada de App.jsx) para evitar
 // un import circular, ya que App.jsx es quien llama a evaluarFinanzas. Por
 // eso duplica un puñado de helpers chicos que también existen en App.jsx
-// (parseFechaDP, montosPorCuenta, tieneAsignacionValida) — son la misma
-// lógica, con la fuente de verdad real en App.jsx.
+// (parseFechaDP, montosPorCuenta) — son la misma lógica, con la fuente de
+// verdad real en App.jsx.
 
 function parseFechaDP(str) {
   if (!str) return null
@@ -78,7 +82,7 @@ function chequearCuentaEstimada({ pedidoPagos, esquejePagos, insumoPagos, gastos
     pagos.filter(pg => pg.cuenta_estimada).forEach(pg => {
       const registro = registros.find(r => r.id === pg[fk])
       hallazgos.push({
-        severidad: 'atencion', responsable: responsablePago(pg),
+        severidad: 'atencion', responsable: responsablePago(pg), titulo: 'Cuenta estimada sin confirmar',
         mensaje: `Pago de ${fmt.pesos(pg.monto)} a ${registro?.socio || `(${etiqueta} no encontrado)`} del ${fmt.fechaISO(pg.fecha)} tiene una cuenta estimada, no confirmada.`,
         objetivo: objetivoPago(tipoRegistro, pg, registro),
       })
@@ -89,7 +93,7 @@ function chequearCuentaEstimada({ pedidoPagos, esquejePagos, insumoPagos, gastos
   revisar(insumoPagos, 'insumo_id', insumos, 'insumos', 'insumo')
   gastos.filter(g => g.cuenta_estimada).forEach(g => {
     hallazgos.push({
-      severidad: 'atencion', responsable: responsableGasto(g),
+      severidad: 'atencion', responsable: responsableGasto(g), titulo: 'Cuenta estimada sin confirmar',
       mensaje: `Gasto "${g.descripcion}" de ${fmt.pesos(g.monto)} tiene una cuenta estimada, no confirmada.`,
       objetivo: objetivoGasto(g),
     })
@@ -105,7 +109,7 @@ function chequearSinCuenta({ pedidoPagos, esquejePagos, insumoPagos, gastos, ped
     pagos.filter(pg => !pg.cuenta && !esLegadoISO(pg.fecha)).forEach(pg => {
       const registro = registros.find(r => r.id === pg[fk])
       hallazgos.push({
-        severidad: 'error', responsable: responsablePago(pg),
+        severidad: 'error', responsable: responsablePago(pg), titulo: 'Sin cuenta asignada',
         mensaje: `Pago de ${fmt.pesos(pg.monto)} a ${registro?.socio || `(${etiqueta} no encontrado)`} del ${fmt.fechaISO(pg.fecha)} no tiene cuenta asignada — no está sumado en ningún total.`,
         objetivo: objetivoPago(tipoRegistro, pg, registro),
       })
@@ -116,7 +120,7 @@ function chequearSinCuenta({ pedidoPagos, esquejePagos, insumoPagos, gastos, ped
   revisar(insumoPagos, 'insumo_id', insumos, 'insumos', 'insumo')
   gastos.filter(g => gastoSinAsignacion(g) && !esLegado(g.fecha, corteMinimo)).forEach(g => {
     hallazgos.push({
-      severidad: 'error', responsable: responsableGasto(g),
+      severidad: 'error', responsable: responsableGasto(g), titulo: 'Sin cuenta asignada',
       mensaje: `Gasto "${g.descripcion}" de ${fmt.pesos(g.monto)} no tiene cuenta asignada — no está sumado en ningún total.`,
       objetivo: objetivoGasto(g),
     })
@@ -133,7 +137,7 @@ function chequearDivisiones({ gastos }, fmt) {
       ? 'una de las divisiones no tiene cuenta asignada'
       : `las divisiones suman ${fmt.pesos(suma)} y el total es ${fmt.pesos(g.monto)} (${diff > 0 ? 'faltan' : 'sobran'} ${fmt.pesos(Math.abs(diff))})`
     return {
-      severidad: 'error', responsable: responsableGasto(g),
+      severidad: 'error', responsable: responsableGasto(g), titulo: 'Divisiones que no suman el total',
       mensaje: `Gasto "${g.descripcion}" dividido entre cuentas: ${detalle}.`,
       objetivo: objetivoGasto(g),
     }
@@ -153,10 +157,9 @@ function chequearDuplicados({ pedidoPagos, esquejePagos, insumoPagos, pedidos, e
     grupos.forEach(grupo => {
       if (grupo.length < 2) return
       const registro = registros.find(r => r.id === grupo[0][fk])
-      const ids = grupo.map(p => p.id).join(', ')
       hallazgos.push({
-        severidad: 'error', responsable: responsablePago(grupo[0]),
-        mensaje: `${grupo.length} pagos idénticos de ${fmt.pesos(grupo[0].monto)} el ${fmt.fechaISO(grupo[0].fecha)} a la misma cuenta en el ${etiqueta} de ${registro?.socio || '(no encontrado)'} — confirmá si son transferencias reales separadas o una carga duplicada (pagos ${ids}).`,
+        severidad: 'error', responsable: responsablePago(grupo[0]), titulo: 'Posible pago duplicado',
+        mensaje: `${grupo.length} pagos idénticos de ${fmt.pesos(grupo[0].monto)} el ${fmt.fechaISO(grupo[0].fecha)} a la misma cuenta en el ${etiqueta} de ${registro?.socio || '(no encontrado)'} — confirmá si fueron transferencias reales separadas o se cargó dos veces por error.`,
         objetivo: objetivoPago(tipoRegistro, grupo[0], registro),
       })
     })
@@ -179,13 +182,13 @@ function chequearFechas({ gastos, corteMinimo }, fmt) {
     const esViejo = creado ? creado < corteMinimo : true // sin dato de creación: tratar como el caso más cauto
     if (esViejo) {
       hallazgos.push({
-        severidad: 'error', responsable: responsableGasto(g),
+        severidad: 'error', responsable: responsableGasto(g), titulo: 'Fecha vieja con cuenta asignada',
         mensaje: `Gasto "${g.descripcion}" de ${fmt.pesos(g.monto)} no tiene fecha legible pero sí cuenta asignada — si es de antes de ${fmt.fechaISO(corteMinimo)} puede estar duplicando plata ya contada en el saldo inicial validado.`,
         objetivo: objetivoGasto(g),
       })
     } else {
       hallazgos.push({
-        severidad: 'atencion', responsable: responsableGasto(g),
+        severidad: 'atencion', responsable: responsableGasto(g), titulo: 'Falta la fecha',
         mensaje: `Gasto "${g.descripcion}" de ${fmt.pesos(g.monto)} quedó sin fecha cargada. Completala.`,
         objetivo: objetivoGasto(g),
       })
@@ -204,27 +207,27 @@ function chequearCuentasDesactualizadas({ resumen, resumenDolares, cuentaEfectiv
     .map(r => {
       const dias = Math.round((hoy - new Date(r.info.actualizado_en).getTime()) / 86400000)
       return {
-        severidad: 'atencion', responsable: resolverResponsableCuenta(r.nombre, r.info, { cuentaEfectivo, cuentaHormiguero }),
+        severidad: 'atencion', responsable: resolverResponsableCuenta(r.nombre, r.info, { cuentaEfectivo, cuentaHormiguero }), titulo: 'Cuenta sin validar hace tiempo',
         mensaje: `La cuenta "${r.nombre}" no se valida hace ${dias} días — el saldo puede estar desincronizado del banco real.`,
         objetivo: null,
       }
     })
 }
 
-// ── 8) Saldo de cuenta negativo, con el desglose de por qué ──
+// ── 8) Saldo de cuenta negativo, explicado en criollo (no solo el número) ──
 function chequearSaldosNegativos({ resumen, resumenDolares, cuentaEfectivo, cuentaHormiguero }, fmt) {
   const hallazgos = []
   resumen.filter(r => r.saldo < 0).forEach(r => {
     hallazgos.push({
-      severidad: 'error', responsable: resolverResponsableCuenta(r.nombre, r.info, { cuentaEfectivo, cuentaHormiguero }),
-      mensaje: `La cuenta "${r.nombre}" está en ${fmt.pesos(r.saldo)}: ${fmt.pesos(r.info.saldo_inicial || 0)} de saldo inicial + ${fmt.pesos(r.ingresos)} de ingresos − ${fmt.pesos(r.egresos)} de gastos desde ${fmt.fechaISO(r.info.fecha_corte)}.`,
+      severidad: 'error', responsable: resolverResponsableCuenta(r.nombre, r.info, { cuentaEfectivo, cuentaHormiguero }), titulo: 'Saldo en rojo',
+      mensaje: `La cuenta "${r.nombre}" quedó en rojo: le faltan ${fmt.pesos(Math.abs(r.saldo))}. Desde el ${fmt.fechaISO(r.info.fecha_corte)} entraron ${fmt.pesos(r.ingresos)} y salieron ${fmt.pesos(r.egresos)}, arrancando con ${fmt.pesos(r.info.saldo_inicial || 0)} — no alcanza. Puede faltar cargar un cobro, o hay un gasto que en realidad se pagó de otra cuenta.`,
       objetivo: null,
     })
   })
   resumenDolares.filter(r => r.saldo < 0).forEach(r => {
     hallazgos.push({
-      severidad: 'error', responsable: resolverResponsableCuenta(r.nombre, r.info, { cuentaEfectivo, cuentaHormiguero }),
-      mensaje: `La cuenta en dólares "${r.nombre}" está en ${fmt.dolares(r.saldo)}.`,
+      severidad: 'error', responsable: resolverResponsableCuenta(r.nombre, r.info, { cuentaEfectivo, cuentaHormiguero }), titulo: 'Saldo en dólares en rojo',
+      mensaje: `La cuenta en dólares "${r.nombre}" quedó en rojo: ${fmt.dolares(r.saldo)}. Puede faltar cargar un movimiento, o hay un retiro que en realidad fue de otra cuenta.`,
       objetivo: null,
     })
   })
@@ -243,7 +246,7 @@ function chequearPresupuestosGasto({ gastos, presupuestos }, fmt) {
       ? `apunta a un presupuesto (id ${g.presupuesto_id}) que ya no existe`
       : `apunta a "${p.nombre}", que es de ${p.locacion}, no de ${g.locacion}`
     return {
-      severidad: 'error', responsable: responsableGasto(g),
+      severidad: 'error', responsable: responsableGasto(g), titulo: 'Presupuesto mal asignado',
       mensaje: `Gasto "${g.descripcion}" de ${fmt.pesos(g.monto)} ${detalle}.`,
       objetivo: objetivoGasto(g),
     }
@@ -257,7 +260,7 @@ function chequearCuentasHuerfanas({ pedidoPagos, esquejePagos, insumoPagos, gast
     pagos.filter(pg => pg.cuenta && !cuentasConocidas.includes(pg.cuenta)).forEach(pg => {
       const registro = registros.find(r => r.id === pg[fk])
       hallazgos.push({
-        severidad: 'error', responsable: responsablePago(pg),
+        severidad: 'error', responsable: responsablePago(pg), titulo: 'Cuenta desconocida',
         mensaje: `Pago de ${fmt.pesos(pg.monto)} a ${registro?.socio || `(${etiqueta} no encontrado)`} está cargado a "${pg.cuenta}", que no es ninguna cuenta configurada.`,
         objetivo: objetivoPago(tipoRegistro, pg, registro),
       })
@@ -270,7 +273,7 @@ function chequearCuentasHuerfanas({ pedidoPagos, esquejePagos, insumoPagos, gast
     const nombres = g.cuenta ? [g.cuenta] : (Array.isArray(g.divisiones) ? g.divisiones.filter(d => d?.cuenta).map(d => d.cuenta) : [])
     nombres.filter(n => !cuentasConocidas.includes(n)).forEach(n => {
       hallazgos.push({
-        severidad: 'error', responsable: responsableGasto(g),
+        severidad: 'error', responsable: responsableGasto(g), titulo: 'Cuenta desconocida',
         mensaje: `Gasto "${g.descripcion}" está cargado a "${n}", que no es ninguna cuenta configurada.`,
         objetivo: objetivoGasto(g),
       })
@@ -278,7 +281,7 @@ function chequearCuentasHuerfanas({ pedidoPagos, esquejePagos, insumoPagos, gast
   })
   dolaresMovimientos.filter(m => m.cuenta && !cuentasDolaresConocidas.includes(m.cuenta)).forEach(m => {
     hallazgos.push({
-      severidad: 'error', responsable: m.creado_por || 'Sin autor registrado',
+      severidad: 'error', responsable: m.creado_por || 'Sin autor registrado', titulo: 'Cuenta desconocida',
       mensaje: `Movimiento en dólares de ${fmt.dolares(m.monto)} está cargado a "${m.cuenta}", que no es ninguna cuenta en dólares configurada.`,
       objetivo: null,
     })
@@ -290,7 +293,7 @@ function chequearCuentasHuerfanas({ pedidoPagos, esquejePagos, insumoPagos, gast
 function chequearAportesHuerfanos({ aportes, presupuestos }, fmt) {
   const ids = new Set(presupuestos.map(p => p.id))
   return aportes.filter(a => !ids.has(a.presupuesto_id)).map(a => ({
-    severidad: 'error', responsable: a.creado_por || 'Sin autor registrado',
+    severidad: 'error', responsable: a.creado_por || 'Sin autor registrado', titulo: 'Aporte a presupuesto inexistente',
     mensaje: `Aporte de capital de ${fmt.pesos(a.monto)} (${fmt.fechaISO(a.fecha)}) apunta a un presupuesto que ya no existe (id ${a.presupuesto_id}).`,
     objetivo: null,
   }))
@@ -301,7 +304,7 @@ function chequearAportesHuerfanos({ aportes, presupuestos }, fmt) {
 //   resumen, resumenDolares, cuentasConocidas, cuentasDolaresConocidas,
 //   cuentaEfectivo, cuentaHormiguero, corteMinimo }
 // fmt: { pesos, dolares, fechaISO } — formateadores ya existentes en App.jsx,
-// se inyectan para no duplicar esa lógica acá.
+// se inyectan para no duplicar esa lógica acá (fechaISO se pasa sin año).
 export function evaluarFinanzas(datos, fmt) {
   const hallazgos = [
     ...chequearCuentaEstimada(datos, fmt),

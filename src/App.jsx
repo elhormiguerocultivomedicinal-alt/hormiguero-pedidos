@@ -217,6 +217,23 @@ function parseFechaDP(str) {
   return null
 }
 
+function esDesdeCorte(fechaStr, corteISO) {
+  if (!fechaStr) return true            // sin fecha (imports jun-jul): se cuentan igual
+  const d = parseFechaDP(fechaStr)
+  if (!d) return true                   // fecha ilegible: contarla, no perder plata
+  const [y, m, dd] = (corteISO || FECHA_CORTE_DEFAULT).split('-').map(Number)
+  const corte = new Date(y, m - 1, dd)  // corte como fecha LOCAL (misma base que parseFechaDP)
+  return d >= corte
+}
+
+// Los pagos de pedidos/esquejes ya guardan una fecha ISO real por evento (a diferencia de
+// fecha/fecha_cobro, que son texto legado dd/mm/aaaa) — comparar contra el corte es una
+// simple comparación de strings ISO, sin pasar por parseFechaDP.
+function esDesdeCorteISO(fechaISO, corteISO) {
+  if (!fechaISO) return true
+  return fechaISO >= (corteISO || FECHA_CORTE_DEFAULT)
+}
+
 function formatFechaCompleta(d) {
   return `${d.getDate()}/${d.getMonth() + 1}/${d.getFullYear()}`
 }
@@ -2032,6 +2049,14 @@ function formatFechaISOCorta(iso) {
   return `${parseInt(d)}/${parseInt(m)}/${y}`
 }
 
+// Sin año — para alertas del agente de Finanzas, donde el año casi siempre es
+// el actual y solo agrega ruido.
+function formatFechaISOSinAnio(iso) {
+  if (!iso) return ''
+  const [, m, d] = iso.split('-')
+  return `${parseInt(d)}/${parseInt(m)}`
+}
+
 function formatFechaHoraISO(iso) {
   if (!iso) return ''
   const d = new Date(iso)
@@ -2360,79 +2385,24 @@ function TarjetaCuentaDolar({ r, onValidarSaldo, onAgregarMovimiento, onEliminar
   )
 }
 
-function TabFinanzas({ pedidos, esquejes, insumos, miembro, gastos, presupuestos, setPresupuestos, aportes, setAportes, gastosFijos, setGastosFijos, pedidoPagos, esquejePagos, insumoPagos, onRevisar }) {
+function TabFinanzas({ pedidos, esquejes, insumos, miembro, gastos, presupuestos, setPresupuestos, aportes, setAportes, gastosFijos, setGastosFijos, pedidoPagos, esquejePagos, insumoPagos, cuentas, setCuentas, dolaresMovimientos, setDolaresMovimientos, resumen, resumenDolares, hallazgosFinanzas, onRevisar }) {
   const [subTab, setSubTab] = useState('general')
-  const [cuentas, setCuentas] = useState([])
-  const [dolaresMovimientos, setDolaresMovimientos] = useState([])
-  const [cargando, setCargando] = useState(true)
-  const [errorCarga, setErrorCarga] = useState(false)
-  const [intento, setIntento] = useState(0)
   const [editandoSaldo, setEditandoSaldo] = useState(null)
   const [inputSaldo, setInputSaldo] = useState('')
   const [inputCorte, setInputCorte] = useState('')
   const [verDetalleCuentas, setVerDetalleCuentas] = useState(false)
   const [verDetalleDolares, setVerDetalleDolares] = useState(false)
   const [verPresupuestosGeneral, setVerPresupuestosGeneral] = useState(false)
+  const [alertasAbiertas, setAlertasAbiertas] = useState(new Set())
   const [toast, showToast] = useToast()
 
-
-  useEffect(() => {
-    async function cargar() {
-      const [cuentasRes, dolaresRes] = await Promise.all([
-        supabase.from('cuentas').select('*'),
-        supabase.from('dolares_movimientos').select('*').order('fecha', { ascending: false }),
-      ])
-      if (cuentasRes.data) setCuentas(cuentasRes.data)
-      if (dolaresRes.data) setDolaresMovimientos(dolaresRes.data)
-      setErrorCarga(Boolean(cuentasRes.error || dolaresRes.error))
-      setCargando(false)
-    }
-    cargar()
-  }, [intento])
-
-  function reintentar() {
-    setCargando(true)
-    setErrorCarga(false)
-    setIntento(n => n + 1)
+  function toggleAlerta(i) {
+    setAlertasAbiertas(prev => {
+      const next = new Set(prev)
+      if (next.has(i)) next.delete(i); else next.add(i)
+      return next
+    })
   }
-
-  function esDesdeCorte(fechaStr, corteISO) {
-    if (!fechaStr) return true            // sin fecha (imports jun-jul): se cuentan igual
-    const d = parseFechaDP(fechaStr)
-    if (!d) return true                   // fecha ilegible: contarla, no perder plata
-    const [y, m, dd] = (corteISO || FECHA_CORTE_DEFAULT).split('-').map(Number)
-    const corte = new Date(y, m - 1, dd)  // corte como fecha LOCAL (misma base que parseFechaDP)
-    return d >= corte
-  }
-
-  // Los pagos de pedidos/esquejes ya guardan una fecha ISO real por evento (a diferencia de
-  // fecha/fecha_cobro, que son texto legado dd/mm/aaaa) — comparar contra el corte es una
-  // simple comparación de strings ISO, sin pasar por parseFechaDP.
-  function esDesdeCorteISO(fechaISO, corteISO) {
-    if (!fechaISO) return true
-    return fechaISO >= (corteISO || FECHA_CORTE_DEFAULT)
-  }
-
-  // Ingresos de pedidos/esquejes: se suman directo desde el historial de pagos (pedido_pagos/
-  // esqueje_pagos), no desde el registro — cada pago tiene su propia cuenta y fecha, así que un
-  // cobro dividido entre dos cuentas en fechas distintas ya no comparte una sola fecha_cobro
-  // (mejora real sobre el modelo viejo de "pagado + divisiones", ver plan de pagos parciales).
-  const resumen = useMemo(() => CUENTAS.map(nombre => {
-    const info = cuentas.find(c => c.nombre === nombre) || { nombre, saldo_inicial: 0, fecha_corte: FECHA_CORTE_DEFAULT, validado: false }
-    const ingresosPedidos = pedidoPagos.filter(pg => pg.cuenta === nombre && esDesdeCorteISO(pg.fecha, info.fecha_corte)).reduce((s, pg) => s + (pg.monto || 0), 0)
-    const ingresosEsquejes = esquejePagos.filter(pg => pg.cuenta === nombre && esDesdeCorteISO(pg.fecha, info.fecha_corte)).reduce((s, pg) => s + (pg.monto || 0), 0)
-    const ingresosInsumos = insumoPagos.filter(pg => pg.cuenta === nombre && esDesdeCorteISO(pg.fecha, info.fecha_corte)).reduce((s, pg) => s + (pg.monto || 0), 0)
-    const egresos = gastos.filter(g => esDesdeCorte(g.fecha, info.fecha_corte))
-      .flatMap(g => montosPorCuenta(g, 'monto')).filter(m => m.cuenta === nombre).reduce((s, m) => s + m.monto, 0)
-    const ingresos = ingresosPedidos + ingresosEsquejes + ingresosInsumos
-    const saldo = (info.saldo_inicial || 0) + ingresos - egresos
-    const estimados =
-      pedidoPagos.filter(pg => pg.cuenta === nombre && pg.cuenta_estimada).length +
-      esquejePagos.filter(pg => pg.cuenta === nombre && pg.cuenta_estimada).length +
-      insumoPagos.filter(pg => pg.cuenta === nombre && pg.cuenta_estimada).length +
-      gastos.filter(g => g.cuenta === nombre && g.cuenta_estimada).length
-    return { nombre, info, ingresos, egresos, saldo, estimados }
-  }), [pedidoPagos, esquejePagos, insumoPagos, gastos, cuentas])
 
   const totalGeneral = resumen.reduce((s, r) => s + r.saldo, 0)
 
@@ -2472,39 +2442,7 @@ function TabFinanzas({ pedidos, esquejes, insumos, miembro, gastos, presupuestos
   const totalRestantePorVencer = presupuestosPorVencer.reduce((s, x) => s + x.restante, 0)
   const faltaCobertura = totalRestantePorVencer - totalGeneral
 
-  // Cuentas en dólares: reserva/ahorro, sin pedidos ni gastos que las muevan —
-  // el saldo sale de saldo inicial validado + historial propio de movimientos.
-  const resumenDolares = useMemo(() => CUENTAS_DOLARES.map(nombre => {
-    const info = cuentas.find(c => c.nombre === nombre) || { nombre, saldo_inicial: 0, fecha_corte: FECHA_CORTE_DEFAULT, validado: false }
-    const movimientos = dolaresMovimientos.filter(m => m.cuenta === nombre)
-    const movimientosContados = movimientos.filter(m => esDesdeCorteISO(m.fecha, info.fecha_corte))
-    const ingresos = movimientosContados.filter(m => m.tipo === 'ingreso').reduce((s, m) => s + (m.monto || 0), 0)
-    const egresos = movimientosContados.filter(m => m.tipo === 'egreso').reduce((s, m) => s + (m.monto || 0), 0)
-    const saldo = (info.saldo_inicial || 0) + ingresos - egresos
-    return { nombre, info, ingresos, egresos, saldo, movimientos }
-  }), [cuentas, dolaresMovimientos])
-
   const totalDolares = resumenDolares.reduce((s, r) => s + r.saldo, 0)
-
-  // Corte más viejo entre las cuentas configuradas: lo anterior a esto es plata migrada del
-  // historial que nunca va a tener cuenta, así que el agente no la reclama.
-  const corteMinimo = cuentas.length > 0
-    ? cuentas.reduce((min, c) => (c.fecha_corte && c.fecha_corte < min ? c.fecha_corte : min), cuentas[0].fecha_corte || FECHA_CORTE_DEFAULT)
-    : FECHA_CORTE_DEFAULT
-
-  // Agente de salud financiera: mismo patrón que el agente de cultivo (reglas
-  // determinísticas, nunca inventa un dato, siempre señala el registro puntual y quién puede
-  // corregirlo). Corre siempre que se carga la pestaña, sobre los mismos datos que ya están
-  // en memoria — ver src/agenteFinanzas.js.
-  const hallazgosFinanzas = useMemo(() => evaluarFinanzas({
-    cuentas, dolaresMovimientos, gastos, presupuestos, aportes,
-    pedidoPagos, esquejePagos, insumoPagos, pedidos, esquejes, insumos,
-    resumen, resumenDolares, corteMinimo,
-    cuentasConocidas: CUENTAS, cuentasDolaresConocidas: CUENTAS_DOLARES,
-    cuentaEfectivo: CUENTA_EFECTIVO, cuentaHormiguero: CUENTA_HORMIGUERO,
-  }, { pesos: formatPesos, dolares: formatDolares, fechaISO: formatFechaISOCorta }),
-  [cuentas, dolaresMovimientos, gastos, presupuestos, aportes, pedidoPagos, esquejePagos, insumoPagos, pedidos, esquejes, insumos, resumen, resumenDolares, corteMinimo])
-  const totalEstimados = hallazgosFinanzas.length
 
   async function actualizarSaldoCuenta(nombre, valorStr, corteStr) {
     const valor = parseFloat(valorStr)
@@ -2553,21 +2491,6 @@ function TabFinanzas({ pedidos, esquejes, insumos, miembro, gastos, presupuestos
       return estado === 'Agotado' || estado === 'Vencido'
     })
     return hayProblema ? '#791F1F' : 'var(--green-dark)'
-  }
-
-  if (cargando) return <div className="content"><div className="empty-state">Cargando Finanzas...</div></div>
-
-  if (errorCarga) {
-    return (
-      <div className="content">
-        <div className="card" style={{ background: '#FCEBEB', borderColor: '#791F1F' }}>
-          <div style={{ fontSize: 13, color: '#791F1F', fontWeight: 500, marginBottom: 10 }}>
-            No se pudieron cargar los datos financieros. Los saldos NO se muestran para evitar mostrar números incorrectos.
-          </div>
-          <button className="btn-submit" onClick={reintentar}>Reintentar</button>
-        </div>
-      </div>
-    )
   }
 
   return (
@@ -2653,13 +2576,22 @@ function TabFinanzas({ pedidos, esquejes, insumos, miembro, gastos, presupuestos
                     <strong>Registros a revisar</strong> · {hallazgosFinanzas.length}
                   </div>
                 </div>
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginTop: 10 }}>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 0, marginTop: 10 }}>
                   {hallazgosFinanzas.map((h, i) => {
                     const color = h.severidad === 'error' ? '#791F1F' : '#854F0B'
+                    const abierta = alertasAbiertas.has(i)
                     return (
-                      <div key={i} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, paddingTop: 8, borderTop: `0.5px solid ${h.severidad === 'error' ? '#e8b4b4' : '#E8C77E'}` }}>
-                        <span style={{ fontSize: 12, color }}><strong>{h.responsable}</strong>: {h.mensaje}</span>
-                        {h.objetivo && <button onClick={() => onRevisar(h.objetivo)} style={{ ...btnLinkStyle(color), flexShrink: 0 }}>Revisar</button>}
+                      <div key={i} style={{ paddingTop: 8, marginTop: i === 0 ? 0 : 6, borderTop: `0.5px solid ${h.severidad === 'error' ? '#e8b4b4' : '#E8C77E'}` }}>
+                        <div onClick={() => toggleAlerta(i)} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, cursor: 'pointer' }}>
+                          <span style={{ fontSize: 12, color }}><strong>{h.responsable}</strong> · {h.titulo}</span>
+                          {abierta ? <ChevronUp size={14} color={color} style={{ flexShrink: 0 }} /> : <ChevronDown size={14} color={color} style={{ flexShrink: 0 }} />}
+                        </div>
+                        {abierta && (
+                          <div style={{ marginTop: 6, display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
+                            <span style={{ fontSize: 12, color }}>{h.mensaje}</span>
+                            {h.objetivo && <button onClick={() => onRevisar(h.objetivo)} style={{ ...btnLinkStyle(color), flexShrink: 0 }}>Revisar</button>}
+                          </div>
+                        )}
                       </div>
                     )
                   })}
@@ -3871,6 +3803,8 @@ export default function App() {
   const [gastosFijos, setGastosFijos] = useState([])
   const [pedidoPagos, setPedidoPagos] = useState([])
   const [esquejePagos, setEsquejePagos] = useState([])
+  const [cuentas, setCuentas] = useState([])
+  const [dolaresMovimientos, setDolaresMovimientos] = useState([])
   const [socios, setSocios] = useState([])
   const [stockEsquejes, setStockEsquejes] = useState(STOCK_ESQUEJES_INICIAL)
   const [stockEsquejesInicial, setStockEsquejesInicial] = useState(STOCK_ESQUEJES_INICIAL)
@@ -3905,7 +3839,7 @@ export default function App() {
     async function cargarDatos() {
       setCargando(true)
       setErrorCarga(false)
-      const [pedidosRes, stockRes, esquejesRes, stockEsquejesRes, insumosRes, insumoPagosRes, gastosRes, presupuestosRes, aportesRes, gastosFijosRes, pedidoPagosRes, esquejePagosRes, sociosRes] = await Promise.all([
+      const [pedidosRes, stockRes, esquejesRes, stockEsquejesRes, insumosRes, insumoPagosRes, gastosRes, presupuestosRes, aportesRes, gastosFijosRes, pedidoPagosRes, esquejePagosRes, cuentasRes, dolaresMovimientosRes, sociosRes] = await Promise.all([
         supabase.from('pedidos').select('*').order('created_at', { ascending: false }),
         supabase.from('stock').select('*'),
         supabase.from('esquejes').select('*').order('created_at', { ascending: false }),
@@ -3918,10 +3852,12 @@ export default function App() {
         supabase.from('gastos_fijos').select('*').order('created_at', { ascending: false }),
         supabase.from('pedido_pagos').select('*').order('created_at', { ascending: false }),
         supabase.from('esqueje_pagos').select('*').order('created_at', { ascending: false }),
+        supabase.from('cuentas').select('*'),
+        supabase.from('dolares_movimientos').select('*').order('fecha', { ascending: false }),
         supabase.from('socios').select('*').order('nombre', { ascending: true }),
       ])
       if (cancelado) return
-      const conError = [pedidosRes, stockRes, esquejesRes, stockEsquejesRes, insumosRes, insumoPagosRes, gastosRes, presupuestosRes, aportesRes, gastosFijosRes, pedidoPagosRes, esquejePagosRes, sociosRes].filter(r => r.error)
+      const conError = [pedidosRes, stockRes, esquejesRes, stockEsquejesRes, insumosRes, insumoPagosRes, gastosRes, presupuestosRes, aportesRes, gastosFijosRes, pedidoPagosRes, esquejePagosRes, cuentasRes, dolaresMovimientosRes, sociosRes].filter(r => r.error)
       if (conError.length > 0) {
         console.error('Error al cargar datos', conError.map(r => r.error))
         setErrorCarga(true)
@@ -3950,6 +3886,8 @@ export default function App() {
       setGastosFijos(gastosFijosRes.data || [])
       setPedidoPagos(pedidoPagosRes.data || [])
       setEsquejePagos(esquejePagosRes.data || [])
+      setCuentas(cuentasRes.data || [])
+      setDolaresMovimientos(dolaresMovimientosRes.data || [])
       setSocios((sociosRes.data || []).map(conAliasSocio))
       setCargando(false)
     }
@@ -3961,6 +3899,55 @@ export default function App() {
     })
     return () => { cancelado = true }
   }, [sesion?.user?.id, intentoCarga])
+
+  // Resumen de cuentas en pesos y en dólares — se calcula acá (no adentro de TabFinanzas) para
+  // que el conteo de alertas del agente de Finanzas esté disponible para el badge de la pestaña
+  // aunque todavía no se haya entrado a Finanzas en esta sesión.
+  const resumenCuentas = useMemo(() => CUENTAS.map(nombre => {
+    const info = cuentas.find(c => c.nombre === nombre) || { nombre, saldo_inicial: 0, fecha_corte: FECHA_CORTE_DEFAULT, validado: false }
+    const ingresosPedidos = pedidoPagos.filter(pg => pg.cuenta === nombre && esDesdeCorteISO(pg.fecha, info.fecha_corte)).reduce((s, pg) => s + (pg.monto || 0), 0)
+    const ingresosEsquejes = esquejePagos.filter(pg => pg.cuenta === nombre && esDesdeCorteISO(pg.fecha, info.fecha_corte)).reduce((s, pg) => s + (pg.monto || 0), 0)
+    const ingresosInsumos = insumoPagos.filter(pg => pg.cuenta === nombre && esDesdeCorteISO(pg.fecha, info.fecha_corte)).reduce((s, pg) => s + (pg.monto || 0), 0)
+    const egresos = gastos.filter(g => esDesdeCorte(g.fecha, info.fecha_corte))
+      .flatMap(g => montosPorCuenta(g, 'monto')).filter(m => m.cuenta === nombre).reduce((s, m) => s + m.monto, 0)
+    const ingresos = ingresosPedidos + ingresosEsquejes + ingresosInsumos
+    const saldo = (info.saldo_inicial || 0) + ingresos - egresos
+    const estimados =
+      pedidoPagos.filter(pg => pg.cuenta === nombre && pg.cuenta_estimada).length +
+      esquejePagos.filter(pg => pg.cuenta === nombre && pg.cuenta_estimada).length +
+      insumoPagos.filter(pg => pg.cuenta === nombre && pg.cuenta_estimada).length +
+      gastos.filter(g => g.cuenta === nombre && g.cuenta_estimada).length
+    return { nombre, info, ingresos, egresos, saldo, estimados }
+  }), [pedidoPagos, esquejePagos, insumoPagos, gastos, cuentas])
+
+  const resumenDolares = useMemo(() => CUENTAS_DOLARES.map(nombre => {
+    const info = cuentas.find(c => c.nombre === nombre) || { nombre, saldo_inicial: 0, fecha_corte: FECHA_CORTE_DEFAULT, validado: false }
+    const movimientos = dolaresMovimientos.filter(m => m.cuenta === nombre)
+    const movimientosContados = movimientos.filter(m => esDesdeCorteISO(m.fecha, info.fecha_corte))
+    const ingresos = movimientosContados.filter(m => m.tipo === 'ingreso').reduce((s, m) => s + (m.monto || 0), 0)
+    const egresos = movimientosContados.filter(m => m.tipo === 'egreso').reduce((s, m) => s + (m.monto || 0), 0)
+    const saldo = (info.saldo_inicial || 0) + ingresos - egresos
+    return { nombre, info, ingresos, egresos, saldo, movimientos }
+  }), [cuentas, dolaresMovimientos])
+
+  // Corte más viejo entre las cuentas configuradas: lo anterior a esto es plata migrada del
+  // historial que nunca va a tener cuenta, así que el agente no la reclama.
+  const corteMinimoFinanzas = cuentas.length > 0
+    ? cuentas.reduce((min, c) => (c.fecha_corte && c.fecha_corte < min ? c.fecha_corte : min), cuentas[0].fecha_corte || FECHA_CORTE_DEFAULT)
+    : FECHA_CORTE_DEFAULT
+
+  // Agente de salud financiera: mismo patrón que el agente de cultivo (reglas determinísticas,
+  // nunca inventa un dato, siempre señala el registro puntual y quién puede corregirlo). Corre
+  // siempre, no solo al entrar a Finanzas, para que el badge de la pestaña esté al día — ver
+  // src/agenteFinanzas.js.
+  const hallazgosFinanzas = useMemo(() => evaluarFinanzas({
+    cuentas, dolaresMovimientos, gastos, presupuestos, aportes,
+    pedidoPagos, esquejePagos, insumoPagos, pedidos, esquejes, insumos,
+    resumen: resumenCuentas, resumenDolares, corteMinimo: corteMinimoFinanzas,
+    cuentasConocidas: CUENTAS, cuentasDolaresConocidas: CUENTAS_DOLARES,
+    cuentaEfectivo: CUENTA_EFECTIVO, cuentaHormiguero: CUENTA_HORMIGUERO,
+  }, { pesos: formatPesos, dolares: formatDolares, fechaISO: formatFechaISOSinAnio }),
+  [cuentas, dolaresMovimientos, gastos, presupuestos, aportes, pedidoPagos, esquejePagos, insumoPagos, pedidos, esquejes, insumos, resumenCuentas, resumenDolares, corteMinimoFinanzas])
 
   const guardarPedido = useCallback(async p => {
     const { data, error } = await supabase.from('pedidos').insert(pedidoToDB(p)).select().single()
@@ -4231,7 +4218,14 @@ export default function App() {
         <div className="tab-bar">
           <button className={`tab${tab === 'pedidos' ? ' active' : ''}`} onClick={() => irATab('pedidos')}>Ventas</button>
           <button className={`tab${tab === 'gastos' ? ' active' : ''}`} onClick={() => irATab('gastos')}>Gastos</button>
-          <button className={`tab${tab === 'finanzas' ? ' active' : ''}`} onClick={() => irATab('finanzas')}>Finanzas</button>
+          <button className={`tab${tab === 'finanzas' ? ' active' : ''}`} onClick={() => irATab('finanzas')}>
+            Finanzas
+            {hallazgosFinanzas.length > 0 && (
+              <span style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', minWidth: 16, height: 16, padding: '0 4px', borderRadius: 999, background: hallazgosFinanzas.some(h => h.severidad === 'error') ? '#791F1F' : '#854F0B', color: 'white', fontSize: 10, fontWeight: 700, marginLeft: 5, lineHeight: 1 }}>
+                {hallazgosFinanzas.length}
+              </span>
+            )}
+          </button>
           <button className={`tab${tab === 'cultivo' ? ' active' : ''}`} onClick={() => irATab('cultivo')}>Cultivo</button>
         </div>
       </div>
@@ -4279,7 +4273,7 @@ export default function App() {
         />
       )}
       {tab === 'gastos' && <TabGastos target={objetivoRevision} miembro={miembro} gastos={gastos} presupuestos={presupuestos} onGuardarGasto={guardarGasto} onActualizarGasto={actualizarGasto} onEliminarGasto={eliminarGasto} />}
-      {tab === 'finanzas' && <TabFinanzas onRevisar={irARevisar} pedidos={pedidos} esquejes={esquejes} insumos={insumos} miembro={miembro} gastos={gastos} presupuestos={presupuestos} setPresupuestos={setPresupuestos} aportes={aportes} setAportes={setAportes} gastosFijos={gastosFijos} setGastosFijos={setGastosFijos} pedidoPagos={pedidoPagos} esquejePagos={esquejePagos} insumoPagos={insumoPagos} />}
+      {tab === 'finanzas' && <TabFinanzas onRevisar={irARevisar} pedidos={pedidos} esquejes={esquejes} insumos={insumos} miembro={miembro} gastos={gastos} presupuestos={presupuestos} setPresupuestos={setPresupuestos} aportes={aportes} setAportes={setAportes} gastosFijos={gastosFijos} setGastosFijos={setGastosFijos} pedidoPagos={pedidoPagos} esquejePagos={esquejePagos} insumoPagos={insumoPagos} cuentas={cuentas} setCuentas={setCuentas} dolaresMovimientos={dolaresMovimientos} setDolaresMovimientos={setDolaresMovimientos} resumen={resumenCuentas} resumenDolares={resumenDolares} hallazgosFinanzas={hallazgosFinanzas} />}
       {tab === 'cultivo' && <TabCultivo />}
       {mostrarCambiarPass && <ModalCambiarPassword onCerrar={() => setMostrarCambiarPass(false)} />}
     </div>
