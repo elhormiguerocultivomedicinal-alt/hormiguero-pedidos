@@ -157,15 +157,18 @@ const filaEsquejeVacia = () => ({ id: Date.now() + Math.random(), nombre: '', ca
 // ─── Config por dominio (Cosecha vs Esquejes) ─────────────────
 // Todo lo que difiere entre pedidos y esquejes vive acá; los componentes
 // (FormRegistro, ModalEditarRegistro, PanelStock) son únicos.
+// `geneticas` NO va acá: el catálogo es editable desde la app (tablas
+// geneticas_cosecha/geneticas_esquejes), así que siempre se inyecta como override
+// en el cfg de cada call site (TabVentas/TabPropio/TabSocios), nunca se lee este default.
 const CFG_COSECHA = {
-  unidad: 'g', stockInicial: STOCK_INICIAL, stockLow: 50, rpcStock: 'ajustar_stock', geneticas: GENETICAS,
+  unidad: 'g', stockInicial: STOCK_INICIAL, stockLow: 50, rpcStock: 'ajustar_stock',
   color: 'var(--green-dark)', colorBorde: null, btnBg: null,
   nuevaFila: filaVacia, precioDefaultFila: PRECIO_DEFAULT,
   singular: 'pedido', plural: 'pedidos', labelEntregado: 'Pedido entregado', txtEliminar: 'Eliminar pedido',
   fkPagos: 'pedido_id',
 }
 const CFG_ESQUEJES = {
-  unidad: 'u', stockInicial: STOCK_ESQUEJES_INICIAL, stockLow: 20, rpcStock: 'ajustar_stock_esquejes', geneticas: GENETICAS_ESQUEJES,
+  unidad: 'u', stockInicial: STOCK_ESQUEJES_INICIAL, stockLow: 20, rpcStock: 'ajustar_stock_esquejes',
   color: COLOR_ESQUEJES, colorBorde: COLOR_ESQUEJES_BORDER, btnBg: COLOR_ESQUEJES,
   nuevaFila: filaEsquejeVacia, precioDefaultFila: '',
   singular: 'esqueje', plural: 'esquejes', labelEntregado: 'Entregado', txtEliminar: 'Eliminar',
@@ -1384,8 +1387,10 @@ function CampoStockEditable({ valor, color, onGuardar }) {
   )
 }
 
-function PanelStock({ stock, inicial, cfg, ajustesFallidos, onEditar, onEditarInicial }) {
+function PanelStock({ stock, inicial, cfg, ajustesFallidos, onEditar, onEditarInicial, onAgregarGenetica, onEliminarGenetica }) {
   const [toast, showToast] = useToast()
+  const [nuevaGenetica, setNuevaGenetica] = useState('')
+  const [confirmandoBorrar, setConfirmandoBorrar] = useState(null)
   const totalActual = cfg.geneticas.reduce((s, g) => s + (stock[g] ?? 0), 0)
   const totalInicial = cfg.geneticas.reduce((s, g) => s + (inicial[g] ?? cfg.stockInicial[g] ?? 0), 0)
   const fallidos = (ajustesFallidos || []).filter(a => a.rpc_name === cfg.rpcStock && !a.resuelto)
@@ -1398,6 +1403,34 @@ function PanelStock({ stock, inicial, cfg, ajustesFallidos, onEditar, onEditarIn
   async function guardarInicial(g, nuevoValor) {
     const res = await onEditarInicial(g, nuevoValor)
     showToast(res?.ok === false ? `No se pudo actualizar el inicial de ${g}` : `${g}: inicial actualizado`)
+  }
+
+  function pedirBorrar(g) {
+    const cant = stock[g] ?? 0
+    if (cant !== 0) {
+      showToast(`No se puede borrar ${g}: todavía tiene ${cant}${cfg.unidad} en stock. Llevalo a 0 primero.`)
+      return
+    }
+    setConfirmandoBorrar(g)
+  }
+
+  async function confirmarBorrar(g) {
+    const res = await onEliminarGenetica(g)
+    showToast(res?.ok === false ? `No se pudo borrar ${g}` : `${g}: eliminada del catálogo`)
+    setConfirmandoBorrar(null)
+  }
+
+  async function agregar() {
+    const limpio = nuevaGenetica.trim()
+    if (!limpio) return
+    if (cfg.geneticas.some(g => g.toLowerCase() === limpio.toLowerCase())) {
+      showToast('Ya existe una genética con ese nombre')
+      return
+    }
+    const res = await onAgregarGenetica(limpio)
+    if (res?.ok === false) { showToast(`No se pudo agregar ${limpio}`); return }
+    setNuevaGenetica('')
+    showToast(`${limpio}: agregada al catálogo`)
   }
 
   return (
@@ -1422,7 +1455,10 @@ function PanelStock({ stock, inicial, cfg, ajustesFallidos, onEditar, onEditarIn
             return (
               <div key={g}>
                 <div style={{ display: 'grid', gridTemplateColumns: '1fr auto auto', gap: '0 16px', alignItems: 'center', marginBottom: 5 }}>
-                  <span style={{ fontSize: 14, color: 'var(--text-primary)', fontWeight: 500 }}>{g}</span>
+                  <span style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                    <span style={{ fontSize: 14, color: 'var(--text-primary)', fontWeight: 500 }}>{g}</span>
+                    <button className="btn-eliminar-fila" style={{ width: 20, height: 20, fontSize: 10 }} title={`Borrar ${g} del catálogo`} onClick={() => pedirBorrar(g)}>✕</button>
+                  </span>
                   <span style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
                     <CampoStockEditable valor={inicialValor} color="var(--text-secondary)" onGuardar={v => guardarInicial(g, v)} />
                     <span style={{ fontSize: 12, color: 'var(--text-secondary)' }}>{cfg.unidad}</span>
@@ -1435,6 +1471,13 @@ function PanelStock({ stock, inicial, cfg, ajustesFallidos, onEditar, onEditarIn
                 <div style={{ height: 6, borderRadius: 99, background: 'var(--bg-secondary)', overflow: 'hidden' }}>
                   <div style={{ height: '100%', width: `${pct}%`, borderRadius: 99, background: color, transition: 'width 0.3s' }} />
                 </div>
+                {confirmandoBorrar === g && (
+                  <div style={{ marginTop: 6, background: '#FCEBEB', border: '0.5px solid #791F1F', borderRadius: 'var(--radius-md)', padding: 8, display: 'flex', alignItems: 'center', gap: 8 }}>
+                    <span style={{ fontSize: 12, color: '#791F1F', flex: 1 }}>¿Borrar {g} del catálogo?</span>
+                    <button onClick={() => confirmarBorrar(g)} style={{ padding: '6px 10px', background: '#791F1F', color: 'white', border: 'none', borderRadius: 'var(--radius-md)', fontSize: 12, fontWeight: 600, cursor: 'pointer' }}>Sí, borrar</button>
+                    <button onClick={() => setConfirmandoBorrar(null)} style={{ padding: '6px 10px', background: 'transparent', border: '0.5px solid var(--border-mid)', borderRadius: 'var(--radius-md)', fontSize: 12, cursor: 'pointer' }}>Cancelar</button>
+                  </div>
+                )}
               </div>
             )
           })}
@@ -1443,6 +1486,10 @@ function PanelStock({ stock, inicial, cfg, ajustesFallidos, onEditar, onEditarIn
           <span className="form-label">Total</span>
           <span style={{ fontSize: 13, color: 'var(--text-secondary)' }}>{totalInicial}{cfg.unidad}</span>
           <span style={{ fontSize: 16, fontWeight: 600, color: 'var(--text-primary)' }}>{totalActual}{cfg.unidad}</span>
+        </div>
+        <div style={{ marginTop: 12, paddingTop: 12, borderTop: '0.5px solid var(--border)', display: 'flex', gap: 8 }}>
+          <input className="form-control" type="text" placeholder="Nueva genética..." value={nuevaGenetica} onChange={e => setNuevaGenetica(e.target.value)} onKeyDown={e => e.key === 'Enter' && agregar()} />
+          <button className="btn-submit" style={{ width: 'auto', padding: '0 14px', whiteSpace: 'nowrap' }} onClick={agregar}>+ Agregar</button>
         </div>
       </div>
       <div className={`toast${toast.show ? ' show' : ''}`}>{toast.msg}</div>
@@ -1455,7 +1502,7 @@ function PanelStock({ stock, inicial, cfg, ajustesFallidos, onEditar, onEditarIn
 // disponible por genética (colapsado, se abre con un click, igual que un
 // mes en la lista de abajo) y 3) los pedidos registrados mes a mes (el
 // acordeón que ya existe, con cada mes oculto hasta que se lo abre).
-function PanelDominio({ cfg, registros, miembro, onGuardar, onActualizar, onEliminar, stock, stockInicial, ajustesFallidos, onEditarStock, onEditarInicial, pagos, onAgregarPago, onEditarPago, onEliminarPago, target, tipoRegistro = 'cliente', permiteMembresia, socios }) {
+function PanelDominio({ cfg, registros, miembro, onGuardar, onActualizar, onEliminar, stock, stockInicial, ajustesFallidos, onEditarStock, onEditarInicial, onAgregarGenetica, onEliminarGenetica, pagos, onAgregarPago, onEditarPago, onEliminarPago, target, tipoRegistro = 'cliente', permiteMembresia, socios }) {
   const [stockAbierto, setStockAbierto] = useState(false)
   const seccionTitulo = { fontSize: 15, fontWeight: 600, color: 'var(--text-primary)', marginBottom: 8 }
   const plural = cfg.plural[0].toUpperCase() + cfg.plural.slice(1)
@@ -1477,7 +1524,7 @@ function PanelDominio({ cfg, registros, miembro, onGuardar, onActualizar, onElim
           </div>
           {stockAbierto && (
             <div style={{ marginTop: 8 }}>
-              <PanelStock stock={stock} inicial={stockInicial} cfg={cfg} ajustesFallidos={ajustesFallidos} onEditar={onEditarStock} onEditarInicial={onEditarInicial} />
+              <PanelStock stock={stock} inicial={stockInicial} cfg={cfg} ajustesFallidos={ajustesFallidos} onEditar={onEditarStock} onEditarInicial={onEditarInicial} onAgregarGenetica={onAgregarGenetica} onEliminarGenetica={onEliminarGenetica} />
             </div>
           )}
         </div>
@@ -1498,12 +1545,13 @@ function TabVentas({
   insumos, onGuardarInsumo, onActualizarInsumo, onEliminarInsumo, insumoPagos, onAgregarPagoInsumo, onEditarPagoInsumo, onEliminarPagoInsumo,
   miembro, ajustesFallidos,
   onEditarStock, onEditarStockEsquejes, onEditarInicial, onEditarInicialEsquejes,
+  geneticasCosecha, geneticasEsquejes, onAgregarGeneticaCosecha, onEliminarGeneticaCosecha, onAgregarGeneticaEsquejes, onEliminarGeneticaEsquejes,
   pedidoPagos, esquejePagos, onAgregarPagoPedido, onEditarPagoPedido, onEliminarPagoPedido, onAgregarPagoEsqueje, onEditarPagoEsqueje, onEliminarPagoEsqueje,
   socios, onGuardarSocio, onActualizarSocio, onEliminarSocio,
   target,
 }) {
   const [tipo, setTipo] = useState(() => target?.tipoRegistro || 'cosecha')
-  const cfg = tipo === 'esquejes' ? CFG_ESQUEJES : CFG_COSECHA
+  const cfg = tipo === 'esquejes' ? { ...CFG_ESQUEJES, geneticas: geneticasEsquejes } : { ...CFG_COSECHA, geneticas: geneticasCosecha }
   const activeStyle = tipo === 'esquejes' ? { background: COLOR_ESQUEJES_LIGHT, borderColor: COLOR_ESQUEJES_BORDER, color: COLOR_ESQUEJES } : {}
   const activeStyleInsumos = tipo === 'insumos' ? { background: COLOR_INSUMOS_LIGHT, borderColor: COLOR_INSUMOS_BORDER, color: COLOR_INSUMOS } : {}
   return (
@@ -1545,6 +1593,8 @@ function TabVentas({
           ajustesFallidos={ajustesFallidos}
           onEditarStock={tipo === 'cosecha' ? onEditarStock : onEditarStockEsquejes}
           onEditarInicial={tipo === 'cosecha' ? onEditarInicial : onEditarInicialEsquejes}
+          onAgregarGenetica={tipo === 'cosecha' ? onAgregarGeneticaCosecha : onAgregarGeneticaEsquejes}
+          onEliminarGenetica={tipo === 'cosecha' ? onEliminarGeneticaCosecha : onEliminarGeneticaEsquejes}
           pagos={tipo === 'cosecha' ? pedidoPagos : esquejePagos}
           onAgregarPago={tipo === 'cosecha' ? onAgregarPagoPedido : onAgregarPagoEsqueje}
           onEditarPago={tipo === 'cosecha' ? onEditarPagoPedido : onEditarPagoEsqueje}
@@ -1564,6 +1614,9 @@ function TabVentas({
           miembro={miembro} ajustesFallidos={ajustesFallidos}
           onEditarStock={onEditarStock} onEditarStockEsquejes={onEditarStockEsquejes}
           onEditarInicial={onEditarInicial} onEditarInicialEsquejes={onEditarInicialEsquejes}
+          geneticasCosecha={geneticasCosecha} geneticasEsquejes={geneticasEsquejes}
+          onAgregarGeneticaCosecha={onAgregarGeneticaCosecha} onEliminarGeneticaCosecha={onEliminarGeneticaCosecha}
+          onAgregarGeneticaEsquejes={onAgregarGeneticaEsquejes} onEliminarGeneticaEsquejes={onEliminarGeneticaEsquejes}
           pedidoPagos={pedidoPagos} esquejePagos={esquejePagos}
           onAgregarPagoPedido={onAgregarPagoPedido} onEditarPagoPedido={onEditarPagoPedido} onEliminarPagoPedido={onEliminarPagoPedido}
           onAgregarPagoEsqueje={onAgregarPagoEsqueje} onEditarPagoEsqueje={onEditarPagoEsqueje} onEliminarPagoEsqueje={onEliminarPagoEsqueje}
@@ -1575,6 +1628,7 @@ function TabVentas({
           onGuardarSocio={onGuardarSocio} onActualizarSocio={onActualizarSocio} onEliminarSocio={onEliminarSocio}
           onActualizarPedido={onActualizarPedido} onEliminarPedido={onEliminarPedido}
           onAgregarPagoPedido={onAgregarPagoPedido} onEditarPagoPedido={onEditarPagoPedido} onEliminarPagoPedido={onEliminarPagoPedido}
+          geneticasCosecha={geneticasCosecha}
         />
       )}
     </div>
@@ -1587,13 +1641,14 @@ function TabPropio({
   esquejes, stockEsquejes, stockEsquejesInicial, onGuardarEsqueje, onActualizarEsqueje, onEliminarEsqueje,
   miembro, ajustesFallidos,
   onEditarStock, onEditarStockEsquejes, onEditarInicial, onEditarInicialEsquejes,
+  geneticasCosecha, geneticasEsquejes, onAgregarGeneticaCosecha, onEliminarGeneticaCosecha, onAgregarGeneticaEsquejes, onEliminarGeneticaEsquejes,
   pedidoPagos, esquejePagos, onAgregarPagoPedido, onEditarPagoPedido, onEliminarPagoPedido, onAgregarPagoEsqueje, onEditarPagoEsqueje, onEliminarPagoEsqueje,
 }) {
   const [tipoPropio, setTipoPropio] = useState('propio') // 'propio' | 'regalo'
   const [dominio, setDominio] = useState('cosecha') // solo relevante si tipoPropio === 'regalo'
   const dominioEfectivo = tipoPropio === 'propio' ? 'cosecha' : dominio
   const esCosecha = dominioEfectivo === 'cosecha'
-  const cfg = esCosecha ? CFG_COSECHA : CFG_ESQUEJES
+  const cfg = esCosecha ? { ...CFG_COSECHA, geneticas: geneticasCosecha } : { ...CFG_ESQUEJES, geneticas: geneticasEsquejes }
   return (
     <div>
       <div className="card" style={{ marginBottom: 0 }}>
@@ -1625,6 +1680,8 @@ function TabPropio({
           ajustesFallidos={ajustesFallidos}
           onEditarStock={esCosecha ? onEditarStock : onEditarStockEsquejes}
           onEditarInicial={esCosecha ? onEditarInicial : onEditarInicialEsquejes}
+          onAgregarGenetica={esCosecha ? onAgregarGeneticaCosecha : onAgregarGeneticaEsquejes}
+          onEliminarGenetica={esCosecha ? onEliminarGeneticaCosecha : onEliminarGeneticaEsquejes}
           pagos={esCosecha ? pedidoPagos : esquejePagos}
           onAgregarPago={esCosecha ? onAgregarPagoPedido : onAgregarPagoEsqueje}
           onEditarPago={esCosecha ? onEditarPagoPedido : onEditarPagoEsqueje}
@@ -1640,7 +1697,7 @@ function TabPropio({
 // ─── Tab Socios: padrón de socios con Reprocann vinculado a la ONG +
 // historial de membresías compradas (derivado de pedidos.socio_id/membresia,
 // no se duplica precio/método de pago/estado de cobro en ningún lado nuevo).
-function TabSocios({ socios, pedidos, pedidoPagos, miembro, onGuardarSocio, onActualizarSocio, onEliminarSocio, onActualizarPedido, onEliminarPedido, onAgregarPagoPedido, onEditarPagoPedido, onEliminarPagoPedido }) {
+function TabSocios({ socios, pedidos, pedidoPagos, miembro, onGuardarSocio, onActualizarSocio, onEliminarSocio, onActualizarPedido, onEliminarPedido, onAgregarPagoPedido, onEditarPagoPedido, onEliminarPagoPedido, geneticasCosecha }) {
   const [nuevo, setNuevo] = useState({ nombre: '', fechaRegistroOng: '' })
   const [toast, showToast] = useToast()
   const [abiertos, setAbiertos] = useState(() => new Set())
@@ -1804,7 +1861,7 @@ function TabSocios({ socios, pedidos, pedidoPagos, miembro, onGuardarSocio, onAc
 
       {editandoPedido && (
         <ModalEditarRegistro
-          cfg={CFG_COSECHA}
+          cfg={{ ...CFG_COSECHA, geneticas: geneticasCosecha }}
           registro={editandoPedido}
           pagos={pedidoPagos}
           miembro={miembro}
@@ -3744,6 +3801,26 @@ async function actualizarInicialDirecto(genetica, nuevoValor, tabla, setInicialF
   return { ok: true }
 }
 
+// ─── Catálogo de genéticas (geneticas_cosecha/geneticas_esquejes): editable
+// desde la app para que el equipo no dependa de un deploy para sumar/sacar una.
+async function agregarGeneticaCatalogo(tabla, nombre, listaActual, setFn) {
+  const limpio = nombre.trim()
+  if (!limpio) return { ok: false, error: 'vacio' }
+  if (listaActual.some(g => g.toLowerCase() === limpio.toLowerCase())) return { ok: false, error: 'duplicado' }
+  const { error } = await supabase.from(tabla).insert({ nombre: limpio })
+  if (error) { console.error('Error agregando genética', tabla, limpio, error); return { ok: false, error } }
+  setFn(prev => [...prev, limpio].sort((a, b) => a.localeCompare(b)))
+  return { ok: true }
+}
+
+async function eliminarGeneticaCatalogo(tabla, nombre, stockActual, setFn) {
+  if ((stockActual[nombre] ?? 0) !== 0) return { ok: false, error: 'stock' }
+  const { error } = await supabase.from(tabla).delete().eq('nombre', nombre)
+  if (error) { console.error('Error eliminando genética', tabla, nombre, error); return { ok: false, error } }
+  setFn(prev => prev.filter(g => g !== nombre))
+  return { ok: true }
+}
+
 // ─── Mapeo DB (snake_case) ↔ app (camelCase) ──────────────────
 // Fuente única de verdad: evita repetir metodoPago/metodo_pago y
 // cuentaEstimada/cuenta_estimada por todo el código.
@@ -3808,6 +3885,8 @@ export default function App() {
   const [socios, setSocios] = useState([])
   const [stockEsquejes, setStockEsquejes] = useState(STOCK_ESQUEJES_INICIAL)
   const [stockEsquejesInicial, setStockEsquejesInicial] = useState(STOCK_ESQUEJES_INICIAL)
+  const [geneticasCosecha, setGeneticasCosecha] = useState(GENETICAS)
+  const [geneticasEsquejes, setGeneticasEsquejes] = useState(GENETICAS_ESQUEJES)
   const [stockAjustesFallidos, setStockAjustesFallidos] = useState([])
   const [cargando, setCargando] = useState(true)
   const [errorCarga, setErrorCarga] = useState(false)
@@ -3839,7 +3918,7 @@ export default function App() {
     async function cargarDatos() {
       setCargando(true)
       setErrorCarga(false)
-      const [pedidosRes, stockRes, esquejesRes, stockEsquejesRes, insumosRes, insumoPagosRes, gastosRes, presupuestosRes, aportesRes, gastosFijosRes, pedidoPagosRes, esquejePagosRes, cuentasRes, dolaresMovimientosRes, sociosRes] = await Promise.all([
+      const [pedidosRes, stockRes, esquejesRes, stockEsquejesRes, insumosRes, insumoPagosRes, gastosRes, presupuestosRes, aportesRes, gastosFijosRes, pedidoPagosRes, esquejePagosRes, cuentasRes, dolaresMovimientosRes, sociosRes, geneticasCosechaRes, geneticasEsquejesRes] = await Promise.all([
         supabase.from('pedidos').select('*').order('created_at', { ascending: false }),
         supabase.from('stock').select('*'),
         supabase.from('esquejes').select('*').order('created_at', { ascending: false }),
@@ -3855,9 +3934,11 @@ export default function App() {
         supabase.from('cuentas').select('*'),
         supabase.from('dolares_movimientos').select('*').order('fecha', { ascending: false }),
         supabase.from('socios').select('*').order('nombre', { ascending: true }),
+        supabase.from('geneticas_cosecha').select('nombre').order('nombre', { ascending: true }),
+        supabase.from('geneticas_esquejes').select('nombre').order('nombre', { ascending: true }),
       ])
       if (cancelado) return
-      const conError = [pedidosRes, stockRes, esquejesRes, stockEsquejesRes, insumosRes, insumoPagosRes, gastosRes, presupuestosRes, aportesRes, gastosFijosRes, pedidoPagosRes, esquejePagosRes, cuentasRes, dolaresMovimientosRes, sociosRes].filter(r => r.error)
+      const conError = [pedidosRes, stockRes, esquejesRes, stockEsquejesRes, insumosRes, insumoPagosRes, gastosRes, presupuestosRes, aportesRes, gastosFijosRes, pedidoPagosRes, esquejePagosRes, cuentasRes, dolaresMovimientosRes, sociosRes, geneticasCosechaRes, geneticasEsquejesRes].filter(r => r.error)
       if (conError.length > 0) {
         console.error('Error al cargar datos', conError.map(r => r.error))
         setErrorCarga(true)
@@ -3889,6 +3970,8 @@ export default function App() {
       setCuentas(cuentasRes.data || [])
       setDolaresMovimientos(dolaresMovimientosRes.data || [])
       setSocios((sociosRes.data || []).map(conAliasSocio))
+      setGeneticasCosecha((geneticasCosechaRes.data || []).map(g => g.nombre))
+      setGeneticasEsquejes((geneticasEsquejesRes.data || []).map(g => g.nombre))
       setCargando(false)
     }
     cargarDatos()
@@ -4137,6 +4220,11 @@ export default function App() {
   const editarInicial = useCallback((genetica, nuevoValor) => actualizarInicialDirecto(genetica, nuevoValor, 'stock', setStockInicial), [])
   const editarInicialEsquejes = useCallback((genetica, nuevoValor) => actualizarInicialDirecto(genetica, nuevoValor, 'stock_esquejes', setStockEsquejesInicial), [])
 
+  const agregarGeneticaCosecha = useCallback(nombre => agregarGeneticaCatalogo('geneticas_cosecha', nombre, geneticasCosecha, setGeneticasCosecha), [geneticasCosecha])
+  const eliminarGeneticaCosecha = useCallback(nombre => eliminarGeneticaCatalogo('geneticas_cosecha', nombre, stock, setGeneticasCosecha), [stock])
+  const agregarGeneticaEsquejes = useCallback(nombre => agregarGeneticaCatalogo('geneticas_esquejes', nombre, geneticasEsquejes, setGeneticasEsquejes), [geneticasEsquejes])
+  const eliminarGeneticaEsquejes = useCallback(nombre => eliminarGeneticaCatalogo('geneticas_esquejes', nombre, stockEsquejes, setGeneticasEsquejes), [stockEsquejes])
+
   const guardarGasto = useCallback(async nuevoGasto => {
     const { data, error } = await supabase.from('gastos').insert(nuevoGasto).select().single()
     if (error || !data) { console.error('Error al guardar gasto', error); return { ok: false, error } }
@@ -4258,6 +4346,12 @@ export default function App() {
           onEditarStockEsquejes={editarStockEsquejes}
           onEditarInicial={editarInicial}
           onEditarInicialEsquejes={editarInicialEsquejes}
+          geneticasCosecha={geneticasCosecha}
+          geneticasEsquejes={geneticasEsquejes}
+          onAgregarGeneticaCosecha={agregarGeneticaCosecha}
+          onEliminarGeneticaCosecha={eliminarGeneticaCosecha}
+          onAgregarGeneticaEsquejes={agregarGeneticaEsquejes}
+          onEliminarGeneticaEsquejes={eliminarGeneticaEsquejes}
           pedidoPagos={pedidoPagos}
           esquejePagos={esquejePagos}
           onAgregarPagoPedido={agregarPagoPedido}
