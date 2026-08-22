@@ -118,7 +118,7 @@ const STOCK_INICIAL = {
   'Gorilla Rainbow': 557,
 }
 
-const CATEGORIAS_GASTOS = ['Servicios', 'Alquiler', 'Insumos cultivo', 'Marketing', 'Bonos comisión directiva', 'Gastos estructurales', 'Inversiones', 'Insumos varios', 'Comida']
+const CATEGORIAS_GASTOS = ['Servicios', 'Alquiler', 'Insumos cultivo', 'Marketing', 'Bonos comisión directiva', 'Gastos estructurales', 'Inversiones', 'Insumos varios', 'Comida', 'Herramientas']
 const CATEGORIAS_GASTOS_MAP = {
   'Hormi 1.0': CATEGORIAS_GASTOS,
   'Hormi 2.0': CATEGORIAS_GASTOS,
