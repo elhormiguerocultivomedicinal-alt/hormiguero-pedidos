@@ -124,6 +124,18 @@ const CATEGORIAS_GASTOS_MAP = {
   'Hormi 2.0': CATEGORIAS_GASTOS,
 }
 
+// ─── Stock de insumos de cultivo ───────────────────────────────
+// Categorías fijas en código; los ítems dentro de cada una son 100% editables
+// desde la app (tabla insumos_stock), mismo espíritu que el catálogo de genéticas.
+const CATEGORIAS_STOCK_INSUMOS = ['Sustrato', 'Macetas', 'Fertilizantes', 'Riego', 'Iluminación', 'Equipamiento', 'Empaque']
+// Cada compra de insumo genera un gasto automático en `gastos` — mapeo a la categoría existente.
+const CATEGORIA_GASTO_POR_INSUMO = {
+  Sustrato: 'Insumos cultivo', Macetas: 'Insumos cultivo', Fertilizantes: 'Insumos cultivo',
+  Riego: 'Insumos cultivo', Iluminación: 'Insumos cultivo', Empaque: 'Insumos cultivo',
+  Equipamiento: 'Herramientas',
+}
+const LABEL_TIPO_MOVIMIENTO = { compra: 'Compra', consumo: 'Consumo', ajuste: 'Ajuste', baja: 'Baja' }
+
 // ─── Finanzas: cuentas ──────────────────────────────────────────
 const CUENTA_EFECTIVO = 'Efectivo - Caja Hormi'
 // Cuenta bancaria propia del Hormiguero (CUIT), todavía no abierta — se deja montada ya para que
@@ -3086,6 +3098,236 @@ function TabGastos({ miembro, gastos, presupuestos, onGuardarGasto, onActualizar
   )
 }
 
+// ─── Tab Stock (insumos de cultivo) ────────────────────────────
+function TabStock({ insumosStock, insumosStockMovimientos, onAgregarItem, onEliminarItem, onEditarMinimo, onEditarActual, onRegistrarMovimiento }) {
+  const [categoria, setCategoria] = useState(CATEGORIAS_STOCK_INSUMOS[0])
+  const items = insumosStock.filter(i => i.categoria === categoria)
+  return (
+    <div className="content">
+      <div className="segmented-row segmented-row-sm" style={{ flexWrap: 'wrap' }}>
+        {CATEGORIAS_STOCK_INSUMOS.map(c => (
+          <button key={c} className={`segmented-btn${categoria === c ? ' active' : ''}`} style={{ flex: '0 1 30%' }} onClick={() => setCategoria(c)}>{c}</button>
+        ))}
+      </div>
+      <PanelInsumosStock
+        categoria={categoria}
+        items={items}
+        movimientos={insumosStockMovimientos}
+        onAgregarItem={onAgregarItem}
+        onEliminarItem={onEliminarItem}
+        onEditarMinimo={onEditarMinimo}
+        onEditarActual={onEditarActual}
+        onRegistrarMovimiento={onRegistrarMovimiento}
+      />
+    </div>
+  )
+}
+
+function PanelInsumosStock({ categoria, items, movimientos, onAgregarItem, onEliminarItem, onEditarMinimo, onEditarActual, onRegistrarMovimiento }) {
+  const [toast, showToast] = useToast()
+  const [nuevoNombre, setNuevoNombre] = useState('')
+  const [nuevaUnidad, setNuevaUnidad] = useState('unidad')
+  const [confirmandoBorrar, setConfirmandoBorrar] = useState(null)
+  const [movimientoAbierto, setMovimientoAbierto] = useState(null)
+  const [historialAbierto, setHistorialAbierto] = useState(null)
+
+  async function guardarMinimo(item, nuevoValor) {
+    const res = await onEditarMinimo(item.id, nuevoValor)
+    showToast(res?.ok === false ? `No se pudo actualizar el mínimo de ${item.nombre}` : `${item.nombre}: mínimo actualizado`)
+  }
+  async function guardarActual(item, nuevoValor) {
+    const res = await onEditarActual(item, nuevoValor)
+    showToast(res?.ok === false ? `No se pudo actualizar ${item.nombre}` : `${item.nombre}: stock actualizado`)
+  }
+  function pedirBorrar(item) {
+    if ((item.stock_actual ?? 0) !== 0) {
+      showToast(`No se puede borrar ${item.nombre}: todavía tiene ${item.stock_actual}${item.unidad} en stock. Llevalo a 0 primero.`)
+      return
+    }
+    setConfirmandoBorrar(item.id)
+  }
+  async function confirmarBorrar(item) {
+    const res = await onEliminarItem(item)
+    showToast(res?.ok === false ? `No se pudo borrar ${item.nombre}` : `${item.nombre}: eliminado del catálogo`)
+    setConfirmandoBorrar(null)
+  }
+  async function agregar() {
+    const limpio = nuevoNombre.trim()
+    if (!limpio) return
+    const res = await onAgregarItem(categoria, limpio, nuevaUnidad.trim() || 'unidad')
+    if (res?.ok === false) {
+      showToast(res.error === 'duplicado' ? `Ya existe ${limpio} en el catálogo` : `No se pudo agregar ${limpio}`)
+      return
+    }
+    setNuevoNombre('')
+    showToast(`${limpio}: agregado al catálogo`)
+  }
+
+  return (
+    <div>
+      <div className="card" style={{ marginBottom: 0 }}>
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr auto auto', gap: '0 16px', alignItems: 'center', marginBottom: 14 }}>
+          <span className="form-label">Insumo</span>
+          <span className="form-label">Mínimo</span>
+          <span className="form-label">Actual</span>
+        </div>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+          {items.length === 0 && (
+            <div style={{ fontSize: 13, color: 'var(--text-secondary)' }}>Sin ítems en {categoria} todavía.</div>
+          )}
+          {items.map(item => {
+            const actual = item.stock_actual ?? 0
+            const minimo = item.stock_minimo ?? 0
+            const color = actual === 0 ? '#791F1F' : actual < minimo ? '#854F0B' : 'var(--green-dark)'
+            const compras = movimientos.filter(m => m.insumo_id === item.id && m.tipo === 'compra').sort((a, b) => a.fecha.localeCompare(b.fecha))
+            const frecuenciaTexto = frecuenciaCompra(compras)
+            const historialItem = movimientos.filter(m => m.insumo_id === item.id).sort((a, b) => b.fecha.localeCompare(a.fecha)).slice(0, 8)
+            return (
+              <div key={item.id}>
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr auto auto', gap: '0 16px', alignItems: 'center', marginBottom: 5 }}>
+                  <span style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                    <button className="btn-eliminar-fila" style={{ width: 20, height: 20, fontSize: 10 }} title={`Borrar ${item.nombre} del catálogo`} onClick={() => pedirBorrar(item)}>✕</button>
+                    <span style={{ fontSize: 14, color: 'var(--text-primary)', fontWeight: 500 }}>{item.nombre}</span>
+                  </span>
+                  <span style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                    <CampoStockEditable valor={minimo} color="var(--text-secondary)" onGuardar={v => guardarMinimo(item, v)} />
+                    <span style={{ fontSize: 12, color: 'var(--text-secondary)' }}>{item.unidad}</span>
+                  </span>
+                  <span style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                    <CampoStockEditable valor={actual} color={color} onGuardar={v => guardarActual(item, v)} />
+                    <span style={{ fontSize: 12, color: 'var(--text-secondary)' }}>{item.unidad}</span>
+                  </span>
+                </div>
+                {frecuenciaTexto && <div style={{ fontSize: 11, color: 'var(--text-secondary)', marginBottom: 4 }}>{frecuenciaTexto}</div>}
+                <div style={{ display: 'flex', gap: 12 }}>
+                  <button onClick={() => setMovimientoAbierto(movimientoAbierto === item.id ? null : item.id)} style={btnLinkStyle('var(--green-dark)')}>
+                    {movimientoAbierto === item.id ? 'Cancelar' : '+ Registrar movimiento'}
+                  </button>
+                  {historialItem.length > 0 && (
+                    <button onClick={() => setHistorialAbierto(historialAbierto === item.id ? null : item.id)} style={btnLinkStyle('var(--text-secondary)')}>
+                      {historialAbierto === item.id ? 'Ocultar historial' : 'Ver historial'}
+                    </button>
+                  )}
+                </div>
+                {movimientoAbierto === item.id && (
+                  <MovimientoInsumoForm
+                    item={item}
+                    onGuardar={async payload => {
+                      const res = await onRegistrarMovimiento({ insumo: item, ...payload })
+                      if (res?.ok !== false) { setMovimientoAbierto(null); showToast('Movimiento registrado ✓') }
+                      return res
+                    }}
+                    onCancelar={() => setMovimientoAbierto(null)}
+                  />
+                )}
+                {historialAbierto === item.id && (
+                  <div style={{ marginTop: 8, paddingTop: 8, borderTop: '0.5px dashed var(--border)', display: 'flex', flexDirection: 'column', gap: 4 }}>
+                    {historialItem.map(m => (
+                      <div key={m.id} style={{ fontSize: 11, color: 'var(--text-secondary)' }}>
+                        {formatFechaISOCorta(m.fecha)} · {LABEL_TIPO_MOVIMIENTO[m.tipo]} · <strong style={{ color: 'var(--text-primary)' }}>{m.tipo === 'ajuste' && m.cantidad > 0 ? '+' : ''}{m.cantidad}{item.unidad}</strong>
+                        {m.precio_unitario ? ` · ${formatPesos(m.precio_unitario)}/${item.unidad}` : ''}
+                        {m.miembro ? ` · ${m.miembro}` : ''}
+                        {m.nota ? ` · ${m.nota}` : ''}
+                      </div>
+                    ))}
+                  </div>
+                )}
+                {confirmandoBorrar === item.id && (
+                  <div style={{ marginTop: 6, background: '#FCEBEB', border: '0.5px solid #791F1F', borderRadius: 'var(--radius-md)', padding: 8, display: 'flex', alignItems: 'center', gap: 8 }}>
+                    <span style={{ fontSize: 12, color: '#791F1F', flex: 1 }}>¿Borrar {item.nombre} del catálogo?</span>
+                    <button onClick={() => confirmarBorrar(item)} style={{ padding: '6px 10px', background: '#791F1F', color: 'white', border: 'none', borderRadius: 'var(--radius-md)', fontSize: 12, fontWeight: 600, cursor: 'pointer' }}>Sí, borrar</button>
+                    <button onClick={() => setConfirmandoBorrar(null)} style={{ padding: '6px 10px', background: 'transparent', border: '0.5px solid var(--border-mid)', borderRadius: 'var(--radius-md)', fontSize: 12, cursor: 'pointer' }}>Cancelar</button>
+                  </div>
+                )}
+              </div>
+            )
+          })}
+        </div>
+        <div style={{ marginTop: 12, paddingTop: 12, borderTop: '0.5px solid var(--border)', display: 'flex', gap: 8 }}>
+          <input className="form-control" type="text" placeholder="Nuevo insumo..." value={nuevoNombre} onChange={e => setNuevoNombre(e.target.value)} onKeyDown={e => e.key === 'Enter' && agregar()} style={{ flex: 2 }} />
+          <input className="form-control" type="text" placeholder="Unidad (kg, L...)" value={nuevaUnidad} onChange={e => setNuevaUnidad(e.target.value)} style={{ flex: 1 }} />
+          <button className="btn-submit" style={{ width: 'auto', padding: '0 14px', whiteSpace: 'nowrap' }} onClick={agregar}>+ Agregar</button>
+        </div>
+      </div>
+      <div className={`toast${toast.show ? ' show' : ''}`}>{toast.msg}</div>
+    </div>
+  )
+}
+
+// Select de tipo (Compra/Consumo/Baja) con campos condicionales, mismo patrón que
+// PagosRegistro: precio/locación solo aparecen para 'compra' (es lo único que genera gasto).
+function MovimientoInsumoForm({ item, onGuardar, onCancelar }) {
+  const [tipo, setTipo] = useState('compra')
+  const [cantidad, setCantidad] = useState('')
+  const [precioUnitario, setPrecioUnitario] = useState('')
+  const [fecha, setFecha] = useState(new Date().toISOString().slice(0, 10))
+  const [locacion, setLocacion] = useState('Hormi 1.0')
+  const [nota, setNota] = useState('')
+  const [error, setError] = useState('')
+  const [guardando, setGuardando] = useState(false)
+
+  async function confirmar() {
+    const cant = parseFloat(cantidad)
+    if (!cant || cant <= 0) { setError('Ingresá una cantidad válida.'); return }
+    setGuardando(true)
+    const res = await onGuardar({
+      tipo, cantidad: cant,
+      precioUnitario: tipo === 'compra' && precioUnitario ? parseFloat(precioUnitario) : null,
+      fecha, locacion: tipo === 'compra' ? locacion : null,
+      nota: nota.trim() || null,
+    })
+    setGuardando(false)
+    if (!res?.ok) setError('No se pudo guardar. Intentá de nuevo.')
+  }
+
+  return (
+    <div style={{ marginTop: 10, paddingTop: 10, borderTop: '0.5px solid var(--border)' }}>
+      <div className="form-grid">
+        <div className="form-group">
+          <label className="form-label">Tipo</label>
+          <select className="form-control" value={tipo} onChange={e => setTipo(e.target.value)}>
+            <option value="compra">Compra</option>
+            <option value="consumo">Consumo</option>
+            <option value="baja">Baja (rotura/pérdida)</option>
+          </select>
+        </div>
+        <div className="form-group">
+          <label className="form-label">Cantidad ({item.unidad})</label>
+          <input className="form-control" type="number" min="0" inputMode="decimal" value={cantidad} onChange={e => setCantidad(e.target.value)} />
+        </div>
+        {tipo === 'compra' && (
+          <div className="form-group">
+            <label className="form-label">Precio unitario ($)</label>
+            <InputMonto value={precioUnitario} onChange={setPrecioUnitario} />
+          </div>
+        )}
+        {tipo === 'compra' && (
+          <div className="form-group">
+            <label className="form-label">Locación (gasto)</label>
+            <select className="form-control" value={locacion} onChange={e => setLocacion(e.target.value)}>
+              <option>Hormi 1.0</option>
+              <option>Hormi 2.0</option>
+            </select>
+          </div>
+        )}
+        <div className="form-group">
+          <label className="form-label">Fecha</label>
+          <input className="form-control" type="date" value={fecha} onChange={e => setFecha(e.target.value)} />
+        </div>
+        <div className="form-group full">
+          <label className="form-label">Nota (opcional)</label>
+          <input className="form-control" type="text" value={nota} onChange={e => setNota(e.target.value)} placeholder="Proveedor, motivo..." />
+        </div>
+      </div>
+      {error && <div style={{ fontSize: 12, color: '#791F1F', marginTop: 4 }}>{error}</div>}
+      <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
+        <button className="btn-submit" onClick={confirmar} disabled={guardando} style={{ flex: 1 }}>Guardar movimiento</button>
+        <button onClick={onCancelar} style={{ padding: '0 16px', border: '0.5px solid var(--border-mid)', borderRadius: 'var(--radius-md)', background: 'transparent', cursor: 'pointer', fontSize: 13, color: 'var(--text-secondary)' }}>Cancelar</button>
+      </div>
+    </div>
+  )
+}
+
 // ─── Tab Cultivo (riegos + ciclos) ─────────────────────────────
 const paramsRiego = [
   { key: 'ec', label: 'EC', placeholder: 'Ej: 1.4' },
@@ -3821,6 +4063,82 @@ async function eliminarGeneticaCatalogo(tabla, nombre, stockActual, setFn) {
   return { ok: true }
 }
 
+// ─── Stock de insumos de cultivo (insumos_stock/insumos_stock_movimientos):
+// un solo catálogo con columna `categoria` (no una tabla por categoría como
+// genéticas — acá son 7, no 2), editable desde la app sin deploy.
+async function agregarInsumoStock(categoria, nombre, unidad, listaActual, setFn) {
+  const limpio = nombre.trim()
+  if (!limpio) return { ok: false, error: 'vacio' }
+  if (listaActual.some(i => i.nombre.toLowerCase() === limpio.toLowerCase())) return { ok: false, error: 'duplicado' }
+  const { data, error } = await supabase.from('insumos_stock').insert({ categoria, nombre: limpio, unidad }).select().single()
+  if (error || !data) { console.error('Error agregando insumo', categoria, limpio, error); return { ok: false, error } }
+  setFn(prev => [...prev, data])
+  return { ok: true, data }
+}
+
+async function eliminarInsumoStock(insumo, setFn) {
+  if ((insumo.stock_actual ?? 0) !== 0) return { ok: false, error: 'stock' }
+  const { error } = await supabase.from('insumos_stock').delete().eq('id', insumo.id)
+  if (error) { console.error('Error eliminando insumo', insumo.id, error); return { ok: false, error } }
+  setFn(prev => prev.filter(i => i.id !== insumo.id))
+  return { ok: true }
+}
+
+async function editarStockMinimoInsumo(id, nuevoValor, setFn) {
+  const { data, error } = await supabase.from('insumos_stock').update({ stock_minimo: nuevoValor }).eq('id', id).select().single()
+  if (error || !data) { console.error('Error actualizando mínimo de insumo', id, error); return { ok: false, error } }
+  setFn(prev => prev.map(i => i.id === id ? data : i))
+  return { ok: true }
+}
+
+// Registra un movimiento (compra/consumo/ajuste/baja) y ajusta el stock vivo vía RPC.
+// Una compra con precio primero genera el gasto correspondiente en `gastos` (categoría
+// según CATEGORIA_GASTO_POR_INSUMO) para dejar el gasto_id ya enlazado en el movimiento.
+async function registrarMovimientoInsumo({ insumo, tipo, cantidad, precioUnitario, fecha, miembro, nota, locacion }, setInsumosStock, setInsumosStockMovimientos, setGastos) {
+  const delta = (tipo === 'consumo' || tipo === 'baja') ? -cantidad : cantidad
+  let gastoId = null
+  if (tipo === 'compra' && precioUnitario) {
+    const nuevoGasto = {
+      descripcion: `${insumo.nombre}${nota ? ` — ${nota}` : ''}`,
+      categoria: CATEGORIA_GASTO_POR_INSUMO[insumo.categoria] || 'Insumos cultivo',
+      monto: cantidad * precioUnitario, fecha, mes: mesActual(), locacion,
+      miembro: miembro || null, cuenta: null, presupuesto_id: null, cuenta_estimada: false,
+    }
+    const { data: gasto, error: gastoError } = await supabase.from('gastos').insert(nuevoGasto).select().single()
+    if (gastoError || !gasto) { console.error('Error generando gasto de compra', gastoError); return { ok: false, error: gastoError } }
+    setGastos(prev => [gasto, ...prev])
+    gastoId = gasto.id
+  }
+  const nuevoMovimiento = {
+    insumo_id: insumo.id, tipo, cantidad,
+    precio_unitario: tipo === 'compra' ? (precioUnitario || null) : null,
+    fecha, miembro: miembro || null, nota: nota || null, gasto_id: gastoId,
+  }
+  const { data: movimiento, error: movError } = await supabase.from('insumos_stock_movimientos').insert(nuevoMovimiento).select().single()
+  if (movError || !movimiento) { console.error('Error registrando movimiento de insumo', movError); return { ok: false, error: movError } }
+  setInsumosStockMovimientos(prev => [movimiento, ...prev])
+  const { data: nuevoStock, error: rpcError } = await supabase.rpc('ajustar_stock_insumo', { p_insumo_id: insumo.id, p_delta: delta })
+  if (rpcError) {
+    console.error('Error ajustando stock de insumo', rpcError)
+    alert(`Se guardó el movimiento, pero no se pudo ajustar el stock de ${insumo.nombre}. Revisalo manualmente.`)
+    return { ok: false, error: rpcError }
+  }
+  if (nuevoStock != null) setInsumosStock(prev => prev.map(i => i.id === insumo.id ? { ...i, stock_actual: Number(nuevoStock) } : i))
+  return { ok: true }
+}
+
+// Promedio de días entre compras consecutivas — reemplaza un campo manual de
+// "frecuencia de compra" que nadie mantendría al día.
+function frecuenciaCompra(comprasOrdenadasAsc) {
+  if (comprasOrdenadasAsc.length < 2) return null
+  const dias = []
+  for (let i = 1; i < comprasOrdenadasAsc.length; i++) {
+    dias.push((new Date(comprasOrdenadasAsc[i].fecha) - new Date(comprasOrdenadasAsc[i - 1].fecha)) / 86400000)
+  }
+  const promedio = Math.round(dias.reduce((a, b) => a + b, 0) / dias.length)
+  return `Se compra cada ~${promedio} días en promedio`
+}
+
 // ─── Mapeo DB (snake_case) ↔ app (camelCase) ──────────────────
 // Fuente única de verdad: evita repetir metodoPago/metodo_pago y
 // cuentaEstimada/cuenta_estimada por todo el código.
@@ -3888,6 +4206,8 @@ export default function App() {
   const [geneticasCosecha, setGeneticasCosecha] = useState(GENETICAS)
   const [geneticasEsquejes, setGeneticasEsquejes] = useState(GENETICAS_ESQUEJES)
   const [stockAjustesFallidos, setStockAjustesFallidos] = useState([])
+  const [insumosStock, setInsumosStock] = useState([])
+  const [insumosStockMovimientos, setInsumosStockMovimientos] = useState([])
   const [cargando, setCargando] = useState(true)
   const [errorCarga, setErrorCarga] = useState(false)
   const [intentoCarga, setIntentoCarga] = useState(0)
@@ -3918,7 +4238,7 @@ export default function App() {
     async function cargarDatos() {
       setCargando(true)
       setErrorCarga(false)
-      const [pedidosRes, stockRes, esquejesRes, stockEsquejesRes, insumosRes, insumoPagosRes, gastosRes, presupuestosRes, aportesRes, gastosFijosRes, pedidoPagosRes, esquejePagosRes, cuentasRes, dolaresMovimientosRes, sociosRes, geneticasCosechaRes, geneticasEsquejesRes] = await Promise.all([
+      const [pedidosRes, stockRes, esquejesRes, stockEsquejesRes, insumosRes, insumoPagosRes, gastosRes, presupuestosRes, aportesRes, gastosFijosRes, pedidoPagosRes, esquejePagosRes, cuentasRes, dolaresMovimientosRes, sociosRes, geneticasCosechaRes, geneticasEsquejesRes, insumosStockRes, insumosStockMovimientosRes] = await Promise.all([
         supabase.from('pedidos').select('*').order('created_at', { ascending: false }),
         supabase.from('stock').select('*'),
         supabase.from('esquejes').select('*').order('created_at', { ascending: false }),
@@ -3936,9 +4256,11 @@ export default function App() {
         supabase.from('socios').select('*').order('nombre', { ascending: true }),
         supabase.from('geneticas_cosecha').select('nombre').order('nombre', { ascending: true }),
         supabase.from('geneticas_esquejes').select('nombre').order('nombre', { ascending: true }),
+        supabase.from('insumos_stock').select('*').order('categoria', { ascending: true }).order('nombre', { ascending: true }),
+        supabase.from('insumos_stock_movimientos').select('*').order('fecha', { ascending: false }),
       ])
       if (cancelado) return
-      const conError = [pedidosRes, stockRes, esquejesRes, stockEsquejesRes, insumosRes, insumoPagosRes, gastosRes, presupuestosRes, aportesRes, gastosFijosRes, pedidoPagosRes, esquejePagosRes, cuentasRes, dolaresMovimientosRes, sociosRes, geneticasCosechaRes, geneticasEsquejesRes].filter(r => r.error)
+      const conError = [pedidosRes, stockRes, esquejesRes, stockEsquejesRes, insumosRes, insumoPagosRes, gastosRes, presupuestosRes, aportesRes, gastosFijosRes, pedidoPagosRes, esquejePagosRes, cuentasRes, dolaresMovimientosRes, sociosRes, geneticasCosechaRes, geneticasEsquejesRes, insumosStockRes, insumosStockMovimientosRes].filter(r => r.error)
       if (conError.length > 0) {
         console.error('Error al cargar datos', conError.map(r => r.error))
         setErrorCarga(true)
@@ -3972,6 +4294,8 @@ export default function App() {
       setSocios((sociosRes.data || []).map(conAliasSocio))
       setGeneticasCosecha((geneticasCosechaRes.data || []).map(g => g.nombre))
       setGeneticasEsquejes((geneticasEsquejesRes.data || []).map(g => g.nombre))
+      setInsumosStock(insumosStockRes.data || [])
+      setInsumosStockMovimientos(insumosStockMovimientosRes.data || [])
       setCargando(false)
     }
     cargarDatos()
@@ -4246,6 +4570,18 @@ export default function App() {
     return { ok: true }
   }, [])
 
+  const miembro = miembroDeSesion(sesion)
+
+  const agregarItemStock = useCallback((categoria, nombre, unidad) => agregarInsumoStock(categoria, nombre, unidad, insumosStock, setInsumosStock), [insumosStock])
+  const eliminarItemStock = useCallback(insumo => eliminarInsumoStock(insumo, setInsumosStock), [])
+  const editarMinimoStock = useCallback((id, nuevoValor) => editarStockMinimoInsumo(id, nuevoValor, setInsumosStock), [])
+  const registrarMovStock = useCallback(payload => registrarMovimientoInsumo({ ...payload, miembro }, setInsumosStock, setInsumosStockMovimientos, setGastos), [miembro])
+  const editarActualStock = useCallback((insumo, nuevoValor) => {
+    const delta = Number(nuevoValor) - (insumo.stock_actual ?? 0)
+    if (!Number.isFinite(delta) || delta === 0) return Promise.resolve({ ok: true })
+    return registrarMovimientoInsumo({ insumo, tipo: 'ajuste', cantidad: delta, precioUnitario: null, fecha: new Date().toISOString().slice(0, 10), miembro, nota: null, locacion: null }, setInsumosStock, setInsumosStockMovimientos, setGastos)
+  }, [miembro])
+
   if (chequeandoSesion) return (
     <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100vh', color: 'var(--text-secondary)', fontSize: 14 }}>
       Cargando...
@@ -4273,8 +4609,6 @@ export default function App() {
       </div>
     </div>
   )
-
-  const miembro = miembroDeSesion(sesion)
 
   if (!miembro) return (
     <div style={{ minHeight: '100vh', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: 24, background: 'var(--bg)' }}>
@@ -4315,6 +4649,7 @@ export default function App() {
             )}
           </button>
           <button className={`tab${tab === 'cultivo' ? ' active' : ''}`} onClick={() => irATab('cultivo')}>Cultivo</button>
+          <button className={`tab${tab === 'stock' ? ' active' : ''}`} onClick={() => irATab('stock')}>Stock</button>
         </div>
       </div>
       {tab === 'pedidos' && (
@@ -4369,6 +4704,17 @@ export default function App() {
       {tab === 'gastos' && <TabGastos target={objetivoRevision} miembro={miembro} gastos={gastos} presupuestos={presupuestos} onGuardarGasto={guardarGasto} onActualizarGasto={actualizarGasto} onEliminarGasto={eliminarGasto} />}
       {tab === 'finanzas' && <TabFinanzas onRevisar={irARevisar} pedidos={pedidos} esquejes={esquejes} insumos={insumos} miembro={miembro} gastos={gastos} presupuestos={presupuestos} setPresupuestos={setPresupuestos} aportes={aportes} setAportes={setAportes} gastosFijos={gastosFijos} setGastosFijos={setGastosFijos} pedidoPagos={pedidoPagos} esquejePagos={esquejePagos} insumoPagos={insumoPagos} cuentas={cuentas} setCuentas={setCuentas} dolaresMovimientos={dolaresMovimientos} setDolaresMovimientos={setDolaresMovimientos} resumen={resumenCuentas} resumenDolares={resumenDolares} hallazgosFinanzas={hallazgosFinanzas} />}
       {tab === 'cultivo' && <TabCultivo />}
+      {tab === 'stock' && (
+        <TabStock
+          insumosStock={insumosStock}
+          insumosStockMovimientos={insumosStockMovimientos}
+          onAgregarItem={agregarItemStock}
+          onEliminarItem={eliminarItemStock}
+          onEditarMinimo={editarMinimoStock}
+          onEditarActual={editarActualStock}
+          onRegistrarMovimiento={registrarMovStock}
+        />
+      )}
       {mostrarCambiarPass && <ModalCambiarPassword onCerrar={() => setMostrarCambiarPass(false)} />}
     </div>
   )
