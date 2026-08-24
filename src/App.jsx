@@ -3102,13 +3102,17 @@ function TabGastos({ miembro, gastos, presupuestos, onGuardarGasto, onActualizar
 function TabStock({ insumosStock, insumosStockMovimientos, onAgregarItem, onEliminarItem, onEditarMinimo, onEditarActual, onRegistrarMovimiento }) {
   const [categoria, setCategoria] = useState(CATEGORIAS_STOCK_INSUMOS[0])
   const items = insumosStock.filter(i => i.categoria === categoria)
+  const conteoPorCategoria = {}
+  insumosStock.forEach(i => { conteoPorCategoria[i.categoria] = (conteoPorCategoria[i.categoria] || 0) + 1 })
   return (
     <div className="content">
-      <div className="segmented-row segmented-row-sm" style={{ flexWrap: 'wrap' }}>
+      {/* 7 categorías: mismo criterio que el filtro de Gastos (10 categorías) — un
+          select, no una fila de pills, que a partir de ~5 opciones rompe en varias líneas. */}
+      <select className="form-control" value={categoria} onChange={e => setCategoria(e.target.value)}>
         {CATEGORIAS_STOCK_INSUMOS.map(c => (
-          <button key={c} className={`segmented-btn${categoria === c ? ' active' : ''}`} style={{ flex: '0 1 30%' }} onClick={() => setCategoria(c)}>{c}</button>
+          <option key={c} value={c}>{c} ({conteoPorCategoria[c] || 0})</option>
         ))}
-      </div>
+      </select>
       <PanelInsumosStock
         categoria={categoria}
         items={items}
@@ -3166,86 +3170,98 @@ function PanelInsumosStock({ categoria, items, movimientos, onAgregarItem, onEli
   return (
     <div>
       <div className="card" style={{ marginBottom: 0 }}>
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr auto auto', gap: '0 16px', alignItems: 'center', marginBottom: 14 }}>
-          <span className="form-label">Insumo</span>
-          <span className="form-label">Mínimo</span>
-          <span className="form-label">Actual</span>
-        </div>
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+        <div style={{ display: 'flex', flexDirection: 'column' }}>
           {items.length === 0 && (
-            <div style={{ fontSize: 13, color: 'var(--text-secondary)' }}>Sin ítems en {categoria} todavía.</div>
+            <div style={{ fontSize: 13, color: 'var(--text-secondary)', paddingBottom: 12 }}>Sin ítems en {categoria} todavía.</div>
           )}
-          {items.map(item => {
+          {items.map((item, i) => {
             const actual = item.stock_actual ?? 0
             const minimo = item.stock_minimo ?? 0
             const color = actual === 0 ? '#791F1F' : actual < minimo ? '#854F0B' : 'var(--green-dark)'
             const compras = movimientos.filter(m => m.insumo_id === item.id && m.tipo === 'compra').sort((a, b) => a.fecha.localeCompare(b.fecha))
             const frecuenciaTexto = frecuenciaCompra(compras)
             const historialItem = movimientos.filter(m => m.insumo_id === item.id).sort((a, b) => b.fecha.localeCompare(a.fecha)).slice(0, 8)
+            const expandido = movimientoAbierto === item.id || historialAbierto === item.id || confirmandoBorrar === item.id
             return (
-              <div key={item.id}>
-                <div style={{ display: 'grid', gridTemplateColumns: '1fr auto auto', gap: '0 16px', alignItems: 'center', marginBottom: 5 }}>
-                  <span style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                    <button className="btn-eliminar-fila" style={{ width: 20, height: 20, fontSize: 10 }} title={`Borrar ${item.nombre} del catálogo`} onClick={() => pedirBorrar(item)}>✕</button>
-                    <span style={{ fontSize: 14, color: 'var(--text-primary)', fontWeight: 500 }}>{item.nombre}</span>
-                  </span>
-                  <span style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
-                    <CampoStockEditable valor={minimo} color="var(--text-secondary)" onGuardar={v => guardarMinimo(item, v)} />
-                    <span style={{ fontSize: 12, color: 'var(--text-secondary)' }}>{item.unidad}</span>
-                  </span>
-                  <span style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
-                    <CampoStockEditable valor={actual} color={color} onGuardar={v => guardarActual(item, v)} />
-                    <span style={{ fontSize: 12, color: 'var(--text-secondary)' }}>{item.unidad}</span>
-                  </span>
-                </div>
-                {frecuenciaTexto && <div style={{ fontSize: 11, color: 'var(--text-secondary)', marginBottom: 4 }}>{frecuenciaTexto}</div>}
-                <div style={{ display: 'flex', gap: 12 }}>
-                  <button onClick={() => setMovimientoAbierto(movimientoAbierto === item.id ? null : item.id)} style={btnLinkStyle('var(--green-dark)')}>
-                    {movimientoAbierto === item.id ? 'Cancelar' : '+ Registrar movimiento'}
-                  </button>
-                  {historialItem.length > 0 && (
-                    <button onClick={() => setHistorialAbierto(historialAbierto === item.id ? null : item.id)} style={btnLinkStyle('var(--text-secondary)')}>
-                      {historialAbierto === item.id ? 'Ocultar historial' : 'Ver historial'}
-                    </button>
-                  )}
-                </div>
-                {movimientoAbierto === item.id && (
-                  <MovimientoInsumoForm
-                    item={item}
-                    onGuardar={async payload => {
-                      const res = await onRegistrarMovimiento({ insumo: item, ...payload })
-                      if (res?.ok !== false) { setMovimientoAbierto(null); showToast('Movimiento registrado ✓') }
-                      return res
-                    }}
-                    onCancelar={() => setMovimientoAbierto(null)}
-                  />
-                )}
-                {historialAbierto === item.id && (
-                  <div style={{ marginTop: 8, paddingTop: 8, borderTop: '0.5px dashed var(--border)', display: 'flex', flexDirection: 'column', gap: 4 }}>
-                    {historialItem.map(m => (
-                      <div key={m.id} style={{ fontSize: 11, color: 'var(--text-secondary)' }}>
-                        {formatFechaISOCorta(m.fecha)} · {LABEL_TIPO_MOVIMIENTO[m.tipo]} · <strong style={{ color: 'var(--text-primary)' }}>{m.tipo === 'ajuste' && m.cantidad > 0 ? '+' : ''}{m.cantidad}{item.unidad}</strong>
-                        {m.precio_unitario ? ` · ${formatPesos(m.precio_unitario)}/${item.unidad}` : ''}
-                        {m.miembro ? ` · ${m.miembro}` : ''}
-                        {m.nota ? ` · ${m.nota}` : ''}
+              // Cada ítem es autocontenido (nombre + sus dos números + sus acciones), separado
+              // por un divisor — nada depende de un header compartido más arriba en la lista,
+              // así nombres largos multilínea no desalinean nada del resto de la fila.
+              <div key={item.id} style={{ padding: '14px 0', borderBottom: i < items.length - 1 || expandido ? '0.5px solid var(--border)' : 'none' }}>
+                <div style={{ display: 'flex', alignItems: 'flex-start', gap: 8 }}>
+                  <button className="btn-eliminar-fila" style={{ width: 22, height: 22, fontSize: 10, marginTop: 2, flexShrink: 0 }} title={`Borrar ${item.nombre} del catálogo`} onClick={() => pedirBorrar(item)}>✕</button>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--text-primary)', lineHeight: 1.35 }}>{item.nombre}</div>
+                    {frecuenciaTexto && <div style={{ fontSize: 11, color: 'var(--text-secondary)', marginTop: 2 }}>{frecuenciaTexto}</div>}
+
+                    <div style={{ display: 'flex', gap: 24, marginTop: 10 }}>
+                      <div>
+                        <div className="form-label" style={{ marginBottom: 4 }}>Mínimo</div>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
+                          <CampoStockEditable valor={minimo} color="var(--text-secondary)" onGuardar={v => guardarMinimo(item, v)} />
+                          <span style={{ fontSize: 12, color: 'var(--text-secondary)' }}>{item.unidad}</span>
+                        </div>
                       </div>
-                    ))}
+                      <div>
+                        <div className="form-label" style={{ marginBottom: 4 }}>Actual</div>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
+                          <CampoStockEditable valor={actual} color={color} onGuardar={v => guardarActual(item, v)} />
+                          <span style={{ fontSize: 12, color: 'var(--text-secondary)' }}>{item.unidad}</span>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div style={{ display: 'flex', gap: 14, marginTop: 10 }}>
+                      <button onClick={() => setMovimientoAbierto(movimientoAbierto === item.id ? null : item.id)} style={btnLinkStyle('var(--green-dark)')}>
+                        {movimientoAbierto === item.id ? 'Cancelar' : '+ Registrar movimiento'}
+                      </button>
+                      {historialItem.length > 0 && (
+                        <button onClick={() => setHistorialAbierto(historialAbierto === item.id ? null : item.id)} style={btnLinkStyle('var(--text-secondary)')}>
+                          {historialAbierto === item.id ? 'Ocultar historial' : 'Ver historial'}
+                        </button>
+                      )}
+                    </div>
+
+                    {movimientoAbierto === item.id && (
+                      <div style={{ marginTop: 10, background: 'var(--bg-secondary)', borderRadius: 'var(--radius-md)', padding: 12 }}>
+                        <MovimientoInsumoForm
+                          item={item}
+                          onGuardar={async payload => {
+                            const res = await onRegistrarMovimiento({ insumo: item, ...payload })
+                            if (res?.ok !== false) { setMovimientoAbierto(null); showToast('Movimiento registrado ✓') }
+                            return res
+                          }}
+                          onCancelar={() => setMovimientoAbierto(null)}
+                        />
+                      </div>
+                    )}
+                    {historialAbierto === item.id && (
+                      <div style={{ marginTop: 10, background: 'var(--bg-secondary)', borderRadius: 'var(--radius-md)', padding: 12, display: 'flex', flexDirection: 'column', gap: 6 }}>
+                        {historialItem.map(m => (
+                          <div key={m.id} style={{ fontSize: 11, color: 'var(--text-secondary)' }}>
+                            {formatFechaISOCorta(m.fecha)} · {LABEL_TIPO_MOVIMIENTO[m.tipo]} · <strong style={{ color: 'var(--text-primary)' }}>{m.tipo === 'ajuste' && m.cantidad > 0 ? '+' : ''}{m.cantidad}{item.unidad}</strong>
+                            {m.precio_unitario ? ` · ${formatPesos(m.precio_unitario)}/${item.unidad}` : ''}
+                            {m.miembro ? ` · ${m.miembro}` : ''}
+                            {m.nota ? ` · ${m.nota}` : ''}
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                    {confirmandoBorrar === item.id && (
+                      <div style={{ marginTop: 10, background: '#FCEBEB', border: '0.5px solid #791F1F', borderRadius: 'var(--radius-md)', padding: 8, display: 'flex', alignItems: 'center', gap: 8 }}>
+                        <span style={{ fontSize: 12, color: '#791F1F', flex: 1 }}>¿Borrar {item.nombre} del catálogo?</span>
+                        <button onClick={() => confirmarBorrar(item)} style={{ padding: '6px 10px', background: '#791F1F', color: 'white', border: 'none', borderRadius: 'var(--radius-md)', fontSize: 12, fontWeight: 600, cursor: 'pointer' }}>Sí, borrar</button>
+                        <button onClick={() => setConfirmandoBorrar(null)} style={{ padding: '6px 10px', background: 'transparent', border: '0.5px solid var(--border-mid)', borderRadius: 'var(--radius-md)', fontSize: 12, cursor: 'pointer' }}>Cancelar</button>
+                      </div>
+                    )}
                   </div>
-                )}
-                {confirmandoBorrar === item.id && (
-                  <div style={{ marginTop: 6, background: '#FCEBEB', border: '0.5px solid #791F1F', borderRadius: 'var(--radius-md)', padding: 8, display: 'flex', alignItems: 'center', gap: 8 }}>
-                    <span style={{ fontSize: 12, color: '#791F1F', flex: 1 }}>¿Borrar {item.nombre} del catálogo?</span>
-                    <button onClick={() => confirmarBorrar(item)} style={{ padding: '6px 10px', background: '#791F1F', color: 'white', border: 'none', borderRadius: 'var(--radius-md)', fontSize: 12, fontWeight: 600, cursor: 'pointer' }}>Sí, borrar</button>
-                    <button onClick={() => setConfirmandoBorrar(null)} style={{ padding: '6px 10px', background: 'transparent', border: '0.5px solid var(--border-mid)', borderRadius: 'var(--radius-md)', fontSize: 12, cursor: 'pointer' }}>Cancelar</button>
-                  </div>
-                )}
+                </div>
               </div>
             )
           })}
         </div>
-        <div style={{ marginTop: 12, paddingTop: 12, borderTop: '0.5px solid var(--border)', display: 'flex', gap: 8 }}>
-          <input className="form-control" type="text" placeholder="Nuevo insumo..." value={nuevoNombre} onChange={e => setNuevoNombre(e.target.value)} onKeyDown={e => e.key === 'Enter' && agregar()} style={{ flex: 2 }} />
-          <input className="form-control" type="text" placeholder="Unidad (kg, L...)" value={nuevaUnidad} onChange={e => setNuevaUnidad(e.target.value)} style={{ flex: 1 }} />
+        <div style={{ marginTop: 14, paddingTop: 14, borderTop: '0.5px solid var(--border)', display: 'flex', gap: 8 }}>
+          <input className="form-control" type="text" placeholder="Nuevo insumo..." value={nuevoNombre} onChange={e => setNuevoNombre(e.target.value)} onKeyDown={e => e.key === 'Enter' && agregar()} style={{ flex: 2.2 }} />
+          <input className="form-control" type="text" placeholder="Unidad" value={nuevaUnidad} onChange={e => setNuevaUnidad(e.target.value)} style={{ flex: 1 }} />
           <button className="btn-submit" style={{ width: 'auto', padding: '0 14px', whiteSpace: 'nowrap' }} onClick={agregar}>+ Agregar</button>
         </div>
       </div>
@@ -3281,7 +3297,7 @@ function MovimientoInsumoForm({ item, onGuardar, onCancelar }) {
   }
 
   return (
-    <div style={{ marginTop: 10, paddingTop: 10, borderTop: '0.5px solid var(--border)' }}>
+    <div>
       <div className="form-grid">
         <div className="form-group">
           <label className="form-label">Tipo</label>
@@ -3303,7 +3319,7 @@ function MovimientoInsumoForm({ item, onGuardar, onCancelar }) {
         )}
         {tipo === 'compra' && (
           <div className="form-group">
-            <label className="form-label">Locación (gasto)</label>
+            <label className="form-label">Locación</label>
             <select className="form-control" value={locacion} onChange={e => setLocacion(e.target.value)}>
               <option>Hormi 1.0</option>
               <option>Hormi 2.0</option>
