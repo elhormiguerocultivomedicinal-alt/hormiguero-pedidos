@@ -2327,9 +2327,25 @@ function TarjetaPresupuesto({ p, gastos, aportes, onAlternarCerrado, onAportar, 
 // Historial append-only de validaciones de saldo (cuentas_validaciones): lo que el sistema
 // calculaba vs. lo que se cargó como real en cada evento, para ver con el tiempo dónde se
 // pierde/sobra plata en una cuenta. Compartido entre la card de pesos y la de dólares.
-function DisclosureHistorialValidaciones({ historial, formatMonto }) {
+// Solo la fila más reciente (historial[0], la lista ya viene ordenada desc) se puede editar —
+// es la única que todavía pesa en el saldo actual de la cuenta; las viejas quedan fijas.
+function DisclosureHistorialValidaciones({ historial, formatMonto, onEditar }) {
   const [abierto, setAbierto] = useState(false)
+  const [editandoId, setEditandoId] = useState(null)
+  const [inputValor, setInputValor] = useState('')
+  const [inputFecha, setInputFecha] = useState('')
   if (historial.length === 0) return null
+
+  function abrirEditar(fila) {
+    setInputValor(String(fila.saldo_validado ?? 0))
+    setInputFecha(fila.fecha_corte_nueva)
+    setEditandoId(fila.id)
+  }
+  async function confirmarEditar(fila) {
+    await onEditar(fila, inputValor, inputFecha)
+    setEditandoId(null)
+  }
+
   return (
     <div style={{ marginTop: 10, paddingTop: 10, borderTop: '0.5px solid var(--border)' }}>
       <button className="btn-disclosure" onClick={() => setAbierto(v => !v)} style={{ width: '100%' }}>
@@ -2338,13 +2354,32 @@ function DisclosureHistorialValidaciones({ historial, formatMonto }) {
       </button>
       {abierto && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginTop: 8 }}>
-          {historial.map(v => (
+          {historial.map((v, i) => (
             <div key={v.id} style={{ fontSize: 11, color: 'var(--text-secondary)' }}>
-              {formatFechaHoraISO(v.created_at)} · Calculado {formatMonto(v.saldo_calculado)} → Validado {formatMonto(v.saldo_validado)} ·{' '}
-              <strong style={{ color: v.diferencia < 0 ? '#791F1F' : v.diferencia > 0 ? 'var(--green-dark)' : 'var(--text-secondary)' }}>
-                {v.diferencia === 0 ? 'sin diferencia' : `${v.diferencia > 0 ? '+' : ''}${formatMonto(v.diferencia)}`}
-              </strong>
-              {v.validado_por ? ` · ${v.validado_por}` : ''}
+              {editandoId === v.id ? (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                  <div style={{ display: 'flex', gap: 8 }}>
+                    <InputMonto placeholder="Saldo real validado" value={inputValor} onChange={setInputValor} permiteNegativo style={{ flex: 1 }} />
+                    <input className="form-control" type="date" value={inputFecha} onChange={e => setInputFecha(e.target.value)} style={{ flex: 1 }} />
+                  </div>
+                  <div style={{ display: 'flex', gap: 8 }}>
+                    <button className="btn-submit" style={{ width: 'auto', padding: '0 14px' }} onClick={() => confirmarEditar(v)}>Guardar</button>
+                    <button onClick={() => setEditandoId(null)} style={{ padding: '0 12px', border: '0.5px solid var(--border-mid)', borderRadius: 'var(--radius-md)', background: 'transparent', cursor: 'pointer', fontSize: 13, color: 'var(--text-secondary)' }}>Cancelar</button>
+                  </div>
+                </div>
+              ) : (
+                <>
+                  {formatFechaHoraISO(v.created_at)} · Calculado {formatMonto(v.saldo_calculado)} → Validado {formatMonto(v.saldo_validado)} ·{' '}
+                  <strong style={{ color: v.diferencia < 0 ? '#791F1F' : v.diferencia > 0 ? 'var(--green-dark)' : 'var(--text-secondary)' }}>
+                    {v.diferencia === 0 ? 'sin diferencia' : `${v.diferencia > 0 ? '+' : ''}${formatMonto(v.diferencia)}`}
+                  </strong>
+                  {v.validado_por ? ` · ${v.validado_por}` : ''}
+                  {v.editado_en ? ` · editado por ${v.editado_por || 'alguien'} el ${formatFechaHoraISO(v.editado_en)}` : ''}
+                  {i === 0 && onEditar && (
+                    <> · <button onClick={() => abrirEditar(v)} style={{ ...btnLinkStyle('var(--green-dark)'), fontSize: 11 }}>Editar</button></>
+                  )}
+                </>
+              )}
             </div>
           ))}
         </div>
@@ -2356,7 +2391,7 @@ function DisclosureHistorialValidaciones({ historial, formatMonto }) {
 // Cuentas en dólares: sin pedidos/gastos que las alimenten, el saldo es
 // saldo inicial validado + historial de movimientos manuales (compras/retiros),
 // igual patrón que los aportes de capital de un presupuesto.
-function TarjetaCuentaDolar({ r, historial, onValidarSaldo, onAgregarMovimiento, onEliminarMovimiento }) {
+function TarjetaCuentaDolar({ r, historial, onValidarSaldo, onEditarValidacion, onAgregarMovimiento, onEliminarMovimiento }) {
   const [formAbierto, setFormAbierto] = useState(null) // null | 'saldo' | 'movimiento'
   const [inputSaldo, setInputSaldo] = useState('')
   const [inputCorte, setInputCorte] = useState('')
@@ -2429,9 +2464,7 @@ function TarjetaCuentaDolar({ r, historial, onValidarSaldo, onAgregarMovimiento,
 
       <div style={{ display: 'flex', gap: 14, flexWrap: 'wrap', marginTop: 10 }}>
         <button onClick={abrirMovimiento} style={btnLinkStyle('#33538F')}>+ Movimiento</button>
-        <button onClick={abrirValidarSaldo} style={btnLinkStyle('var(--text-secondary)')}>
-          {r.info.validado ? 'Corregir saldo validado' : 'Validar saldo inicial con el equipo'}
-        </button>
+        <button onClick={abrirValidarSaldo} style={btnLinkStyle('var(--text-secondary)')}>Validar saldo real</button>
       </div>
 
       {formAbierto === 'saldo' && (
@@ -2453,7 +2486,7 @@ function TarjetaCuentaDolar({ r, historial, onValidarSaldo, onAgregarMovimiento,
         </div>
       )}
 
-      <DisclosureHistorialValidaciones historial={historial} formatMonto={formatDolares} />
+      <DisclosureHistorialValidaciones historial={historial} formatMonto={formatDolares} onEditar={onEditarValidacion} />
 
       {formAbierto === 'movimiento' && (
         <div style={{ marginTop: 10 }}>
@@ -2586,6 +2619,28 @@ function TabFinanzas({ pedidos, esquejes, insumos, miembro, gastos, presupuestos
       }
       else showToast('Error al guardar')
     }
+  }
+
+  // Corrige un error de tipeo en la ÚLTIMA validación de una cuenta (la única editable — es
+  // la que ancla el saldo actual). No genera un evento nuevo como actualizarSaldoCuenta: pisa
+  // los datos de esa fila y deja editado_por/editado_en como rastro, mismo patrón que
+  // actualizado_por/actualizado_en en el resto de la app.
+  async function corregirValidacion(fila, valorStr, fechaStr) {
+    const valor = parseFloat(valorStr)
+    if (isNaN(valor)) { showToast('Ingresá un número válido'); return }
+    if (!fechaStr) { showToast('Elegí una fecha de corte'); return }
+    const ahora = new Date().toISOString()
+    const diferencia = valor - fila.saldo_calculado
+    const { error } = await supabase.from('cuentas_validaciones')
+      .update({ saldo_validado: valor, fecha_corte_nueva: fechaStr, diferencia, editado_por: miembro || null, editado_en: ahora })
+      .eq('id', fila.id)
+    if (error) { showToast('Error al guardar'); return }
+    setCuentasValidaciones(prev => prev.map(v => v.id === fila.id ? { ...v, saldo_validado: valor, fecha_corte_nueva: fechaStr, diferencia, editado_por: miembro || null, editado_en: ahora } : v))
+    const { error: errorCuenta } = await supabase.from('cuentas')
+      .update({ saldo_inicial: valor, fecha_corte: fechaStr, actualizado_por: miembro || null, actualizado_en: ahora })
+      .eq('nombre', fila.cuenta)
+    if (!errorCuenta) setCuentas(prev => prev.map(c => c.nombre === fila.cuenta ? { ...c, saldo_inicial: valor, fecha_corte: fechaStr, actualizado_por: miembro || null, actualizado_en: ahora } : c))
+    showToast('Validación corregida ✓')
   }
 
   async function guardarSaldoInicial(nombre) {
@@ -2789,10 +2844,10 @@ function TabFinanzas({ pedidos, esquejes, insumos, miembro, gastos, presupuestos
               </div>
             ) : (
               <button onClick={() => { setEditandoSaldo(r.nombre); setInputSaldo(String(r.saldo ?? 0)); setInputCorte(new Date().toISOString().slice(0, 10)) }} style={{ marginTop: 10, background: 'none', border: 'none', padding: 0, fontSize: 12, color: 'var(--green-dark)', fontWeight: 500, cursor: 'pointer' }}>
-                {r.info.validado ? 'Corregir saldo validado' : 'Validar saldo inicial con el equipo'}
+                Validar saldo real
               </button>
             )}
-            <DisclosureHistorialValidaciones historial={cuentasValidaciones.filter(v => v.cuenta === r.nombre)} formatMonto={formatPesos} />
+            <DisclosureHistorialValidaciones historial={cuentasValidaciones.filter(v => v.cuenta === r.nombre)} formatMonto={formatPesos} onEditar={corregirValidacion} />
           </div>
         ))}
       </div>
@@ -2809,6 +2864,7 @@ function TabFinanzas({ pedidos, esquejes, insumos, miembro, gastos, presupuestos
             r={r}
             historial={cuentasValidaciones.filter(v => v.cuenta === r.nombre)}
             onValidarSaldo={actualizarSaldoCuenta}
+            onEditarValidacion={corregirValidacion}
             onAgregarMovimiento={agregarMovimientoDolares}
             onEliminarMovimiento={eliminarMovimientoDolares}
           />
