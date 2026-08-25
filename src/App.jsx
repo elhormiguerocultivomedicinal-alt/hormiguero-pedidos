@@ -2324,18 +2324,47 @@ function TarjetaPresupuesto({ p, gastos, aportes, onAlternarCerrado, onAportar, 
   )
 }
 
+// Historial append-only de validaciones de saldo (cuentas_validaciones): lo que el sistema
+// calculaba vs. lo que se cargó como real en cada evento, para ver con el tiempo dónde se
+// pierde/sobra plata en una cuenta. Compartido entre la card de pesos y la de dólares.
+function DisclosureHistorialValidaciones({ historial, formatMonto }) {
+  const [abierto, setAbierto] = useState(false)
+  if (historial.length === 0) return null
+  return (
+    <div style={{ marginTop: 10, paddingTop: 10, borderTop: '0.5px solid var(--border)' }}>
+      <button className="btn-disclosure" onClick={() => setAbierto(v => !v)} style={{ width: '100%' }}>
+        <span>{abierto ? 'Ocultar historial de validaciones' : `Ver historial de validaciones (${historial.length})`}</span>
+        {abierto ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
+      </button>
+      {abierto && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginTop: 8 }}>
+          {historial.map(v => (
+            <div key={v.id} style={{ fontSize: 11, color: 'var(--text-secondary)' }}>
+              {formatFechaHoraISO(v.created_at)} · Calculado {formatMonto(v.saldo_calculado)} → Validado {formatMonto(v.saldo_validado)} ·{' '}
+              <strong style={{ color: v.diferencia < 0 ? '#791F1F' : v.diferencia > 0 ? 'var(--green-dark)' : 'var(--text-secondary)' }}>
+                {v.diferencia === 0 ? 'sin diferencia' : `${v.diferencia > 0 ? '+' : ''}${formatMonto(v.diferencia)}`}
+              </strong>
+              {v.validado_por ? ` · ${v.validado_por}` : ''}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
 // Cuentas en dólares: sin pedidos/gastos que las alimenten, el saldo es
 // saldo inicial validado + historial de movimientos manuales (compras/retiros),
 // igual patrón que los aportes de capital de un presupuesto.
-function TarjetaCuentaDolar({ r, onValidarSaldo, onAgregarMovimiento, onEliminarMovimiento }) {
+function TarjetaCuentaDolar({ r, historial, onValidarSaldo, onAgregarMovimiento, onEliminarMovimiento }) {
   const [formAbierto, setFormAbierto] = useState(null) // null | 'saldo' | 'movimiento'
   const [inputSaldo, setInputSaldo] = useState('')
   const [inputCorte, setInputCorte] = useState('')
   const [formMov, setFormMov] = useState({ tipo: 'ingreso', monto: '', concepto: '', fecha: new Date().toISOString().slice(0, 10) })
 
   function abrirValidarSaldo() {
-    setInputSaldo(String(r.info.saldo_inicial || 0))
-    setInputCorte(r.info.validado ? r.info.fecha_corte : new Date().toISOString().slice(0, 10))
+    setInputSaldo(String(r.saldo ?? 0))
+    setInputCorte(new Date().toISOString().slice(0, 10))
     setFormAbierto('saldo')
   }
 
@@ -2407,6 +2436,9 @@ function TarjetaCuentaDolar({ r, onValidarSaldo, onAgregarMovimiento, onEliminar
 
       {formAbierto === 'saldo' && (
         <div style={{ marginTop: 10 }}>
+          <div style={{ fontSize: 11, color: 'var(--text-secondary)', marginBottom: 6 }}>
+            Calculado por el sistema: <strong>{formatDolares(r.saldo)}</strong> — pisalo con lo que contaste real.
+          </div>
           <div style={{ display: 'flex', gap: 8 }}>
             <InputMonto placeholder="Saldo real validado (US$)" value={inputSaldo} onChange={setInputSaldo} permiteNegativo style={{ flex: 1 }} />
             <input className="form-control" type="date" value={inputCorte} onChange={e => setInputCorte(e.target.value)} style={{ flex: 1 }} />
@@ -2420,6 +2452,8 @@ function TarjetaCuentaDolar({ r, onValidarSaldo, onAgregarMovimiento, onEliminar
           </div>
         </div>
       )}
+
+      <DisclosureHistorialValidaciones historial={historial} formatMonto={formatDolares} />
 
       {formAbierto === 'movimiento' && (
         <div style={{ marginTop: 10 }}>
@@ -2454,7 +2488,7 @@ function TarjetaCuentaDolar({ r, onValidarSaldo, onAgregarMovimiento, onEliminar
   )
 }
 
-function TabFinanzas({ pedidos, esquejes, insumos, miembro, gastos, presupuestos, setPresupuestos, aportes, setAportes, gastosFijos, setGastosFijos, pedidoPagos, esquejePagos, insumoPagos, cuentas, setCuentas, dolaresMovimientos, setDolaresMovimientos, resumen, resumenDolares, hallazgosFinanzas, onRevisar }) {
+function TabFinanzas({ pedidos, esquejes, insumos, miembro, gastos, presupuestos, setPresupuestos, aportes, setAportes, gastosFijos, setGastosFijos, pedidoPagos, esquejePagos, insumoPagos, cuentas, setCuentas, dolaresMovimientos, setDolaresMovimientos, cuentasValidaciones, setCuentasValidaciones, resumen, resumenDolares, hallazgosFinanzas, onRevisar }) {
   const [subTab, setSubTab] = useState('general')
   const [editandoSaldo, setEditandoSaldo] = useState(null)
   const [inputSaldo, setInputSaldo] = useState('')
@@ -2513,6 +2547,22 @@ function TabFinanzas({ pedidos, esquejes, insumos, miembro, gastos, presupuestos
 
   const totalDolares = resumenDolares.reduce((s, r) => s + r.saldo, 0)
 
+  // Además de anclar el saldo (como siempre), deja una fila en cuentas_validaciones con lo que
+  // el sistema calculaba justo antes vs. lo que se cargó como real — historial append-only para
+  // poder ver con el tiempo cuánto se corrige por cuenta y dónde se pierde/sobra plata.
+  async function registrarValidacionHistorial(nombre, fechaCorteAnterior, corteStr, valor) {
+    const previa = resumen.find(r => r.nombre === nombre) || resumenDolares.find(r => r.nombre === nombre)
+    const saldoCalculado = previa ? previa.saldo : 0
+    const nuevo = {
+      cuenta: nombre, moneda: CUENTAS_DOLARES.includes(nombre) ? 'USD' : 'ARS',
+      fecha_corte_anterior: fechaCorteAnterior || null, fecha_corte_nueva: corteStr,
+      saldo_calculado: saldoCalculado, saldo_validado: valor, diferencia: valor - saldoCalculado,
+      validado_por: miembro || null,
+    }
+    const { data, error } = await supabase.from('cuentas_validaciones').insert(nuevo).select().single()
+    if (!error && data) setCuentasValidaciones(prev => [data, ...prev])
+  }
+
   async function actualizarSaldoCuenta(nombre, valorStr, corteStr) {
     const valor = parseFloat(valorStr)
     if (isNaN(valor)) { showToast('Ingresá un número válido'); return }
@@ -2521,11 +2571,19 @@ function TabFinanzas({ pedidos, esquejes, insumos, miembro, gastos, presupuestos
     const existente = cuentas.find(c => c.nombre === nombre)
     if (existente) {
       const { error } = await supabase.from('cuentas').update({ saldo_inicial: valor, fecha_corte: corteStr, validado: true, actualizado_por: miembro || null, actualizado_en: ahora }).eq('nombre', nombre)
-      if (!error) { setCuentas(prev => prev.map(c => c.nombre === nombre ? { ...c, saldo_inicial: valor, fecha_corte: corteStr, validado: true, actualizado_por: miembro || null, actualizado_en: ahora } : c)); showToast('Saldo inicial validado ✓') }
+      if (!error) {
+        setCuentas(prev => prev.map(c => c.nombre === nombre ? { ...c, saldo_inicial: valor, fecha_corte: corteStr, validado: true, actualizado_por: miembro || null, actualizado_en: ahora } : c))
+        await registrarValidacionHistorial(nombre, existente.fecha_corte, corteStr, valor)
+        showToast('Saldo inicial validado ✓')
+      }
       else showToast('Error al guardar')
     } else {
       const { data, error } = await supabase.from('cuentas').insert({ nombre, saldo_inicial: valor, fecha_corte: corteStr, validado: true, actualizado_por: miembro || null, actualizado_en: ahora }).select().single()
-      if (!error && data) { setCuentas(prev => [...prev, data]); showToast('Saldo inicial validado ✓') }
+      if (!error && data) {
+        setCuentas(prev => [...prev, data])
+        await registrarValidacionHistorial(nombre, null, corteStr, valor)
+        showToast('Saldo inicial validado ✓')
+      }
       else showToast('Error al guardar')
     }
   }
@@ -2714,6 +2772,9 @@ function TabFinanzas({ pedidos, esquejes, insumos, miembro, gastos, presupuestos
             )}
             {editandoSaldo === r.nombre ? (
               <div style={{ marginTop: 10 }}>
+                <div style={{ fontSize: 11, color: 'var(--text-secondary)', marginBottom: 6 }}>
+                  Calculado por el sistema: <strong>{formatPesos(r.saldo)}</strong> — pisalo con lo que contaste real.
+                </div>
                 <div style={{ display: 'flex', gap: 8 }}>
                   <InputMonto placeholder="Saldo real validado" value={inputSaldo} onChange={setInputSaldo} permiteNegativo style={{ flex: 1 }} />
                   <input className="form-control" type="date" value={inputCorte} onChange={e => setInputCorte(e.target.value)} style={{ flex: 1 }} />
@@ -2727,10 +2788,11 @@ function TabFinanzas({ pedidos, esquejes, insumos, miembro, gastos, presupuestos
                 </div>
               </div>
             ) : (
-              <button onClick={() => { setEditandoSaldo(r.nombre); setInputSaldo(String(r.info.saldo_inicial || 0)); setInputCorte(r.info.validado ? r.info.fecha_corte : new Date().toISOString().slice(0, 10)) }} style={{ marginTop: 10, background: 'none', border: 'none', padding: 0, fontSize: 12, color: 'var(--green-dark)', fontWeight: 500, cursor: 'pointer' }}>
+              <button onClick={() => { setEditandoSaldo(r.nombre); setInputSaldo(String(r.saldo ?? 0)); setInputCorte(new Date().toISOString().slice(0, 10)) }} style={{ marginTop: 10, background: 'none', border: 'none', padding: 0, fontSize: 12, color: 'var(--green-dark)', fontWeight: 500, cursor: 'pointer' }}>
                 {r.info.validado ? 'Corregir saldo validado' : 'Validar saldo inicial con el equipo'}
               </button>
             )}
+            <DisclosureHistorialValidaciones historial={cuentasValidaciones.filter(v => v.cuenta === r.nombre)} formatMonto={formatPesos} />
           </div>
         ))}
       </div>
@@ -2745,6 +2807,7 @@ function TabFinanzas({ pedidos, esquejes, insumos, miembro, gastos, presupuestos
           <TarjetaCuentaDolar
             key={r.nombre}
             r={r}
+            historial={cuentasValidaciones.filter(v => v.cuenta === r.nombre)}
             onValidarSaldo={actualizarSaldoCuenta}
             onAgregarMovimiento={agregarMovimientoDolares}
             onEliminarMovimiento={eliminarMovimientoDolares}
@@ -4216,6 +4279,7 @@ export default function App() {
   const [esquejePagos, setEsquejePagos] = useState([])
   const [cuentas, setCuentas] = useState([])
   const [dolaresMovimientos, setDolaresMovimientos] = useState([])
+  const [cuentasValidaciones, setCuentasValidaciones] = useState([])
   const [socios, setSocios] = useState([])
   const [stockEsquejes, setStockEsquejes] = useState(STOCK_ESQUEJES_INICIAL)
   const [stockEsquejesInicial, setStockEsquejesInicial] = useState(STOCK_ESQUEJES_INICIAL)
@@ -4254,7 +4318,7 @@ export default function App() {
     async function cargarDatos() {
       setCargando(true)
       setErrorCarga(false)
-      const [pedidosRes, stockRes, esquejesRes, stockEsquejesRes, insumosRes, insumoPagosRes, gastosRes, presupuestosRes, aportesRes, gastosFijosRes, pedidoPagosRes, esquejePagosRes, cuentasRes, dolaresMovimientosRes, sociosRes, geneticasCosechaRes, geneticasEsquejesRes, insumosStockRes, insumosStockMovimientosRes] = await Promise.all([
+      const [pedidosRes, stockRes, esquejesRes, stockEsquejesRes, insumosRes, insumoPagosRes, gastosRes, presupuestosRes, aportesRes, gastosFijosRes, pedidoPagosRes, esquejePagosRes, cuentasRes, dolaresMovimientosRes, cuentasValidacionesRes, sociosRes, geneticasCosechaRes, geneticasEsquejesRes, insumosStockRes, insumosStockMovimientosRes] = await Promise.all([
         supabase.from('pedidos').select('*').order('created_at', { ascending: false }),
         supabase.from('stock').select('*'),
         supabase.from('esquejes').select('*').order('created_at', { ascending: false }),
@@ -4269,6 +4333,7 @@ export default function App() {
         supabase.from('esqueje_pagos').select('*').order('created_at', { ascending: false }),
         supabase.from('cuentas').select('*'),
         supabase.from('dolares_movimientos').select('*').order('fecha', { ascending: false }),
+        supabase.from('cuentas_validaciones').select('*').order('created_at', { ascending: false }),
         supabase.from('socios').select('*').order('nombre', { ascending: true }),
         supabase.from('geneticas_cosecha').select('nombre').order('nombre', { ascending: true }),
         supabase.from('geneticas_esquejes').select('nombre').order('nombre', { ascending: true }),
@@ -4276,7 +4341,7 @@ export default function App() {
         supabase.from('insumos_stock_movimientos').select('*').order('fecha', { ascending: false }),
       ])
       if (cancelado) return
-      const conError = [pedidosRes, stockRes, esquejesRes, stockEsquejesRes, insumosRes, insumoPagosRes, gastosRes, presupuestosRes, aportesRes, gastosFijosRes, pedidoPagosRes, esquejePagosRes, cuentasRes, dolaresMovimientosRes, sociosRes, geneticasCosechaRes, geneticasEsquejesRes, insumosStockRes, insumosStockMovimientosRes].filter(r => r.error)
+      const conError = [pedidosRes, stockRes, esquejesRes, stockEsquejesRes, insumosRes, insumoPagosRes, gastosRes, presupuestosRes, aportesRes, gastosFijosRes, pedidoPagosRes, esquejePagosRes, cuentasRes, dolaresMovimientosRes, cuentasValidacionesRes, sociosRes, geneticasCosechaRes, geneticasEsquejesRes, insumosStockRes, insumosStockMovimientosRes].filter(r => r.error)
       if (conError.length > 0) {
         console.error('Error al cargar datos', conError.map(r => r.error))
         setErrorCarga(true)
@@ -4307,6 +4372,7 @@ export default function App() {
       setEsquejePagos(esquejePagosRes.data || [])
       setCuentas(cuentasRes.data || [])
       setDolaresMovimientos(dolaresMovimientosRes.data || [])
+      setCuentasValidaciones(cuentasValidacionesRes.data || [])
       setSocios((sociosRes.data || []).map(conAliasSocio))
       setGeneticasCosecha((geneticasCosechaRes.data || []).map(g => g.nombre))
       setGeneticasEsquejes((geneticasEsquejesRes.data || []).map(g => g.nombre))
@@ -4369,8 +4435,9 @@ export default function App() {
     resumen: resumenCuentas, resumenDolares, corteMinimo: corteMinimoFinanzas,
     cuentasConocidas: CUENTAS, cuentasDolaresConocidas: CUENTAS_DOLARES,
     cuentaEfectivo: CUENTA_EFECTIVO, cuentaHormiguero: CUENTA_HORMIGUERO,
+    cuentasValidaciones,
   }, { pesos: formatPesos, dolares: formatDolares, fechaISO: formatFechaISOSinAnio }),
-  [cuentas, dolaresMovimientos, gastos, presupuestos, aportes, pedidoPagos, esquejePagos, insumoPagos, pedidos, esquejes, insumos, resumenCuentas, resumenDolares, corteMinimoFinanzas])
+  [cuentas, dolaresMovimientos, gastos, presupuestos, aportes, pedidoPagos, esquejePagos, insumoPagos, pedidos, esquejes, insumos, resumenCuentas, resumenDolares, corteMinimoFinanzas, cuentasValidaciones])
 
   const guardarPedido = useCallback(async p => {
     const { data, error } = await supabase.from('pedidos').insert(pedidoToDB(p)).select().single()
@@ -4718,7 +4785,7 @@ export default function App() {
         />
       )}
       {tab === 'gastos' && <TabGastos target={objetivoRevision} miembro={miembro} gastos={gastos} presupuestos={presupuestos} onGuardarGasto={guardarGasto} onActualizarGasto={actualizarGasto} onEliminarGasto={eliminarGasto} />}
-      {tab === 'finanzas' && <TabFinanzas onRevisar={irARevisar} pedidos={pedidos} esquejes={esquejes} insumos={insumos} miembro={miembro} gastos={gastos} presupuestos={presupuestos} setPresupuestos={setPresupuestos} aportes={aportes} setAportes={setAportes} gastosFijos={gastosFijos} setGastosFijos={setGastosFijos} pedidoPagos={pedidoPagos} esquejePagos={esquejePagos} insumoPagos={insumoPagos} cuentas={cuentas} setCuentas={setCuentas} dolaresMovimientos={dolaresMovimientos} setDolaresMovimientos={setDolaresMovimientos} resumen={resumenCuentas} resumenDolares={resumenDolares} hallazgosFinanzas={hallazgosFinanzas} />}
+      {tab === 'finanzas' && <TabFinanzas onRevisar={irARevisar} pedidos={pedidos} esquejes={esquejes} insumos={insumos} miembro={miembro} gastos={gastos} presupuestos={presupuestos} setPresupuestos={setPresupuestos} aportes={aportes} setAportes={setAportes} gastosFijos={gastosFijos} setGastosFijos={setGastosFijos} pedidoPagos={pedidoPagos} esquejePagos={esquejePagos} insumoPagos={insumoPagos} cuentas={cuentas} setCuentas={setCuentas} dolaresMovimientos={dolaresMovimientos} setDolaresMovimientos={setDolaresMovimientos} cuentasValidaciones={cuentasValidaciones} setCuentasValidaciones={setCuentasValidaciones} resumen={resumenCuentas} resumenDolares={resumenDolares} hallazgosFinanzas={hallazgosFinanzas} />}
       {tab === 'cultivo' && <TabCultivo />}
       {tab === 'stock' && (
         <TabStock

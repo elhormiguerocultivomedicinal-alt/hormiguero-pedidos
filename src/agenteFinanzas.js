@@ -234,7 +234,34 @@ function chequearSaldosNegativos({ resumen, resumenDolares, cuentaEfectivo, cuen
   return hallazgos
 }
 
-// ── 9) presupuesto_id de un gasto huérfano o de otra locación ──
+// ── 9) Diferencia grande entre lo calculado y lo validado al confirmar un saldo ──
+// Umbrales combinados (fijo Y porcentaje deben superarse los dos) para no generar
+// ruido ni en cuentas chicas ni en diferencias insignificantes de cuentas grandes.
+// Elegidos por mí, no validados a fondo — ajustar si generan ruido o quedan cortos.
+const UMBRAL_DIFERENCIA_ARS_FIJO = 10000
+const UMBRAL_DIFERENCIA_ARS_PCT = 0.10
+const UMBRAL_DIFERENCIA_USD_FIJO = 15
+const UMBRAL_DIFERENCIA_USD_PCT = 0.10
+function chequearDiferenciaValidacion({ cuentasValidaciones, cuentaEfectivo, cuentaHormiguero, resumen, resumenDolares }, fmt) {
+  const ultimaPorCuenta = new Map()
+  ;[...cuentasValidaciones].sort((a, b) => new Date(a.created_at) - new Date(b.created_at)).forEach(v => ultimaPorCuenta.set(v.cuenta, v))
+  const infoPorCuenta = new Map([...resumen, ...resumenDolares].map(r => [r.nombre, r.info]))
+  return [...ultimaPorCuenta.values()].filter(v => {
+    const fijo = v.moneda === 'USD' ? UMBRAL_DIFERENCIA_USD_FIJO : UMBRAL_DIFERENCIA_ARS_FIJO
+    const pct = v.moneda === 'USD' ? UMBRAL_DIFERENCIA_USD_PCT : UMBRAL_DIFERENCIA_ARS_PCT
+    const diff = Math.abs(v.diferencia)
+    return diff >= fijo && diff / Math.max(Math.abs(v.saldo_calculado), 1) >= pct
+  }).map(v => {
+    const formatear = v.moneda === 'USD' ? fmt.dolares : fmt.pesos
+    return {
+      severidad: 'error', responsable: resolverResponsableCuenta(v.cuenta, infoPorCuenta.get(v.cuenta), { cuentaEfectivo, cuentaHormiguero }), titulo: 'Diferencia grande al validar',
+      mensaje: `Al validar "${v.cuenta}" el ${fmt.fechaISO(v.fecha_corte_nueva)}, lo que calculaba el sistema (${formatear(v.saldo_calculado)}) no coincidió con lo que ${v.validado_por || 'alguien'} cargó como real (${formatear(v.saldo_validado)}) — diferencia de ${formatear(v.diferencia)}. Repasá los movimientos de esa cuenta desde la validación anterior para encontrar dónde está la diferencia.`,
+      objetivo: null,
+    }
+  })
+}
+
+// ── 11) presupuesto_id de un gasto huérfano o de otra locación ──
 function chequearPresupuestosGasto({ gastos, presupuestos }, fmt) {
   const porId = new Map(presupuestos.map(p => [p.id, p]))
   return gastos.filter(g => g.presupuesto_id != null).filter(g => {
@@ -253,7 +280,7 @@ function chequearPresupuestosGasto({ gastos, presupuestos }, fmt) {
   })
 }
 
-// ── 10) Cuenta usada que no está en ninguna lista conocida (typo, cuenta vieja, etc.) ──
+// ── 11) Cuenta usada que no está en ninguna lista conocida (typo, cuenta vieja, etc.) ──
 function chequearCuentasHuerfanas({ pedidoPagos, esquejePagos, insumoPagos, gastos, dolaresMovimientos, cuentasConocidas, cuentasDolaresConocidas, pedidos, esquejes, insumos }, fmt) {
   const hallazgos = []
   const revisarPagos = (pagos, fk, registros, tipoRegistro, etiqueta) => {
@@ -289,7 +316,7 @@ function chequearCuentasHuerfanas({ pedidoPagos, esquejePagos, insumoPagos, gast
   return hallazgos
 }
 
-// ── 11) Aporte de capital a un presupuesto que ya no existe ──
+// ── 12) Aporte de capital a un presupuesto que ya no existe ──
 function chequearAportesHuerfanos({ aportes, presupuestos }, fmt) {
   const ids = new Set(presupuestos.map(p => p.id))
   return aportes.filter(a => !ids.has(a.presupuesto_id)).map(a => ({
@@ -302,7 +329,7 @@ function chequearAportesHuerfanos({ aportes, presupuestos }, fmt) {
 // datos: { cuentas, dolaresMovimientos, gastos, presupuestos, aportes,
 //   pedidoPagos, esquejePagos, insumoPagos, pedidos, esquejes, insumos,
 //   resumen, resumenDolares, cuentasConocidas, cuentasDolaresConocidas,
-//   cuentaEfectivo, cuentaHormiguero, corteMinimo }
+//   cuentaEfectivo, cuentaHormiguero, corteMinimo, cuentasValidaciones }
 // fmt: { pesos, dolares, fechaISO } — formateadores ya existentes en App.jsx,
 // se inyectan para no duplicar esa lógica acá (fechaISO se pasa sin año).
 export function evaluarFinanzas(datos, fmt) {
@@ -314,6 +341,7 @@ export function evaluarFinanzas(datos, fmt) {
     ...chequearFechas(datos, fmt),
     ...chequearCuentasDesactualizadas(datos, fmt),
     ...chequearSaldosNegativos(datos, fmt),
+    ...chequearDiferenciaValidacion(datos, fmt),
     ...chequearPresupuestosGasto(datos, fmt),
     ...chequearCuentasHuerfanas(datos, fmt),
     ...chequearAportesHuerfanos(datos, fmt),
