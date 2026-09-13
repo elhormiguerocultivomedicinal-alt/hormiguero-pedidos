@@ -145,9 +145,11 @@ const CUENTAS_BANCARIAS = ['NaranjaX - Nacho', 'NaranjaX - Nico', 'NaranjaX - Br
 const CUENTAS = [...CUENTAS_BANCARIAS, CUENTA_EFECTIVO]
 // Transferencia de una venta de membresía: siempre a CUENTA_HORMIGUERO, sin elegir — todas las
 // transferencias de membresías van a la misma cuenta de la organización, no a una personal.
+// Efectivo arranca en CUENTA_EFECTIVO (cuentaPara/handleMetodoPago la preseleccionan) pero queda
+// editable, a diferencia de una membresía: puede haber que corregirla a otra cuenta real.
 function opcionesCuenta(metodoPago, esMembresia) {
-  if (metodoPago === 'Efectivo') return [CUENTA_EFECTIVO]
   if (esMembresia) return [CUENTA_HORMIGUERO]
+  if (metodoPago === 'Efectivo') return CUENTAS
   return CUENTAS_BANCARIAS
 }
 const CUENTAS_DOLARES = ['NaranjaX (Dólar) - Nacho', 'NaranjaX (Dólar) - Nico', 'Lemon (Dólar) - Checho']
@@ -575,30 +577,36 @@ function PagosRegistro({ registro, pagos, total, miembro, onAgregarPago, onEdita
 
   return (
     <div onClick={e => e.stopPropagation()}>
-      {!compacto && propios.length > 0 && (
-        <div style={{ marginTop: 10, paddingTop: 10, borderTop: '0.5px solid var(--border)', display: 'flex', flexDirection: 'column', gap: 5 }}>
-          <div className="form-label">Historial de pagos</div>
-          {propios.map(pg => (
-            formPara === pg.id ? (
-              <div key={pg.id} style={{ padding: '4px 0 8px', borderBottom: '0.5px dashed var(--border)' }}>{camposForm}</div>
-            ) : (
-              <div key={pg.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
-                <span style={{ fontSize: 11, color: 'var(--text-secondary)' }}>
-                  {formatFechaISOCorta(pg.fecha)} · <strong style={{ color: 'var(--text-primary)' }}>{formatPesos(pg.monto)}</strong>{pg.cuenta ? ` · ${pg.cuenta}` : ' · sin cuenta'}{pg.cuenta_estimada ? <span style={{ color: '#854F0B' }}> · estimada</span> : null}
-                </span>
-                <div style={{ display: 'flex', gap: 10, flexShrink: 0 }}>
-                  <button onClick={() => abrirEditar(pg)} style={btnLinkStyle('var(--text-secondary)')}>Editar</button>
-                  <button onClick={() => onEliminarPago(pg.id)} style={{ ...btnLinkStyle('#791F1F'), fontSize: 14, lineHeight: 1 }}>×</button>
-                </div>
-              </div>
-            )
-          ))}
-          <div style={{ fontSize: 11, color: 'var(--text-secondary)', marginTop: 2 }}>{formatPesos(cobrado)} de {formatPesos(total)} cobrado</div>
+      {propios.length > 0 && (
+        <div style={{ marginTop: compacto ? 0 : 10, paddingTop: compacto ? 0 : 10, borderTop: compacto ? undefined : '0.5px solid var(--border)', display: 'flex', flexDirection: 'column', gap: 5 }}>
+          {!compacto && (
+            <>
+              <div className="form-label">Historial de pagos</div>
+              {propios.map(pg => (
+                formPara === pg.id ? (
+                  <div key={pg.id} style={{ padding: '4px 0 8px', borderBottom: '0.5px dashed var(--border)' }}>{camposForm}</div>
+                ) : (
+                  <div key={pg.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
+                    <span style={{ fontSize: 11, color: 'var(--text-secondary)' }}>
+                      {formatFechaISOCorta(pg.fecha)} · <strong style={{ color: 'var(--text-primary)' }}>{formatPesos(pg.monto)}</strong>{pg.cuenta ? ` · ${pg.cuenta}` : ' · sin cuenta'}{pg.cuenta_estimada ? <span style={{ color: '#854F0B' }}> · estimada</span> : null}
+                    </span>
+                    <div style={{ display: 'flex', gap: 10, flexShrink: 0 }}>
+                      <button onClick={() => abrirEditar(pg)} style={btnLinkStyle('var(--text-secondary)')}>Editar</button>
+                      <button onClick={() => onEliminarPago(pg.id)} style={{ ...btnLinkStyle('#791F1F'), fontSize: 14, lineHeight: 1 }}>×</button>
+                    </div>
+                  </div>
+                )
+              ))}
+            </>
+          )}
+          {/* Antes, en modo compacto (acordeón de meses) este resumen solo se veía en un tooltip
+              de hover — inutilizable en mobile/touch. Ahora siempre queda como texto visible. */}
+          <div style={{ fontSize: 11, color: 'var(--text-secondary)' }}>{formatPesos(cobrado)} de {formatPesos(total)} cobrado</div>
         </div>
       )}
 
       {formPara === null && (
-        <button onClick={abrirAgregar} style={{ ...btnLinkStyle('var(--green-dark)'), marginTop: compacto ? 0 : 10 }}>+ Registrar cobro</button>
+        <button className="btn-agregar-fila" onClick={abrirAgregar} style={{ marginTop: compacto ? 6 : 10, padding: compacto ? '7px 9px' : '9px', fontSize: compacto ? 12 : 13 }}>+ Registrar cobro</button>
       )}
       {formPara === 'agregar' && (
         <div style={{ marginTop: 10, paddingTop: 10, borderTop: compacto ? undefined : '0.5px solid var(--border)' }}>{camposForm}</div>
@@ -630,6 +638,7 @@ function ModalEditarRegistro({ cfg, registro, pagos, miembro, onAgregarPago, onE
   const [confirmarTotal, setConfirmarTotal] = useState(false)
   const [errorMonto, setErrorMonto] = useState('')
   const [errorCampos, setErrorCampos] = useState('')
+  const [guardando, setGuardando] = useState(false)
 
   const set = (k, v) => setForm(f => ({ ...f, [k]: v }))
   const precioFila = f => form.esMembresia ? (MEMBRESIAS[form.tier]?.precioPorGramo ?? '') : f.precio
@@ -656,6 +665,7 @@ function ModalEditarRegistro({ cfg, registro, pagos, miembro, onAgregarPago, onE
   }
 
   function guardar(confirmarCambioTotal = false) {
+    if (guardando) return
     const filasValidas = form.filas.filter(f => f.nombre)
     const sinCantidad = filasValidas.some(f => !parseFloat(f.cantidad))
     if ((requiereNombre && !form.socio.trim()) || filasValidas.length === 0 || sinCantidad) {
@@ -683,6 +693,9 @@ function ModalEditarRegistro({ cfg, registro, pagos, miembro, onAgregarPago, onE
     let mes = form.mes
     const partes = form.fecha.split('/')
     if (partes.length === 3) mes = `${parseInt(partes[1])}/${partes[2]}`
+    // onGuardar es fire-and-forget (el padre cierra el modal apenas lo llama, sin esperar el
+    // resultado) — guardando no se vuelve a poner en false a propósito, el modal desmonta enseguida.
+    setGuardando(true)
     onGuardar({
       ...registro, ...form, mes, geneticas, total, precio: form.precio,
       membresia: form.esMembresia ? form.tier : null,
@@ -808,7 +821,7 @@ function ModalEditarRegistro({ cfg, registro, pagos, miembro, onAgregarPago, onE
             ⚠ Este {cfg.singular} es histórico (sin precio por genética) y el total no coincide con precio × cantidad. Si guardás, el total pasa de {formatPesos(registro.total)} a {formatPesos(total)}.
             {confirmarTotal && (
               <div style={{ marginTop: 8, display: 'flex', gap: 8 }}>
-                <button onClick={() => guardar(true)} style={{ flex: 1, padding: '7px', background: '#854F0B', color: 'white', border: 'none', borderRadius: 'var(--radius-md)', fontSize: 12, fontWeight: 600, cursor: 'pointer' }}>Sí, actualizar el total</button>
+                <button onClick={() => guardar(true)} disabled={guardando} style={{ flex: 1, padding: '7px', background: '#854F0B', color: 'white', border: 'none', borderRadius: 'var(--radius-md)', fontSize: 12, fontWeight: 600, cursor: 'pointer', opacity: guardando ? 0.6 : 1 }}>Sí, actualizar el total</button>
                 <button onClick={() => setConfirmarTotal(false)} style={{ flex: 1, padding: '7px', border: '0.5px solid var(--border-mid)', borderRadius: 'var(--radius-md)', background: 'transparent', fontSize: 12, cursor: 'pointer' }}>Cancelar</button>
               </div>
             )}
@@ -833,7 +846,7 @@ function ModalEditarRegistro({ cfg, registro, pagos, miembro, onAgregarPago, onE
             {errorCampos}
           </div>
         )}
-        <button className="btn-submit" style={{ marginTop: 16, ...(cfg.btnBg ? { background: cfg.btnBg } : {}) }} onClick={() => guardar()}>Guardar cambios</button>
+        <button className="btn-submit" style={{ marginTop: 16, ...(cfg.btnBg ? { background: cfg.btnBg } : {}), opacity: guardando ? 0.6 : 1 }} disabled={guardando} onClick={() => guardar()}>Guardar cambios</button>
         {!confirmando ? (
           <button onClick={() => setConfirmando(true)} style={{ width: '100%', marginTop: 8, padding: '10px', border: '0.5px solid #791F1F', borderRadius: 'var(--radius-md)', background: 'transparent', color: '#791F1F', fontSize: 14, fontWeight: 500, cursor: 'pointer' }}>
             {cfg.txtEliminar}
@@ -998,6 +1011,11 @@ function FormRegistro({ cfg, onGuardar, onAgregarPago, miembro, tipoRegistro = '
   })
   const [form, setForm] = useState(initial)
   const [toast, showToast] = useToast()
+  const [guardando, setGuardando] = useState(false)
+  // Una venta nueva de membresía solo puede quedar a nombre de un socio activo — a un socio
+  // desactivado no se le vende una membresía nueva (sí se sigue viendo su historial ya cargado,
+  // eso lo maneja ModalEditarRegistro con la lista completa, sin filtrar).
+  const sociosActivos = (socios || []).filter(s => s.activo !== false)
 
   const set = (key, val) => setForm(f => ({ ...f, [key]: val }))
   const precioFila = f => form.esMembresia ? (MEMBRESIAS[form.tier]?.precioPorGramo ?? '') : f.precio
@@ -1023,6 +1041,7 @@ function FormRegistro({ cfg, onGuardar, onAgregarPago, miembro, tipoRegistro = '
   }
 
   async function guardar() {
+    if (guardando) return
     const filasValidas = form.filas.filter(f => f.nombre)
     const sinCantidad = filasValidas.some(f => !parseFloat(f.cantidad))
     if ((requiereNombre && !form.socio.trim()) || filasValidas.length === 0 || sinCantidad) {
@@ -1063,16 +1082,21 @@ function FormRegistro({ cfg, onGuardar, onAgregarPago, miembro, tipoRegistro = '
       socioId: form.esMembresia ? (form.socioId || null) : null,
       entregado: esRegalo ? true : form.entregado,
     }
-    const res = await onGuardar(registro)
-    if (!res?.ok) {
-      showToast('No se pudo guardar. Revisá tu conexión e intentá de nuevo.')
-      return
+    setGuardando(true)
+    try {
+      const res = await onGuardar(registro)
+      if (!res?.ok) {
+        showToast('No se pudo guardar. Revisá tu conexión e intentá de nuevo.')
+        return
+      }
+      if (form.cobradoAhora && res.data) {
+        await onAgregarPago(res.data, { monto: montoPago, metodo_pago: form.metodoPago, cuenta: form.cuenta, fecha: form.fechaPago, cuenta_estimada: false, creado_por: miembro || null })
+      }
+      setForm(initial())
+      showToast(esRegalo ? 'Regalo guardado ✓' : (cfg.txtGuardado || `${cfg.singular[0].toUpperCase()}${cfg.singular.slice(1)} guardado ✓`))
+    } finally {
+      setGuardando(false)
     }
-    if (form.cobradoAhora && res.data) {
-      await onAgregarPago(res.data, { monto: montoPago, metodo_pago: form.metodoPago, cuenta: form.cuenta, fecha: form.fechaPago, cuenta_estimada: false, creado_por: miembro || null })
-    }
-    setForm(initial())
-    showToast(esRegalo ? 'Regalo guardado ✓' : (cfg.txtGuardado || `${cfg.singular[0].toUpperCase()}${cfg.singular.slice(1)} guardado ✓`))
   }
 
   return (
@@ -1113,7 +1137,7 @@ function FormRegistro({ cfg, onGuardar, onAgregarPago, miembro, tipoRegistro = '
               {form.esMembresia ? (
                 <select className="form-control" value={form.socioId} onChange={e => handleSocioId(e.target.value)}>
                   <option value="">Seleccionar socio...</option>
-                  {(socios || []).map(s => <option key={s.id} value={s.id}>{s.nombre}</option>)}
+                  {sociosActivos.map(s => <option key={s.id} value={s.id}>{s.nombre}</option>)}
                 </select>
               ) : (
                 <input className="form-control" type="text" placeholder={cfg.placeholderSocio || 'Nombre del socio...'} value={form.socio} onChange={e => set('socio', e.target.value)} />
@@ -1225,7 +1249,7 @@ function FormRegistro({ cfg, onGuardar, onAgregarPago, miembro, tipoRegistro = '
         </div>
       </div>
       )}
-      <button className="btn-submit" style={cfg.btnBg ? { background: cfg.btnBg } : undefined} onClick={guardar}>{esRegalo ? 'Guardar regalo' : `Guardar ${cfg.singular}`}</button>
+      <button className="btn-submit" style={{ ...(cfg.btnBg ? { background: cfg.btnBg } : {}), opacity: guardando ? 0.6 : 1 }} disabled={guardando} onClick={guardar}>{esRegalo ? 'Guardar regalo' : `Guardar ${cfg.singular}`}</button>
       <div className={`toast${toast.show ? ' show' : ''}`}>{toast.msg}</div>
     </div>
   )
@@ -1270,12 +1294,12 @@ function ListaRegistrosPorMes({ cfg, registros, onActualizar, onEliminar, pagos,
         <div className="stat-card"><div className="stat-num" style={{ fontSize: 16 }}>{formatPesos(totalVendido)}</div><div className="stat-lbl">Vendido</div></div>
         <div className="stat-card"><div className="stat-num" style={{ color: sinEntregar > 0 ? '#854F0B' : undefined }}>{sinEntregar}</div><div className="stat-lbl">Sin entregar</div></div>
       </div>
-      <div className="filtros-row">
+      <div className="filtros-row" style={{ marginTop: 12 }}>
         {[['sin-entregar', 'Sin entregar'], ['sin-cobrar', 'Sin cobrar'], ['parcial', 'Parcial'], ['todos', 'Todos']].map(([key, label]) => (
           <button key={key} className={`filtro-btn${filtroEstado === key ? ' active' : ''}`} onClick={() => setFiltroEstado(key)}>{label}</button>
         ))}
       </div>
-      <div className="pedidos-list">
+      <div className="pedidos-list" style={{ marginTop: 12 }}>
         {filtrados.length === 0
           ? <div className="empty-state">No hay {cfg.plural} para mostrar.</div>
           : meses.map(mes => {
@@ -1291,7 +1315,7 @@ function ListaRegistrosPorMes({ cfg, registros, onActualizar, onEliminar, pagos,
                   </div>
                   <div className="pedido-right">
                     <span className="pedido-total">{formatPesos(subtotalMes)}</span>
-                    <span className="pedido-editar-hint">{abierto ? 'Ocultar ▴' : 'Ver ▾'}</span>
+                    <span className="pedido-editar-hint hint-disclosure">{abierto ? 'Ocultar ▴' : 'Ver ▾'}</span>
                   </div>
                 </div>
                 {abierto && (
@@ -1332,7 +1356,7 @@ function ListaRegistrosPorMes({ cfg, registros, onActualizar, onEliminar, pagos,
                             <span className="pedido-editar-hint">Tocar para editar</span>
                           </div>
                           {r.tipo === 'cliente' && (
-                            <div style={{ gridColumn: '1 / -1' }}>
+                            <div style={{ gridColumn: '1 / -1', marginTop: 10, paddingTop: 10, borderTop: '0.5px solid var(--border)' }}>
                               <PagosRegistro registro={r} pagos={pagos} total={r.total} miembro={miembro} onAgregarPago={onAgregarPago} onEditarPago={onEditarPago} onEliminarPago={onEliminarPago} fkCampo={cfg.fkPagos} compacto />
                             </div>
                           )}
@@ -1585,7 +1609,7 @@ function TabVentas({
   onEditarStock, onEditarStockEsquejes, onEditarInicial, onEditarInicialEsquejes,
   geneticasCosecha, geneticasEsquejes, onAgregarGeneticaCosecha, onEliminarGeneticaCosecha, onAgregarGeneticaEsquejes, onEliminarGeneticaEsquejes,
   pedidoPagos, esquejePagos, onAgregarPagoPedido, onEditarPagoPedido, onEliminarPagoPedido, onAgregarPagoEsqueje, onEditarPagoEsqueje, onEliminarPagoEsqueje,
-  socios, onGuardarSocio, onActualizarSocio, onEliminarSocio,
+  socios, onGuardarSocio, onActualizarSocio, onEliminarSocio, onActivarSocio, onDesactivarSocio,
   target,
 }) {
   const [tipo, setTipo] = useState(() => target?.tipoRegistro || 'cosecha')
@@ -1664,6 +1688,7 @@ function TabVentas({
         <TabSocios
           socios={socios} pedidos={pedidos} pedidoPagos={pedidoPagos} miembro={miembro}
           onGuardarSocio={onGuardarSocio} onActualizarSocio={onActualizarSocio} onEliminarSocio={onEliminarSocio}
+          onActivarSocio={onActivarSocio} onDesactivarSocio={onDesactivarSocio}
           onActualizarPedido={onActualizarPedido} onEliminarPedido={onEliminarPedido}
           onAgregarPagoPedido={onAgregarPagoPedido} onEditarPagoPedido={onEditarPagoPedido} onEliminarPagoPedido={onEliminarPagoPedido}
           geneticasCosecha={geneticasCosecha}
@@ -1735,7 +1760,7 @@ function TabPropio({
 // ─── Tab Socios: padrón de socios con Reprocann vinculado a la ONG +
 // historial de membresías compradas (derivado de pedidos.socio_id/membresia,
 // no se duplica precio/método de pago/estado de cobro en ningún lado nuevo).
-function TabSocios({ socios, pedidos, pedidoPagos, miembro, onGuardarSocio, onActualizarSocio, onEliminarSocio, onActualizarPedido, onEliminarPedido, onAgregarPagoPedido, onEditarPagoPedido, onEliminarPagoPedido, geneticasCosecha }) {
+function TabSocios({ socios, pedidos, pedidoPagos, miembro, onGuardarSocio, onActualizarSocio, onEliminarSocio, onActivarSocio, onDesactivarSocio, onActualizarPedido, onEliminarPedido, onAgregarPagoPedido, onEditarPagoPedido, onEliminarPagoPedido, geneticasCosecha }) {
   const [nuevo, setNuevo] = useState({ nombre: '', fechaRegistroOng: '' })
   const [toast, showToast] = useToast()
   const [abiertos, setAbiertos] = useState(() => new Set())
@@ -1743,13 +1768,44 @@ function TabSocios({ socios, pedidos, pedidoPagos, miembro, onGuardarSocio, onAc
   const [formEdit, setFormEdit] = useState(null)
   const [confirmandoElim, setConfirmandoElim] = useState(null)
   const [editandoPedido, setEditandoPedido] = useState(null)
+  const [guardandoNuevo, setGuardandoNuevo] = useState(false)
+  const [confirmarDuplicado, setConfirmarDuplicado] = useState(null)
+  const [filtroActivo, setFiltroActivo] = useState('activos')
+  const [procesandoEstado, setProcesandoEstado] = useState(null)
 
-  async function guardarNuevo() {
-    if (!nuevo.nombre.trim()) { showToast('Ingresá el nombre del socio'); return }
-    const res = await onGuardarSocio({ nombre: nuevo.nombre.trim(), fechaRegistroOng: nuevo.fechaRegistroOng || null })
+  async function guardarNuevo(forzar = false) {
+    if (guardandoNuevo) return
+    const limpio = nuevo.nombre.trim()
+    if (!limpio) { showToast('Ingresá el nombre del socio'); return }
+    // A diferencia de las genéticas, acá dos personas reales distintas pueden compartir nombre:
+    // se avisa pero nunca se bloquea el guardado.
+    if (!forzar) {
+      const existente = socios.find(s => s.nombre.toLowerCase() === limpio.toLowerCase())
+      if (existente) { setConfirmarDuplicado(existente.nombre); return }
+    }
+    setConfirmarDuplicado(null)
+    setGuardandoNuevo(true)
+    const res = await onGuardarSocio({ nombre: limpio, fechaRegistroOng: nuevo.fechaRegistroOng || null })
+    setGuardandoNuevo(false)
     if (!res?.ok) { showToast('No se pudo guardar. Intentá de nuevo.'); return }
     setNuevo({ nombre: '', fechaRegistroOng: '' })
     showToast('Socio guardado ✓')
+  }
+
+  // Desactivar reemplaza al borrado para un socio con historial: preserva el registro (por si
+  // vuelve a sumarse) en vez de perder para siempre a quién perteneció cada membresía. El borrado
+  // real (eliminar) queda solo disponible para un alta sin ninguna compra todavía.
+  async function cambiarEstado(s, activo) {
+    if (procesandoEstado) return
+    setProcesandoEstado(s.id)
+    const res = await (activo ? onActivarSocio(s) : onDesactivarSocio(s))
+    setProcesandoEstado(null)
+    if (res?.ok !== false) {
+      // Cambiar de estado saca al socio de su grupo de filtro actual — vuelve a aparecer
+      // colapsado, como cualquier fila, en vez de quedar abierto en su nueva posición.
+      setAbiertos(prev => { const next = new Set(prev); next.delete(s.id); return next })
+    }
+    showToast(res?.ok === false ? 'No se pudo actualizar' : (activo ? `${s.nombre}: reactivado ✓` : `${s.nombre}: desactivado`))
   }
 
   function toggle(id) {
@@ -1779,6 +1835,10 @@ function TabSocios({ socios, pedidos, pedidoPagos, miembro, onGuardarSocio, onAc
   }
 
   const sociosOrdenados = [...socios].sort((a, b) => a.nombre.localeCompare(b.nombre))
+  const activos = sociosOrdenados.filter(s => s.activo !== false)
+  const inactivos = sociosOrdenados.filter(s => s.activo === false)
+  const sinReprocann = activos.filter(s => !s.fechaRegistroOng).length
+  const sociosFiltrados = filtroActivo === 'activos' ? activos : filtroActivo === 'inactivos' ? inactivos : sociosOrdenados
 
   return (
     <div>
@@ -1795,28 +1855,50 @@ function TabSocios({ socios, pedidos, pedidoPagos, miembro, onGuardarSocio, onAc
           </div>
         </div>
       </div>
-      <button className="btn-submit" onClick={guardarNuevo}>Guardar socio</button>
+      <button className="btn-submit" style={{ opacity: guardandoNuevo ? 0.6 : 1 }} disabled={guardandoNuevo} onClick={() => guardarNuevo()}>Guardar socio</button>
+      {confirmarDuplicado && (
+        <div style={{ marginTop: 8, background: '#FAEEDA', border: '0.5px solid #E8C77E', borderRadius: 'var(--radius-md)', padding: 10 }}>
+          <div style={{ fontSize: 12, color: '#633806', marginBottom: 8 }}>Ya existe un socio llamado {confirmarDuplicado} — ¿es la misma persona?</div>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <button onClick={() => guardarNuevo(true)} style={{ flex: 1, padding: '7px', background: '#854F0B', color: 'white', border: 'none', borderRadius: 'var(--radius-md)', fontSize: 12, fontWeight: 600, cursor: 'pointer' }}>Guardar igual</button>
+            <button onClick={() => setConfirmarDuplicado(null)} style={{ flex: 1, padding: '7px', border: '0.5px solid var(--border-mid)', borderRadius: 'var(--radius-md)', background: 'transparent', fontSize: 12, cursor: 'pointer' }}>Cancelar</button>
+          </div>
+        </div>
+      )}
 
       <div style={{ marginTop: 18 }}>
-        <div style={{ fontSize: 15, fontWeight: 600, color: 'var(--text-primary)', marginBottom: 8 }}>Socios registrados</div>
-        {sociosOrdenados.length === 0 ? (
-          <div className="empty-state">No hay socios registrados.</div>
+        <div style={{ fontSize: 15, fontWeight: 600, color: 'var(--text-primary)', marginBottom: 4 }}>Padrón de socios</div>
+        <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginBottom: 8 }}>
+          {activos.length} activo{activos.length !== 1 ? 's' : ''}
+          {sinReprocann > 0 && <span style={{ color: '#854F0B', fontWeight: 600 }}> · {sinReprocann} sin Reprocann</span>}
+        </div>
+        <div className="filtros-row" style={{ marginBottom: 10 }}>
+          {[['activos', 'Activos'], ['inactivos', `Inactivos (${inactivos.length})`], ['todos', 'Todos']].map(([key, label]) => (
+            <button key={key} className={`filtro-btn${filtroActivo === key ? ' active' : ''}`} onClick={() => setFiltroActivo(key)}>{label}</button>
+          ))}
+        </div>
+        {sociosFiltrados.length === 0 ? (
+          <div className="empty-state">No hay socios para mostrar.</div>
         ) : (
           <div className="pedidos-list">
-            {sociosOrdenados.map(s => {
+            {sociosFiltrados.map(s => {
               const historial = pedidos.filter(p => p.socioId === s.id && p.membresia).sort((a, b) => b.id - a.id)
               const abierto = abiertos.has(s.id)
+              const inactivo = s.activo === false
               return (
                 <div key={s.id}>
-                  <div className="pedido-card" onClick={() => toggle(s.id)} style={{ cursor: 'pointer' }}>
+                  <div className="pedido-card" onClick={() => toggle(s.id)} style={{ cursor: 'pointer', opacity: inactivo ? 0.65 : 1 }}>
                     <div>
-                      <div className="pedido-nombre">{s.nombre}</div>
+                      <div className="pedido-nombre">
+                        {s.nombre}
+                        {inactivo && <span className="badge badge-no-entregado" style={{ marginLeft: 6 }}>Inactivo</span>}
+                      </div>
                       <div className="pedido-sub">
                         {s.fechaRegistroOng ? `Reprocann desde ${formatFechaDateISO(s.fechaRegistroOng)}` : 'Sin fecha de registro en la ONG'} · {historial.length} membresía{historial.length !== 1 ? 's' : ''}
                       </div>
                     </div>
                     <div className="pedido-right">
-                      <span className="pedido-editar-hint">{abierto ? 'Ocultar ▴' : 'Ver ▾'}</span>
+                      <span className="pedido-editar-hint hint-disclosure">{abierto ? 'Ocultar ▴' : 'Ver ▾'}</span>
                     </div>
                   </div>
                   {abierto && (
@@ -1839,9 +1921,13 @@ function TabSocios({ socios, pedidos, pedidoPagos, miembro, onGuardarSocio, onAc
                           </div>
                         </div>
                       ) : (
-                        <div style={{ display: 'flex', gap: 16, alignItems: 'center', marginBottom: 10 }}>
+                        <div style={{ display: 'flex', gap: 16, alignItems: 'center', marginBottom: 10, flexWrap: 'wrap' }}>
                           <button onClick={() => abrirEdicion(s)} style={btnLinkStyle('var(--text-secondary)')}>Editar datos</button>
-                          {confirmandoElim === s.id ? (
+                          {inactivo ? (
+                            <button onClick={() => cambiarEstado(s, true)} disabled={procesandoEstado === s.id} style={btnLinkStyle('var(--green-dark)')}>Reactivar socio</button>
+                          ) : historial.length > 0 ? (
+                            <button onClick={() => cambiarEstado(s, false)} disabled={procesandoEstado === s.id} style={btnLinkStyle('#854F0B')}>Desactivar socio</button>
+                          ) : confirmandoElim === s.id ? (
                             <>
                               <span style={{ fontSize: 12, color: '#791F1F' }}>¿Eliminar socio?</span>
                               <button onClick={() => eliminar(s)} style={btnLinkStyle('#791F1F')}>Sí, eliminar</button>
@@ -4662,6 +4748,23 @@ export default function App() {
     return { ok: true }
   }, [])
 
+  // Desactivar reemplaza al borrado cuando un socio ya tiene historial: preserva el registro
+  // (por si vuelve a sumarse más adelante) en vez de perder para siempre a quién perteneció cada
+  // membresía. eliminarSocio (borrado real) queda solo para altas sin ninguna compra todavía.
+  const desactivarSocio = useCallback(async s => {
+    const { data, error } = await supabase.from('socios').update({ activo: false }).eq('id', s.id).select().single()
+    if (error || !data) { console.error('Error al desactivar socio', error); return { ok: false, error } }
+    setSocios(prev => prev.map(x => x.id === data.id ? conAliasSocio(data) : x))
+    return { ok: true, data: conAliasSocio(data) }
+  }, [])
+
+  const activarSocio = useCallback(async s => {
+    const { data, error } = await supabase.from('socios').update({ activo: true }).eq('id', s.id).select().single()
+    if (error || !data) { console.error('Error al activar socio', error); return { ok: false, error } }
+    setSocios(prev => prev.map(x => x.id === data.id ? conAliasSocio(data) : x))
+    return { ok: true, data: conAliasSocio(data) }
+  }, [])
+
   const agregarPagoPedido = useCallback(async (pedido, pago) => {
     const { data, error } = await supabase.from('pedido_pagos').insert({ pedido_id: pedido.id, ...pago }).select().single()
     if (error || !data) { console.error('Error al guardar pago', error); return { ok: false, error } }
@@ -4864,6 +4967,8 @@ export default function App() {
           onGuardarSocio={guardarSocio}
           onActualizarSocio={actualizarSocio}
           onEliminarSocio={eliminarSocio}
+          onActivarSocio={activarSocio}
+          onDesactivarSocio={desactivarSocio}
         />
       )}
       {tab === 'gastos' && <TabGastos target={objetivoRevision} miembro={miembro} gastos={gastos} presupuestos={presupuestos} onGuardarGasto={guardarGasto} onActualizarGasto={actualizarGasto} onEliminarGasto={eliminarGasto} />}

@@ -166,6 +166,9 @@ select.form-control { cursor: pointer; }
 }
 
 .pedido-editar-hint { font-size: 10px; color: var(--text-secondary); opacity: 0.6; margin-top: 2px; }
+/* Variante para los toggles "Ver ▾/Ocultar ▴" de un disclosure (no "Tocar para editar"): más
+   peso y contraste para que se note que esa fila se puede abrir, no solo mirar. */
+.hint-disclosure { font-weight: 700; opacity: 0.85; }
 .pedido-card { cursor: pointer; transition: box-shadow 0.15s; }
 .pedido-card:hover { box-shadow: 0 2px 8px rgba(0,0,0,0.08); }
 
