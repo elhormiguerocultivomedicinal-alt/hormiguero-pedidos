@@ -1402,6 +1402,7 @@ function CampoStockEditable({ valor, color, onGuardar }) {
 function PanelStock({ stock, inicial, cfg, ajustesFallidos, onEditar, onEditarInicial, onAgregarGenetica, onEliminarGenetica }) {
   const [toast, showToast] = useToast()
   const [nuevaGenetica, setNuevaGenetica] = useState('')
+  const [agregando, setAgregando] = useState(false)
   const [confirmandoBorrar, setConfirmandoBorrar] = useState(null)
   const totalActual = cfg.geneticas.reduce((s, g) => s + (stock[g] ?? 0), 0)
   const totalInicial = cfg.geneticas.reduce((s, g) => s + (inicial[g] ?? cfg.stockInicial[g] ?? 0), 0)
@@ -1428,19 +1429,36 @@ function PanelStock({ stock, inicial, cfg, ajustesFallidos, onEditar, onEditarIn
 
   async function confirmarBorrar(g) {
     const res = await onEliminarGenetica(g)
-    showToast(res?.ok === false ? `No se pudo borrar ${g}` : `${g}: eliminada del catálogo`)
+    if (res?.ok === false) {
+      // El bloqueo por stock ≠ 0 también se valida en la base (trigger), como red de
+      // seguridad contra el caso de dos personas usando la app al mismo tiempo con datos
+      // desactualizados en su pantalla — ese mensaje llega en res.error.message.
+      const msg = (res.error && typeof res.error === 'object' && res.error.message) || null
+      showToast(msg || `No se pudo borrar ${g}`)
+    } else {
+      showToast(`${g}: eliminada del catálogo`)
+    }
     setConfirmandoBorrar(null)
   }
 
   async function agregar() {
     const limpio = nuevaGenetica.trim()
-    if (!limpio) return
+    // agregando evita el doble alta si alguien clickea "+ Agregar" dos veces rápido
+    // (o lo toca sin querer en mobile) antes de que vuelva el primer request.
+    if (!limpio || agregando) return
     if (cfg.geneticas.some(g => g.toLowerCase() === limpio.toLowerCase())) {
       showToast('Ya existe una genética con ese nombre')
       return
     }
+    setAgregando(true)
     const res = await onAgregarGenetica(limpio)
-    if (res?.ok === false) { showToast(`No se pudo agregar ${limpio}`); return }
+    setAgregando(false)
+    if (res?.ok === false) {
+      // 23505 = unique_violation: alguien más ya agregó el mismo nombre (o una variante
+      // de mayúsculas/minúsculas) mientras esta pantalla tenía el catálogo desactualizado.
+      showToast(res.error?.code === '23505' ? 'Ya existe una genética con ese nombre' : `No se pudo agregar ${limpio}`)
+      return
+    }
     setNuevaGenetica('')
     showToast(`${limpio}: agregada al catálogo`)
   }
@@ -1500,8 +1518,8 @@ function PanelStock({ stock, inicial, cfg, ajustesFallidos, onEditar, onEditarIn
           <span style={{ fontSize: 16, fontWeight: 600, color: 'var(--text-primary)' }}>{totalActual}{cfg.unidad}</span>
         </div>
         <div style={{ marginTop: 12, paddingTop: 12, borderTop: '0.5px solid var(--border)', display: 'flex', gap: 8 }}>
-          <input className="form-control" type="text" placeholder="Nueva genética..." value={nuevaGenetica} onChange={e => setNuevaGenetica(e.target.value)} onKeyDown={e => e.key === 'Enter' && agregar()} />
-          <button className="btn-submit" style={{ width: 'auto', padding: '0 14px', whiteSpace: 'nowrap' }} onClick={agregar}>+ Agregar</button>
+          <input className="form-control" type="text" placeholder="Nueva genética..." value={nuevaGenetica} disabled={agregando} onChange={e => setNuevaGenetica(e.target.value)} onKeyDown={e => e.key === 'Enter' && agregar()} />
+          <button className="btn-submit" style={{ width: 'auto', padding: '0 14px', whiteSpace: 'nowrap', opacity: agregando ? 0.6 : 1 }} disabled={agregando} onClick={agregar}>+ Agregar</button>
         </div>
       </div>
       <div className={`toast${toast.show ? ' show' : ''}`}>{toast.msg}</div>
