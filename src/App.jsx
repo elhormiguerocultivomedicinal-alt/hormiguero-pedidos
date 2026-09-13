@@ -1,5 +1,5 @@
 import { useState, useCallback, useEffect, useRef, useMemo } from 'react'
-import { Landmark, Wallet, ChevronDown, ChevronUp, Target, TriangleAlert, Info, Check } from 'lucide-react'
+import { Landmark, Wallet, ChevronDown, ChevronUp, Target, TriangleAlert, Info, Check, Package } from 'lucide-react'
 import './App.css'
 import { supabase } from './supabase'
 import { evaluarRegistro, colorPorIntensidad } from './parametrosTurba'
@@ -174,14 +174,14 @@ const filaEsquejeVacia = () => ({ id: Date.now() + Math.random(), nombre: '', ca
 // en el cfg de cada call site (TabVentas/TabPropio/TabSocios), nunca se lee este default.
 const CFG_COSECHA = {
   unidad: 'g', stockInicial: STOCK_INICIAL, stockLow: 50, rpcStock: 'ajustar_stock',
-  color: 'var(--green-dark)', colorBorde: null, btnBg: null,
+  color: 'var(--green-dark)', colorLight: 'var(--green-light)', colorBorde: null, btnBg: null,
   nuevaFila: filaVacia, precioDefaultFila: PRECIO_DEFAULT,
   singular: 'pedido', plural: 'pedidos', labelEntregado: 'Pedido entregado', txtEliminar: 'Eliminar pedido',
   fkPagos: 'pedido_id',
 }
 const CFG_ESQUEJES = {
   unidad: 'u', stockInicial: STOCK_ESQUEJES_INICIAL, stockLow: 20, rpcStock: 'ajustar_stock_esquejes',
-  color: COLOR_ESQUEJES, colorBorde: COLOR_ESQUEJES_BORDER, btnBg: COLOR_ESQUEJES,
+  color: COLOR_ESQUEJES, colorLight: COLOR_ESQUEJES_LIGHT, colorBorde: COLOR_ESQUEJES_BORDER, btnBg: COLOR_ESQUEJES,
   nuevaFila: filaEsquejeVacia, precioDefaultFila: '',
   singular: 'esqueje', plural: 'esquejes', labelEntregado: 'Entregado', txtEliminar: 'Eliminar',
   fkPagos: 'esqueje_id',
@@ -1518,6 +1518,7 @@ function PanelDominio({ cfg, registros, miembro, onGuardar, onActualizar, onElim
   const [stockAbierto, setStockAbierto] = useState(false)
   const seccionTitulo = { fontSize: 15, fontWeight: 600, color: 'var(--text-primary)', marginBottom: 8 }
   const plural = cfg.plural[0].toUpperCase() + cfg.plural.slice(1)
+  const sinStock = cfg.tieneStock !== false ? cfg.geneticas.filter(g => (stock[g] ?? 0) <= 0).length : 0
   return (
     <div>
       <div style={seccionTitulo}>{cfg.tituloNuevo || `Registro de nuevo ${cfg.singular}`}</div>
@@ -1525,14 +1526,21 @@ function PanelDominio({ cfg, registros, miembro, onGuardar, onActualizar, onElim
 
       {cfg.tieneStock !== false && (
         <div style={{ marginTop: 18 }}>
-          <div className="pedido-card" onClick={() => setStockAbierto(o => !o)} style={{ cursor: 'pointer' }}>
-            <div>
-              <div className="pedido-nombre">Stock disponible por genética</div>
-              <div className="pedido-sub">{cfg.geneticas.length} genéticas</div>
+          <div style={seccionTitulo}>Catálogo y stock</div>
+          <div
+            className="panel-stock-toggle"
+            onClick={() => setStockAbierto(o => !o)}
+            style={{ '--stock-color': cfg.color, '--stock-bg': cfg.colorLight || 'var(--green-light)', '--stock-border': cfg.colorBorde || 'var(--green-border)' }}
+          >
+            <div className="panel-stock-icon"><Package size={18} /></div>
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div className="panel-stock-titulo">Genéticas y stock</div>
+              <div className="panel-stock-sub">
+                {cfg.geneticas.length} genéticas · agregar, editar o borrar
+                {sinStock > 0 && <span className="panel-stock-alerta"> · {sinStock} sin stock</span>}
+              </div>
             </div>
-            <div className="pedido-right">
-              <span className="pedido-editar-hint">{stockAbierto ? 'Ocultar ▴' : 'Ver ▾'}</span>
-            </div>
+            {stockAbierto ? <ChevronUp size={18} /> : <ChevronDown size={18} />}
           </div>
           {stockAbierto && (
             <div style={{ marginTop: 8 }}>

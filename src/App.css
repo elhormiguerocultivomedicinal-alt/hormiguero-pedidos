@@ -235,6 +235,29 @@ select.form-control { cursor: pointer; }
 .pedido-total { font-size: 15px; font-weight: 600; color: var(--text-primary); }
 .pedido-metodo { font-size: 11px; color: var(--text-secondary); }
 
+/* Disclosure de "Genéticas y stock": deliberadamente distinto de .pedido-card
+   (fondo e ícono con el color del dominio) para que se lea como una sección
+   propia — el equipo no lo estaba notando cuando era una fila más, idéntica
+   a las del listado de pedidos, metida entre el form y la lista. */
+.panel-stock-toggle {
+  display: flex; align-items: center; gap: 12px;
+  background: var(--stock-bg); border: 0.5px solid var(--stock-border);
+  border-left: 3px solid var(--stock-color);
+  border-radius: var(--radius-lg); padding: 12px 14px;
+  cursor: pointer; transition: box-shadow 0.15s, transform 0.1s;
+}
+.panel-stock-toggle:hover { box-shadow: 0 2px 10px rgba(0,0,0,0.08); }
+.panel-stock-toggle:active { transform: scale(0.995); }
+.panel-stock-icon {
+  width: 34px; height: 34px; flex-shrink: 0;
+  display: flex; align-items: center; justify-content: center;
+  background: var(--bg-card); border-radius: var(--radius-md); color: var(--stock-color);
+}
+.panel-stock-titulo { font-size: 14px; font-weight: 600; color: var(--text-primary); }
+.panel-stock-sub { font-size: 12px; color: var(--text-secondary); margin-top: 2px; }
+.panel-stock-alerta { color: #854F0B; font-weight: 600; }
+.panel-stock-toggle > svg:last-child { color: var(--stock-color); flex-shrink: 0; }
+
 /* Finanzas — cuentas y presupuestos */
 .cuenta-icono {
   border-radius: 50%; flex-shrink: 0;
