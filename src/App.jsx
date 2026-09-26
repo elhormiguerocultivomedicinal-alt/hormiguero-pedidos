@@ -1,5 +1,5 @@
 import { useState, useCallback, useEffect, useRef, useMemo } from 'react'
-import { Landmark, Wallet, ChevronDown, ChevronUp, Target, TriangleAlert, Info, Check, Package } from 'lucide-react'
+import { Landmark, Wallet, ChevronDown, ChevronUp, Target, TriangleAlert, Info, Check, Package, Flag, Tag } from 'lucide-react'
 import './App.css'
 import { supabase } from './supabase'
 import { evaluarRegistro, colorPorIntensidad } from './parametrosTurba'
@@ -135,6 +135,32 @@ const CATEGORIA_GASTO_POR_INSUMO = {
   Equipamiento: 'Herramientas',
 }
 const LABEL_TIPO_MOVIMIENTO = { compra: 'Compra', consumo: 'Consumo', ajuste: 'Ajuste', baja: 'Baja' }
+
+// ─── Tareas: anotaciones del equipo (laborales, compras, gastos estructurales,
+// etc.), con aviso al entrar a la app ordenado por prioridad. El tipo es un
+// catálogo editable (tabla tareas_tipos), igual que genéticas/insumos.
+const MAX_PALABRAS_TAREA = 15
+const PRIORIDADES_TAREA = [
+  { valor: 'alta', label: 'Alta' },
+  { valor: 'media', label: 'Media' },
+  { valor: 'baja', label: 'Baja' },
+]
+const ORDEN_PRIORIDAD_TAREA = { alta: 0, media: 1, baja: 2 }
+const COLOR_PRIORIDAD_TAREA = { alta: '#791F1F', media: '#854F0B', baja: 'var(--text-secondary)' }
+const FONDO_PRIORIDAD_TAREA = { alta: '#FCEBEB', media: '#FAEEDA', baja: 'var(--bg-secondary)' }
+const BORDE_PRIORIDAD_TAREA = { alta: '#E8B4B4', media: '#E8C77E', baja: 'var(--border-mid)' }
+const LABEL_PRIORIDAD_TAREA = { alta: 'Alta', media: 'Media', baja: 'Baja' }
+
+function contarPalabras(texto) {
+  const limpio = (texto || '').trim()
+  return limpio ? limpio.split(/\s+/).length : 0
+}
+
+function ordenarTareas(lista) {
+  return [...lista].sort((a, b) =>
+    ORDEN_PRIORIDAD_TAREA[a.prioridad] - ORDEN_PRIORIDAD_TAREA[b.prioridad] ||
+    new Date(a.created_at) - new Date(b.created_at))
+}
 
 // ─── Finanzas: cuentas ──────────────────────────────────────────
 const CUENTA_EFECTIVO = 'Efectivo - Caja Hormi'
@@ -3501,6 +3527,374 @@ function PanelInsumosStock({ categoria, items, movimientos, onAgregarItem, onEli
   )
 }
 
+// ─── Tareas: pestaña de anotaciones/pendientes del equipo ───────────────────
+function TabTareas({ tareas, tareasTipos, onAgregarTarea, onMarcarEstado, onEliminarTarea, onAgregarTipo, onEliminarTipo, onEditarFechaLimite }) {
+  const [toast, showToast] = useToast()
+  const [descripcion, setDescripcion] = useState('')
+  const [tipo, setTipo] = useState('')
+  const [prioridad, setPrioridad] = useState('media')
+  const [asignadoA, setAsignadoA] = useState('')
+  const [fechaLimite, setFechaLimite] = useState('')
+  const [guardando, setGuardando] = useState(false)
+  const [verHechas, setVerHechas] = useState(false)
+  const [gruposAbiertos, setGruposAbiertos] = useState({})
+  const [confirmandoBorrar, setConfirmandoBorrar] = useState(null)
+
+  // El select de tipo depende del catálogo, que llega vacío en el primer render
+  // (todavía no cargó) — arranca en la primera opción apenas está disponible.
+  useEffect(() => { if (!tipo && tareasTipos.length > 0) setTipo(tareasTipos[0]) }, [tareasTipos, tipo])
+
+  const palabras = contarPalabras(descripcion)
+  const excedePalabras = palabras > MAX_PALABRAS_TAREA
+
+  const pendientes = ordenarTareas(tareas.filter(t => t.estado === 'pendiente'))
+  const hechas = tareas.filter(t => t.estado === 'hecha')
+    .sort((a, b) => new Date(b.resuelto_en || b.created_at) - new Date(a.resuelto_en || a.created_at))
+
+  async function agregar() {
+    const limpio = descripcion.trim()
+    if (!limpio || excedePalabras || guardando || !tipo) return
+    setGuardando(true)
+    const res = await onAgregarTarea({ descripcion: limpio, tipo, prioridad, asignado_a: asignadoA || null, fecha_limite: fechaLimite || null })
+    setGuardando(false)
+    if (res?.ok === false) { showToast('No se pudo guardar la tarea'); return }
+    setDescripcion('')
+    setFechaLimite('')
+    showToast('Tarea asignada ✓')
+  }
+
+  async function cambiarEstado(t, estado) {
+    const res = await onMarcarEstado(t.id, estado)
+    showToast(res?.ok === false ? 'No se pudo actualizar' : (estado === 'hecha' ? `${t.descripcion}: marcada como hecha` : `${t.descripcion}: reabierta`))
+  }
+
+  async function editarFecha(t, fecha_limite) {
+    const res = await onEditarFechaLimite(t.id, fecha_limite)
+    showToast(res?.ok === false ? 'No se pudo actualizar la fecha' : (fecha_limite ? `${t.descripcion}: fecha límite actualizada` : `${t.descripcion}: fecha límite quitada`))
+    return res
+  }
+
+  async function confirmarBorrar(t) {
+    const res = await onEliminarTarea(t.id)
+    showToast(res?.ok === false ? 'No se pudo borrar' : 'Tarea eliminada')
+    setConfirmandoBorrar(null)
+  }
+
+  const hoy = new Date().toISOString().slice(0, 10)
+  const totalVencidas = pendientes.filter(t => t.fecha_limite && t.fecha_limite < hoy).length
+
+  return (
+    <div className="content">
+      <div style={seccionTituloTareas}>Nueva tarea</div>
+      <div className="card">
+        <div className="form-grid">
+          <div className="form-group full">
+            <label className="form-label">
+              Descripción{excedePalabras && <span style={{ color: '#791F1F' }}> · máximo {MAX_PALABRAS_TAREA} palabras</span>}
+            </label>
+            <input
+              className="form-control" type="text" placeholder="Ej: comprar bolsas de sustrato"
+              value={descripcion} onChange={e => setDescripcion(e.target.value)}
+              onKeyDown={e => e.key === 'Enter' && agregar()}
+              style={excedePalabras ? { borderColor: '#791F1F' } : undefined}
+            />
+            <div style={{ fontSize: 11, color: excedePalabras ? '#791F1F' : 'var(--text-secondary)', textAlign: 'right' }}>{palabras}/{MAX_PALABRAS_TAREA} palabras</div>
+          </div>
+          <div className="form-group">
+            <label className="form-label">Tipo</label>
+            <select className="form-control" value={tipo} onChange={e => setTipo(e.target.value)}>
+              {tareasTipos.map(t => <option key={t} value={t}>{t}</option>)}
+            </select>
+          </div>
+          <div className="form-group">
+            <label className="form-label">Asignado a</label>
+            <select className="form-control" value={asignadoA} onChange={e => setAsignadoA(e.target.value)}>
+              <option value="">Sin asignar</option>
+              {MIEMBROS.map(m => <option key={m} value={m}>{m}</option>)}
+            </select>
+          </div>
+          <div className="form-group">
+            <label className="form-label">Fecha límite (opcional)</label>
+            <input className="form-control" type="date" value={fechaLimite} onChange={e => setFechaLimite(e.target.value)} />
+          </div>
+          <div className="form-group full">
+            <label className="form-label">Prioridad</label>
+            <div className="miembro-row">
+              {PRIORIDADES_TAREA.map(p => (
+                <button key={p.valor} type="button" className={`miembro-btn${prioridad === p.valor ? ' active' : ''}`} onClick={() => setPrioridad(p.valor)}>{p.label}</button>
+              ))}
+            </div>
+          </div>
+        </div>
+        <button className="btn-submit" style={{ marginTop: 12 }} disabled={!descripcion.trim() || excedePalabras || guardando || !tipo} onClick={agregar}>+ Asignar tarea</button>
+      </div>
+
+      <PanelTiposTarea tipos={tareasTipos} onAgregar={onAgregarTipo} onEliminar={onEliminarTipo} />
+
+      <div style={seccionTituloTareas}>Tareas pendientes</div>
+      <div className="stats-row">
+        <div className="stat-card"><div className="stat-num">{pendientes.length}</div><div className="stat-lbl">Pendientes</div></div>
+        <div className="stat-card"><div className="stat-num" style={{ color: totalVencidas > 0 ? '#791F1F' : undefined }}>{totalVencidas}</div><div className="stat-lbl">Vencidas</div></div>
+        <div className="stat-card"><div className="stat-num">{hechas.length}</div><div className="stat-lbl">Hechas</div></div>
+      </div>
+
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+        {pendientes.length === 0 && <div className="empty-state">Sin tareas pendientes.</div>}
+        {PRIORIDADES_TAREA.map(p => {
+          const items = pendientes.filter(t => t.prioridad === p.valor)
+          if (items.length === 0) return null
+          const vencidasGrupo = items.filter(t => t.fecha_limite && t.fecha_limite < hoy).length
+          const abierto = !!gruposAbiertos[p.valor]
+          return (
+            <div key={p.valor}>
+              <div
+                className="panel-stock-toggle"
+                onClick={() => setGruposAbiertos(g => ({ ...g, [p.valor]: !g[p.valor] }))}
+                style={{ '--stock-color': COLOR_PRIORIDAD_TAREA[p.valor], '--stock-bg': FONDO_PRIORIDAD_TAREA[p.valor], '--stock-border': BORDE_PRIORIDAD_TAREA[p.valor] }}
+              >
+                <div className="panel-stock-icon"><Flag size={18} /></div>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div className="panel-stock-titulo">{p.label} prioridad</div>
+                  <div className="panel-stock-sub">
+                    {items.length} tarea{items.length === 1 ? '' : 's'} pendiente{items.length === 1 ? '' : 's'}
+                    {vencidasGrupo > 0 && <span className="panel-stock-alerta"> · {vencidasGrupo} vencida{vencidasGrupo === 1 ? '' : 's'}</span>}
+                  </div>
+                </div>
+                {abierto ? <ChevronUp size={18} /> : <ChevronDown size={18} />}
+              </div>
+              {abierto && (
+                <div className="pedidos-list" style={{ marginTop: 8 }}>
+                  {items.map(t => (
+                    <FilaTarea
+                      key={t.id} tarea={t} confirmando={confirmandoBorrar === t.id}
+                      onMarcarHecha={() => cambiarEstado(t, 'hecha')}
+                      onEditarFecha={fecha => editarFecha(t, fecha)}
+                      onPedirBorrar={() => setConfirmandoBorrar(t.id)}
+                      onCancelarBorrar={() => setConfirmandoBorrar(null)}
+                      onConfirmarBorrar={() => confirmarBorrar(t)}
+                    />
+                  ))}
+                </div>
+              )}
+            </div>
+          )
+        })}
+      </div>
+
+      {hechas.length > 0 && (
+        <div>
+          <div
+            className="panel-stock-toggle"
+            onClick={() => setVerHechas(v => !v)}
+            style={{ '--stock-color': 'var(--green-dark)', '--stock-bg': 'var(--green-light)', '--stock-border': 'var(--green-border)' }}
+          >
+            <div className="panel-stock-icon"><Check size={18} /></div>
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div className="panel-stock-titulo">Tareas hechas</div>
+              <div className="panel-stock-sub">{hechas.length} completada{hechas.length === 1 ? '' : 's'}</div>
+            </div>
+            {verHechas ? <ChevronUp size={18} /> : <ChevronDown size={18} />}
+          </div>
+          {verHechas && (
+            <div className="pedidos-list" style={{ marginTop: 8 }}>
+              {hechas.map(t => (
+                <FilaTarea
+                  key={t.id} tarea={t} hecha confirmando={confirmandoBorrar === t.id}
+                  onReabrir={() => cambiarEstado(t, 'pendiente')}
+                  onEditarFecha={fecha => editarFecha(t, fecha)}
+                  onPedirBorrar={() => setConfirmandoBorrar(t.id)}
+                  onCancelarBorrar={() => setConfirmandoBorrar(null)}
+                  onConfirmarBorrar={() => confirmarBorrar(t)}
+                />
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      <div className={`toast${toast.show ? ' show' : ''}`}>{toast.msg}</div>
+    </div>
+  )
+}
+
+const seccionTituloTareas = { fontSize: 15, fontWeight: 600, color: 'var(--text-primary)' }
+
+function FilaTarea({ tarea, hecha, confirmando, onMarcarHecha, onReabrir, onEditarFecha, onPedirBorrar, onCancelarBorrar, onConfirmarBorrar }) {
+  const [editandoFecha, setEditandoFecha] = useState(false)
+  const [nuevaFecha, setNuevaFecha] = useState(tarea.fecha_limite || '')
+  const [guardandoFecha, setGuardandoFecha] = useState(false)
+
+  const hoy = new Date().toISOString().slice(0, 10)
+  const vencida = !hecha && tarea.fecha_limite && tarea.fecha_limite < hoy
+
+  async function guardarFecha() {
+    setGuardandoFecha(true)
+    const res = await onEditarFecha(nuevaFecha || null)
+    setGuardandoFecha(false)
+    if (res?.ok !== false) setEditandoFecha(false)
+  }
+
+  return (
+    <div className="pedido-card" style={{ cursor: 'default', opacity: hecha ? 0.7 : 1 }}>
+      <div style={{ minWidth: 0 }}>
+        <div className="pedido-nombre" style={{ textDecoration: hecha ? 'line-through' : 'none' }}>{tarea.descripcion}</div>
+        <div className="pedido-sub">
+          {tarea.tipo} · {tarea.asignado_a || 'Sin asignar'}{tarea.creado_por ? ` · cargada por ${tarea.creado_por}` : ''} · cargada {formatFechaDateISO(tarea.created_at.slice(0, 10))}
+        </div>
+        {tarea.fecha_limite && (
+          <div className="pedido-badges">
+            <span className={`badge ${vencida ? 'badge-sin-cobrar' : 'badge-parcial'}`}>{vencida ? 'Vencida' : 'Vence'} {formatFechaDateISO(tarea.fecha_limite)}</span>
+          </div>
+        )}
+      </div>
+      <div className="pedido-right">
+        <span className="badge" style={{ background: FONDO_PRIORIDAD_TAREA[tarea.prioridad], color: COLOR_PRIORIDAD_TAREA[tarea.prioridad] }}>{LABEL_PRIORIDAD_TAREA[tarea.prioridad]}</span>
+      </div>
+      <div style={{ gridColumn: '1 / -1', marginTop: 10, paddingTop: 10, borderTop: '0.5px solid var(--border)', display: 'flex', gap: 14, alignItems: 'center', flexWrap: 'wrap' }}>
+        {hecha
+          ? <button onClick={onReabrir} style={btnLinkStyle('var(--green-dark)')}>Reabrir</button>
+          : <button onClick={onMarcarHecha} style={btnLinkStyle('var(--green-dark)')}>Marcar hecha</button>}
+        {!editandoFecha
+          ? <button onClick={() => { setNuevaFecha(tarea.fecha_limite || ''); setEditandoFecha(true) }} style={btnLinkStyle('var(--text-secondary)')}>{tarea.fecha_limite ? 'Editar fecha' : '+ Fecha límite'}</button>
+          : (
+            <span style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              <input className="form-control" type="date" value={nuevaFecha} disabled={guardandoFecha} onChange={e => setNuevaFecha(e.target.value)} style={{ padding: '4px 8px', fontSize: 12, width: 'auto' }} />
+              <button onClick={guardarFecha} disabled={guardandoFecha} style={btnLinkStyle('var(--green-dark)')}>Guardar</button>
+              <button onClick={() => setEditandoFecha(false)} disabled={guardandoFecha} style={btnLinkStyle('var(--text-secondary)')}>Cancelar</button>
+            </span>
+          )}
+        <button className="btn-eliminar-fila" style={{ width: 22, height: 22, fontSize: 10, marginLeft: 'auto' }} title="Borrar tarea" onClick={onPedirBorrar}>✕</button>
+      </div>
+      {confirmando && (
+        <div style={{ gridColumn: '1 / -1', marginTop: 10, background: '#FCEBEB', border: '0.5px solid #791F1F', borderRadius: 'var(--radius-md)', padding: 8, display: 'flex', alignItems: 'center', gap: 8 }}>
+          <span style={{ fontSize: 12, color: '#791F1F', flex: 1 }}>¿Borrar esta tarea?</span>
+          <button onClick={onConfirmarBorrar} style={{ padding: '6px 10px', background: '#791F1F', color: 'white', border: 'none', borderRadius: 'var(--radius-md)', fontSize: 12, fontWeight: 600, cursor: 'pointer' }}>Sí, borrar</button>
+          <button onClick={onCancelarBorrar} style={{ padding: '6px 10px', background: 'transparent', border: '0.5px solid var(--border-mid)', borderRadius: 'var(--radius-md)', fontSize: 12, cursor: 'pointer' }}>Cancelar</button>
+        </div>
+      )}
+    </div>
+  )
+}
+
+// Catálogo de tipos de tarea: se edita poco, va tucked en un disclosure para no
+// competir con el form de alta ni con la lista, que son lo que se usa a diario.
+function PanelTiposTarea({ tipos, onAgregar, onEliminar }) {
+  const [abierto, setAbierto] = useState(false)
+  const [toast, showToast] = useToast()
+  const [nuevoTipo, setNuevoTipo] = useState('')
+  const [agregando, setAgregando] = useState(false)
+  const [confirmandoBorrar, setConfirmandoBorrar] = useState(null)
+
+  async function agregar() {
+    const limpio = nuevoTipo.trim()
+    if (!limpio || agregando) return
+    if (tipos.some(t => t.toLowerCase() === limpio.toLowerCase())) { showToast('Ya existe un tipo con ese nombre'); return }
+    setAgregando(true)
+    const res = await onAgregar(limpio)
+    setAgregando(false)
+    if (res?.ok === false) { showToast(res.error?.code === '23505' ? 'Ya existe un tipo con ese nombre' : `No se pudo agregar ${limpio}`); return }
+    setNuevoTipo('')
+    showToast(`${limpio}: agregado al catálogo`)
+  }
+
+  async function confirmarBorrar(nombre) {
+    const res = await onEliminar(nombre)
+    if (res?.ok === false) {
+      // El bloqueo por tipo en uso también se valida en la base (trigger), como red de
+      // seguridad si dos personas están editando el catálogo a la vez.
+      const msg = (res.error && typeof res.error === 'object' && res.error.message) || null
+      showToast(msg || `No se pudo borrar ${nombre}`)
+    } else {
+      showToast(`${nombre}: eliminado del catálogo`)
+    }
+    setConfirmandoBorrar(null)
+  }
+
+  return (
+    <div>
+      <div
+        className="panel-stock-toggle"
+        onClick={() => setAbierto(v => !v)}
+        style={{ '--stock-color': 'var(--text-secondary)', '--stock-bg': 'var(--bg-secondary)', '--stock-border': 'var(--border-mid)' }}
+      >
+        <div className="panel-stock-icon"><Tag size={18} /></div>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div className="panel-stock-titulo">Tipos de tarea</div>
+          <div className="panel-stock-sub">{tipos.length} tipos · agregar, editar o borrar</div>
+        </div>
+        {abierto ? <ChevronUp size={18} /> : <ChevronDown size={18} />}
+      </div>
+      {abierto && (
+        <div className="card" style={{ marginTop: 10 }}>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+            {tipos.map(t => (
+              <div key={t}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <span style={{ flex: 1, fontSize: 13, color: 'var(--text-primary)' }}>{t}</span>
+                  <button className="btn-eliminar-fila" style={{ width: 22, height: 22, fontSize: 10 }} title={`Borrar ${t}`} onClick={() => setConfirmandoBorrar(t)}>✕</button>
+                </div>
+                {confirmandoBorrar === t && (
+                  <div style={{ marginTop: 6, background: '#FCEBEB', border: '0.5px solid #791F1F', borderRadius: 'var(--radius-md)', padding: 8, display: 'flex', alignItems: 'center', gap: 8 }}>
+                    <span style={{ fontSize: 12, color: '#791F1F', flex: 1 }}>¿Borrar {t} del catálogo?</span>
+                    <button onClick={() => confirmarBorrar(t)} style={{ padding: '6px 10px', background: '#791F1F', color: 'white', border: 'none', borderRadius: 'var(--radius-md)', fontSize: 12, fontWeight: 600, cursor: 'pointer' }}>Sí, borrar</button>
+                    <button onClick={() => setConfirmandoBorrar(null)} style={{ padding: '6px 10px', background: 'transparent', border: '0.5px solid var(--border-mid)', borderRadius: 'var(--radius-md)', fontSize: 12, cursor: 'pointer' }}>Cancelar</button>
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+          <div style={{ marginTop: 12, paddingTop: 12, borderTop: '0.5px solid var(--border)', display: 'flex', gap: 8 }}>
+            <input className="form-control" type="text" placeholder="Nuevo tipo..." value={nuevoTipo} disabled={agregando} onChange={e => setNuevoTipo(e.target.value)} onKeyDown={e => e.key === 'Enter' && agregar()} />
+            <button className="btn-submit" style={{ width: 'auto', padding: '0 14px', whiteSpace: 'nowrap', opacity: agregando ? 0.6 : 1 }} disabled={agregando} onClick={agregar}>+ Agregar</button>
+          </div>
+          <div className={`toast${toast.show ? ' show' : ''}`}>{toast.msg}</div>
+        </div>
+      )}
+    </div>
+  )
+}
+
+function ModalTareasPendientes({ tareas, onMarcarEstado, onVerTodas, onCerrar }) {
+  useEscape(onCerrar)
+  const [lista, setLista] = useState(tareas)
+
+  async function marcarHecha(id) {
+    setLista(prev => prev.filter(t => t.id !== id))
+    await onMarcarEstado(id, 'hecha')
+  }
+
+  return (
+    <div className="modal-overlay" onClick={onCerrar}>
+      <div className="modal-card" onClick={e => e.stopPropagation()}>
+        <div className="modal-header">
+          <div>
+            <div className="modal-titulo">Tareas pendientes</div>
+            <div className="modal-sub">{lista.length} {lista.length === 1 ? 'tarea' : 'tareas'} · ordenadas por prioridad</div>
+          </div>
+          <button className="modal-cerrar" onClick={onCerrar}>✕</button>
+        </div>
+        {lista.length === 0 ? (
+          <div style={{ textAlign: 'center', padding: '12px 0', color: 'var(--green-dark)', fontSize: 14, fontWeight: 500 }}>Ya no tenés nada pendiente ✓</div>
+        ) : (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 8, maxHeight: '50vh', overflowY: 'auto' }}>
+            {lista.map(t => (
+              <div key={t.id} style={{ background: 'var(--bg-secondary)', borderRadius: 'var(--radius-md)', padding: 10, display: 'flex', gap: 8, alignItems: 'flex-start' }}>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--text-primary)' }}>{t.descripcion}</div>
+                  <div style={{ fontSize: 11, color: 'var(--text-secondary)', marginTop: 2 }}>{t.tipo} · {t.asignado_a || 'Sin asignar'}</div>
+                </div>
+                <span className="badge" style={{ background: FONDO_PRIORIDAD_TAREA[t.prioridad], color: COLOR_PRIORIDAD_TAREA[t.prioridad], flexShrink: 0 }}>{LABEL_PRIORIDAD_TAREA[t.prioridad]}</span>
+                <button onClick={() => marcarHecha(t.id)} style={{ ...btnLinkStyle('var(--green-dark)'), flexShrink: 0 }}>Hecha</button>
+              </div>
+            ))}
+          </div>
+        )}
+        <button className="btn-submit" onClick={onVerTodas}>Ver todas las tareas</button>
+      </div>
+    </div>
+  )
+}
+
 // Select de tipo (Compra/Consumo/Baja) con campos condicionales, mismo patrón que
 // PagosRegistro: precio/locación solo aparecen para 'compra' (es lo único que genera gasto).
 function MovimientoInsumoForm({ item, onGuardar, onCancelar }) {
@@ -4456,6 +4850,9 @@ export default function App() {
   const [stockAjustesFallidos, setStockAjustesFallidos] = useState([])
   const [insumosStock, setInsumosStock] = useState([])
   const [insumosStockMovimientos, setInsumosStockMovimientos] = useState([])
+  const [tareas, setTareas] = useState([])
+  const [tareasTipos, setTareasTipos] = useState([])
+  const [mostrarModalTareas, setMostrarModalTareas] = useState(false)
   const [cargando, setCargando] = useState(true)
   const [errorCarga, setErrorCarga] = useState(false)
   const [intentoCarga, setIntentoCarga] = useState(0)
@@ -4486,7 +4883,7 @@ export default function App() {
     async function cargarDatos() {
       setCargando(true)
       setErrorCarga(false)
-      const [pedidosRes, stockRes, esquejesRes, stockEsquejesRes, insumosRes, insumoPagosRes, gastosRes, presupuestosRes, aportesRes, gastosFijosRes, pedidoPagosRes, esquejePagosRes, cuentasRes, dolaresMovimientosRes, cuentasValidacionesRes, sociosRes, geneticasCosechaRes, geneticasEsquejesRes, insumosStockRes, insumosStockMovimientosRes] = await Promise.all([
+      const [pedidosRes, stockRes, esquejesRes, stockEsquejesRes, insumosRes, insumoPagosRes, gastosRes, presupuestosRes, aportesRes, gastosFijosRes, pedidoPagosRes, esquejePagosRes, cuentasRes, dolaresMovimientosRes, cuentasValidacionesRes, sociosRes, geneticasCosechaRes, geneticasEsquejesRes, insumosStockRes, insumosStockMovimientosRes, tareasRes, tareasTiposRes] = await Promise.all([
         supabase.from('pedidos').select('*').order('created_at', { ascending: false }),
         supabase.from('stock').select('*'),
         supabase.from('esquejes').select('*').order('created_at', { ascending: false }),
@@ -4507,9 +4904,11 @@ export default function App() {
         supabase.from('geneticas_esquejes').select('nombre').order('nombre', { ascending: true }),
         supabase.from('insumos_stock').select('*').order('categoria', { ascending: true }).order('nombre', { ascending: true }),
         supabase.from('insumos_stock_movimientos').select('*').order('fecha', { ascending: false }),
+        supabase.from('tareas').select('*').order('created_at', { ascending: true }),
+        supabase.from('tareas_tipos').select('nombre').order('nombre', { ascending: true }),
       ])
       if (cancelado) return
-      const conError = [pedidosRes, stockRes, esquejesRes, stockEsquejesRes, insumosRes, insumoPagosRes, gastosRes, presupuestosRes, aportesRes, gastosFijosRes, pedidoPagosRes, esquejePagosRes, cuentasRes, dolaresMovimientosRes, cuentasValidacionesRes, sociosRes, geneticasCosechaRes, geneticasEsquejesRes, insumosStockRes, insumosStockMovimientosRes].filter(r => r.error)
+      const conError = [pedidosRes, stockRes, esquejesRes, stockEsquejesRes, insumosRes, insumoPagosRes, gastosRes, presupuestosRes, aportesRes, gastosFijosRes, pedidoPagosRes, esquejePagosRes, cuentasRes, dolaresMovimientosRes, cuentasValidacionesRes, sociosRes, geneticasCosechaRes, geneticasEsquejesRes, insumosStockRes, insumosStockMovimientosRes, tareasRes, tareasTiposRes].filter(r => r.error)
       if (conError.length > 0) {
         console.error('Error al cargar datos', conError.map(r => r.error))
         setErrorCarga(true)
@@ -4546,6 +4945,8 @@ export default function App() {
       setGeneticasEsquejes((geneticasEsquejesRes.data || []).map(g => g.nombre))
       setInsumosStock(insumosStockRes.data || [])
       setInsumosStockMovimientos(insumosStockMovimientosRes.data || [])
+      setTareas(tareasRes.data || [])
+      setTareasTipos((tareasTiposRes.data || []).map(t => t.nombre))
       setCargando(false)
     }
     cargarDatos()
@@ -4850,6 +5251,65 @@ export default function App() {
     return registrarMovimientoInsumo({ insumo, tipo: 'ajuste', cantidad: delta, precioUnitario: null, fecha: new Date().toISOString().slice(0, 10), miembro, nota: null, locacion: null }, setInsumosStock, setInsumosStockMovimientos, setGastos)
   }, [miembro])
 
+  const agregarTarea = useCallback(async ({ descripcion, tipo, prioridad, asignado_a, fecha_limite }) => {
+    const { data, error } = await supabase.from('tareas').insert({ descripcion, tipo, prioridad, asignado_a: asignado_a || null, fecha_limite: fecha_limite || null, creado_por: miembro || null }).select().single()
+    if (error || !data) { console.error('Error al guardar tarea', error); return { ok: false, error } }
+    setTareas(prev => [...prev, data])
+    return { ok: true, data }
+  }, [miembro])
+
+  const marcarTareaEstado = useCallback(async (id, estado) => {
+    const cambios = estado === 'hecha'
+      ? { estado, resuelto_por: miembro || null, resuelto_en: new Date().toISOString() }
+      : { estado, resuelto_por: null, resuelto_en: null }
+    const { data, error } = await supabase.from('tareas').update(cambios).eq('id', id).select().single()
+    if (error || !data) { console.error('Error al actualizar tarea', error); return { ok: false, error } }
+    setTareas(prev => prev.map(t => t.id === id ? data : t))
+    return { ok: true, data }
+  }, [miembro])
+
+  const editarFechaLimiteTarea = useCallback(async (id, fecha_limite) => {
+    const { data, error } = await supabase.from('tareas').update({ fecha_limite: fecha_limite || null }).eq('id', id).select().single()
+    if (error || !data) { console.error('Error al actualizar fecha límite', error); return { ok: false, error } }
+    setTareas(prev => prev.map(t => t.id === id ? data : t))
+    return { ok: true, data }
+  }, [])
+
+  const eliminarTarea = useCallback(async id => {
+    const { error } = await supabase.from('tareas').delete().eq('id', id)
+    if (error) { console.error('Error al eliminar tarea', error); return { ok: false, error } }
+    setTareas(prev => prev.filter(t => t.id !== id))
+    return { ok: true }
+  }, [])
+
+  const agregarTareaTipo = useCallback(nombre => agregarGeneticaCatalogo('tareas_tipos', nombre, tareasTipos, setTareasTipos), [tareasTipos])
+  // No hay una cantidad tipo "stock" que chequear del lado cliente para un tipo de
+  // tarea — el trigger de la base (bloquear_borrado_tareas_tipos) es la única red
+  // de seguridad real, por eso se le pasa un mapa vacío.
+  const eliminarTareaTipo = useCallback(nombre => eliminarGeneticaCatalogo('tareas_tipos', nombre, {}, setTareasTipos), [])
+
+  // Tareas pendientes relevantes para quien está mirando la pantalla: asignadas a mí,
+  // o sin asignar (las puede tomar cualquiera) — misma lista alimenta el badge de la
+  // pestaña y el modal de aviso al entrar.
+  const tareasRelevantes = useMemo(
+    () => ordenarTareas(tareas.filter(t => t.estado === 'pendiente' && (t.asignado_a === miembro || !t.asignado_a))),
+    [tareas, miembro]
+  )
+
+  // Disparo del modal: una vez por día por persona (la sesión de Supabase persiste
+  // días, así que atarlo al login real casi no se repetiría). Se guarda por dispositivo
+  // en localStorage, envuelto en try/catch por si el storage no está disponible.
+  useEffect(() => {
+    if (!miembro || tareasRelevantes.length === 0) return
+    const clave = `tareas_modal_visto_${miembro}`
+    const hoy = new Date().toISOString().slice(0, 10)
+    try {
+      if (localStorage.getItem(clave) === hoy) return
+      localStorage.setItem(clave, hoy)
+    } catch {}
+    setMostrarModalTareas(true)
+  }, [miembro, tareasRelevantes])
+
   if (chequeandoSesion) return (
     <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100vh', color: 'var(--text-secondary)', fontSize: 14 }}>
       Cargando...
@@ -4918,6 +5378,14 @@ export default function App() {
           </button>
           <button className={`tab${tab === 'cultivo' ? ' active' : ''}`} onClick={() => irATab('cultivo')}>Cultivo</button>
           <button className={`tab${tab === 'stock' ? ' active' : ''}`} onClick={() => irATab('stock')}>Stock</button>
+          <button className={`tab${tab === 'tareas' ? ' active' : ''}`} onClick={() => irATab('tareas')}>
+            Tareas
+            {tareasRelevantes.length > 0 && (
+              <span style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', minWidth: 16, height: 16, padding: '0 4px', borderRadius: 999, background: tareasRelevantes.some(t => t.prioridad === 'alta') ? '#791F1F' : '#854F0B', color: 'white', fontSize: 10, fontWeight: 700, marginLeft: 5, lineHeight: 1 }}>
+                {tareasRelevantes.length}
+              </span>
+            )}
+          </button>
         </div>
       </div>
       {tab === 'pedidos' && (
@@ -4985,7 +5453,27 @@ export default function App() {
           onRegistrarMovimiento={registrarMovStock}
         />
       )}
+      {tab === 'tareas' && (
+        <TabTareas
+          tareas={tareas}
+          tareasTipos={tareasTipos}
+          onAgregarTarea={agregarTarea}
+          onMarcarEstado={marcarTareaEstado}
+          onEliminarTarea={eliminarTarea}
+          onAgregarTipo={agregarTareaTipo}
+          onEliminarTipo={eliminarTareaTipo}
+          onEditarFechaLimite={editarFechaLimiteTarea}
+        />
+      )}
       {mostrarCambiarPass && <ModalCambiarPassword onCerrar={() => setMostrarCambiarPass(false)} />}
+      {mostrarModalTareas && (
+        <ModalTareasPendientes
+          tareas={tareasRelevantes}
+          onMarcarEstado={marcarTareaEstado}
+          onVerTodas={() => { setMostrarModalTareas(false); irATab('tareas') }}
+          onCerrar={() => setMostrarModalTareas(false)}
+        />
+      )}
     </div>
   )
 }
