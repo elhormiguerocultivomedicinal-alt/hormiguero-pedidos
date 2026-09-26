@@ -3528,7 +3528,34 @@ function PanelInsumosStock({ categoria, items, movimientos, onAgregarItem, onEli
 }
 
 // ─── Tareas: pestaña de anotaciones/pendientes del equipo ───────────────────
+// Igual que Gastos: cada Hormi tiene sus propias tareas, separadas por un picker
+// arriba (no hay un "general" compartido para tareas, todas pertenecen a una locación).
 function TabTareas({ tareas, tareasTipos, onAgregarTarea, onMarcarEstado, onEliminarTarea, onAgregarTipo, onEliminarTipo, onEditarFechaLimite }) {
+  const [locacion, setLocacion] = useState('Hormi 1.0')
+  const tareasFiltradas = tareas.filter(t => t.locacion === locacion)
+  return (
+    <div className="content">
+      <div className="miembro-row">
+        {['Hormi 1.0', 'Hormi 2.0'].map(loc => (
+          <button key={loc} className={`miembro-btn${locacion === loc ? ' active' : ''}`} onClick={() => setLocacion(loc)}>{loc}</button>
+        ))}
+      </div>
+      <PanelTareas
+        locacion={locacion}
+        tareas={tareasFiltradas}
+        tareasTipos={tareasTipos}
+        onAgregarTarea={onAgregarTarea}
+        onMarcarEstado={onMarcarEstado}
+        onEliminarTarea={onEliminarTarea}
+        onAgregarTipo={onAgregarTipo}
+        onEliminarTipo={onEliminarTipo}
+        onEditarFechaLimite={onEditarFechaLimite}
+      />
+    </div>
+  )
+}
+
+function PanelTareas({ locacion, tareas, tareasTipos, onAgregarTarea, onMarcarEstado, onEliminarTarea, onAgregarTipo, onEliminarTipo, onEditarFechaLimite }) {
   const [toast, showToast] = useToast()
   const [descripcion, setDescripcion] = useState('')
   const [tipo, setTipo] = useState('')
@@ -3555,7 +3582,7 @@ function TabTareas({ tareas, tareasTipos, onAgregarTarea, onMarcarEstado, onElim
     const limpio = descripcion.trim()
     if (!limpio || excedePalabras || guardando || !tipo) return
     setGuardando(true)
-    const res = await onAgregarTarea({ descripcion: limpio, tipo, prioridad, asignado_a: asignadoA || null, fecha_limite: fechaLimite || null })
+    const res = await onAgregarTarea({ descripcion: limpio, tipo, prioridad, asignado_a: asignadoA || null, fecha_limite: fechaLimite || null, locacion })
     setGuardando(false)
     if (res?.ok === false) { showToast('No se pudo guardar la tarea'); return }
     setDescripcion('')
@@ -3584,8 +3611,8 @@ function TabTareas({ tareas, tareasTipos, onAgregarTarea, onMarcarEstado, onElim
   const totalVencidas = pendientes.filter(t => t.fecha_limite && t.fecha_limite < hoy).length
 
   return (
-    <div className="content">
-      <div style={seccionTituloTareas}>Nueva tarea</div>
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+      <div style={seccionTituloTareas}>Nueva tarea en {locacion}</div>
       <div className="card">
         <div className="form-grid">
           <div className="form-group full">
@@ -3881,7 +3908,7 @@ function ModalTareasPendientes({ tareas, onMarcarEstado, onVerTodas, onCerrar })
               <div key={t.id} style={{ background: 'var(--bg-secondary)', borderRadius: 'var(--radius-md)', padding: 10, display: 'flex', gap: 8, alignItems: 'flex-start' }}>
                 <div style={{ flex: 1, minWidth: 0 }}>
                   <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--text-primary)' }}>{t.descripcion}</div>
-                  <div style={{ fontSize: 11, color: 'var(--text-secondary)', marginTop: 2 }}>{t.tipo} · {t.asignado_a || 'Sin asignar'}</div>
+                  <div style={{ fontSize: 11, color: 'var(--text-secondary)', marginTop: 2 }}>{t.locacion} · {t.tipo} · {t.asignado_a || 'Sin asignar'}</div>
                 </div>
                 <span className="badge" style={{ background: FONDO_PRIORIDAD_TAREA[t.prioridad], color: COLOR_PRIORIDAD_TAREA[t.prioridad], flexShrink: 0 }}>{LABEL_PRIORIDAD_TAREA[t.prioridad]}</span>
                 <button onClick={() => marcarHecha(t.id)} style={{ ...btnLinkStyle('var(--green-dark)'), flexShrink: 0 }}>Hecha</button>
@@ -5251,8 +5278,8 @@ export default function App() {
     return registrarMovimientoInsumo({ insumo, tipo: 'ajuste', cantidad: delta, precioUnitario: null, fecha: new Date().toISOString().slice(0, 10), miembro, nota: null, locacion: null }, setInsumosStock, setInsumosStockMovimientos, setGastos)
   }, [miembro])
 
-  const agregarTarea = useCallback(async ({ descripcion, tipo, prioridad, asignado_a, fecha_limite }) => {
-    const { data, error } = await supabase.from('tareas').insert({ descripcion, tipo, prioridad, asignado_a: asignado_a || null, fecha_limite: fecha_limite || null, creado_por: miembro || null }).select().single()
+  const agregarTarea = useCallback(async ({ descripcion, tipo, prioridad, asignado_a, fecha_limite, locacion }) => {
+    const { data, error } = await supabase.from('tareas').insert({ descripcion, tipo, prioridad, asignado_a: asignado_a || null, fecha_limite: fecha_limite || null, locacion, creado_por: miembro || null }).select().single()
     if (error || !data) { console.error('Error al guardar tarea', error); return { ok: false, error } }
     setTareas(prev => [...prev, data])
     return { ok: true, data }
