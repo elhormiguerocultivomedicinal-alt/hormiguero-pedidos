@@ -40,6 +40,33 @@ function hoyCompleto() {
   return `${d.getDate()}/${d.getMonth() + 1}/${d.getFullYear()}`
 }
 
+// Hoy en hora LOCAL como aaaa-mm-dd. No usar toISOString(): es UTC y después de las
+// 21 h (Argentina) devuelve el día siguiente — ya pasó con cobros reales.
+function hoyISO() {
+  const d = new Date()
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+}
+
+// Formato único de la fecha de un gasto: d/m/aaaa sin ceros a la izquierda (lo que
+// produce el DatePicker). Acepta también aaaa-mm-dd (compras de Stock) o d/m/aaaa con
+// ceros, y devuelve null si no es una fecha real (ej. 31/2/2026).
+function normalizarFechaGasto(str) {
+  const s = String(str || '').trim()
+  let d, m, y
+  if (/^\d{4}-\d{1,2}-\d{1,2}$/.test(s)) [y, m, d] = s.split('-').map(Number)
+  else if (/^\d{1,2}\/\d{1,2}\/\d{4}$/.test(s)) [d, m, y] = s.split('/').map(Number)
+  else return null
+  const f = new Date(y, m - 1, d)
+  if (f.getFullYear() !== y || f.getMonth() !== m - 1 || f.getDate() !== d) return null
+  return `${d}/${m}/${y}`
+}
+
+// El mes de un gasto siempre sale de su fecha, nunca del día en que se cargó.
+function mesDeFecha(fechaDMA) {
+  const [, m, y] = fechaDMA.split('/')
+  return `${Number(m)}/${y}`
+}
+
 function parseFechaCompleta(str) {
   const partes = String(str || '').split('/')
   if (partes.length !== 3) return null
@@ -389,8 +416,22 @@ function InputMonto({ value, onChange, placeholder, disabled, className = 'form-
     if (!digits) return neg ? '-' : ''
     return (neg ? '-$' : '$') + Number(digits).toLocaleString('es-AR')
   }
+  // Coma decimal (formato argentino): la app no usa centavos, así que todo lo que va después de
+  // una coma se descarta. Antes "1.500,75" quedaba como $150.075 porque se juntaban los dígitos.
+  // Al tipear, la coma desaparece del display: este flag hace que los dígitos que siguen
+  // (los centavos) se ignoren hasta que se borre algo o se vuelva a entrar al campo.
+  const enCentavos = useRef(false)
   function handleChange(e) {
-    const raw = e.target.value
+    let raw = e.target.value
+    if (raw.includes(',')) {
+      enCentavos.current = true
+      raw = raw.replace(/,.*$/, '')
+    } else if (enCentavos.current) {
+      const antes = String(value ?? '').replace(/\D/g, '')
+      const ahora = raw.replace(/\D/g, '')
+      if (ahora.length > antes.length && ahora.startsWith(antes)) return
+      enCentavos.current = false
+    }
     const neg = permiteNegativo && raw.trim().startsWith('-')
     const digits = raw.replace(/\D/g, '')
     onChange((neg ? '-' : '') + digits)
@@ -405,12 +446,16 @@ function InputMonto({ value, onChange, placeholder, disabled, className = 'form-
       disabled={disabled}
       style={style}
       onChange={handleChange}
+      onFocus={() => { enCentavos.current = false }}
     />
   )
 }
 
 // ─── Divisiones de pago/gasto entre varias cuentas (compartido) ───
 function validarDivisiones(divisiones, total) {
+  // Una fila con plata pero sin cuenta (o al revés) antes se descartaba en silencio y esa
+  // plata desaparecía del gasto dividido.
+  if (divisiones.some(d => !!d.cuenta !== (parseFloat(d.monto) > 0))) return { ok: false, msg: 'Hay una fila incompleta: poné monto y cuenta, o sacala con ✕.' }
   const filas = divisiones.filter(d => d.cuenta && parseFloat(d.monto) > 0)
   if (filas.length < 2) return { ok: false, msg: 'Agregá al menos 2 cuentas, o cancelá la división.' }
   const suma = filas.reduce((s, d) => s + parseFloat(d.monto), 0)
@@ -511,13 +556,13 @@ function PagosRegistro({ registro, pagos, total, miembro, onAgregarPago, onEdita
     return cuentaPrevia === CUENTA_EFECTIVO ? '' : cuentaPrevia
   }
   function abrirAgregar() {
-    setForm({ monto: '', metodoPago: 'Transferencia', cuenta: cuentaPara('Transferencia', ''), fecha: new Date().toISOString().slice(0, 10) })
+    setForm({ monto: '', metodoPago: 'Transferencia', cuenta: cuentaPara('Transferencia', ''), fecha: hoyISO() })
     setError('')
     setFormPara('agregar')
   }
   function abrirEditar(pg) {
     const metodoPago = pg.metodo_pago || 'Transferencia'
-    setForm({ monto: String(pg.monto), metodoPago, cuenta: cuentaPara(metodoPago, pg.cuenta || ''), fecha: pg.fecha || new Date().toISOString().slice(0, 10) })
+    setForm({ monto: String(pg.monto), metodoPago, cuenta: cuentaPara(metodoPago, pg.cuenta || ''), fecha: pg.fecha || hoyISO() })
     setError('')
     setFormPara(pg.id)
   }
@@ -908,8 +953,23 @@ function ModalEditarGasto({ gasto, categorias, presupuestos, onGuardar, onElimin
   const [confirmando, setConfirmando] = useState(false)
   const [errorCuenta, setErrorCuenta] = useState('')
   const [errorCampos, setErrorCampos] = useState('')
+  // Guard contra doble click: ref (síncrono, frena clicks del mismo tick) + state (deshabilita el botón).
+  const [guardando, setGuardando] = useState(false)
+  const enCurso = useRef(false)
   const set = (k, v) => setForm(f => ({ ...f, [k]: v }))
   const presupuestosDisponibles = (presupuestos || []).filter(p => p.locacion === gasto.locacion && (!p.cerrado || p.id === gasto.presupuesto_id))
+
+  async function ejecutar(accion) {
+    if (enCurso.current) return
+    enCurso.current = true
+    setGuardando(true)
+    setErrorCampos('')
+    const res = await accion()
+    enCurso.current = false
+    setGuardando(false)
+    // Si salió bien el padre cierra el modal; si no, queda abierto con lo que se escribió.
+    if (!res?.ok) setErrorCampos(res?.msg || 'No se pudo guardar. Probá de nuevo.')
+  }
 
   function activarDivision() {
     const montoTotal = parseFloat(form.monto)
@@ -918,8 +978,8 @@ function ModalEditarGasto({ gasto, categorias, presupuestos, onGuardar, onElimin
   function cancelarDivision() { setForm(f => ({ ...f, dividido: false })); setErrorCuenta('') }
 
   function guardar() {
-    if (!form.descripcion.trim() || !form.categoria || !parseFloat(form.monto)) {
-      setErrorCampos('Completá descripción, categoría y monto.')
+    if (!form.descripcion.trim() || !form.categoria || !parseFloat(form.monto) || !form.fecha) {
+      setErrorCampos('Completá descripción, categoría, monto y fecha.')
       return
     }
     setErrorCampos('')
@@ -934,9 +994,8 @@ function ModalEditarGasto({ gasto, categorias, presupuestos, onGuardar, onElimin
       return
     }
     setErrorCuenta('')
-    const partes = form.fecha.split('/')
-    const mes = partes.length === 3 ? `${parseInt(partes[1])}/${partes[2]}` : gasto.mes
-    onGuardar({ ...gasto, ...form, monto: montoTotal, mes, cuenta: form.dividido ? null : (form.cuenta || null), divisiones: divisionesFinal, presupuesto_id: form.presupuesto_id ? Number(form.presupuesto_id) : null, cuentaEstimada: false })
+    // El mes lo deriva prepararGasto() a partir de la fecha.
+    ejecutar(() => onGuardar({ ...gasto, ...form, descripcion: form.descripcion.trim(), monto: montoTotal, cuenta: form.dividido ? null : (form.cuenta || null), divisiones: divisionesFinal, presupuesto_id: form.presupuesto_id ? Number(form.presupuesto_id) : null }))
   }
 
   return (
@@ -1005,16 +1064,16 @@ function ModalEditarGasto({ gasto, categorias, presupuestos, onGuardar, onElimin
             {errorCampos}
           </div>
         )}
-        <button className="btn-submit" style={{ marginTop: 16 }} onClick={guardar}>Guardar cambios</button>
+        <button className="btn-submit" style={{ marginTop: 16 }} onClick={guardar} disabled={guardando}>{guardando ? 'Guardando...' : 'Guardar cambios'}</button>
         {!confirmando ? (
-          <button onClick={() => setConfirmando(true)} style={{ width: '100%', marginTop: 8, padding: '10px', border: '0.5px solid #791F1F', borderRadius: 'var(--radius-md)', background: 'transparent', color: '#791F1F', fontSize: 14, fontWeight: 500, cursor: 'pointer' }}>
+          <button onClick={() => setConfirmando(true)} disabled={guardando} style={{ width: '100%', marginTop: 8, padding: '10px', border: '0.5px solid #791F1F', borderRadius: 'var(--radius-md)', background: 'transparent', color: '#791F1F', fontSize: 14, fontWeight: 500, cursor: 'pointer' }}>
             Eliminar gasto
           </button>
         ) : (
           <div style={{ marginTop: 8, background: '#FCEBEB', border: '0.5px solid #791F1F', borderRadius: 'var(--radius-md)', padding: 12 }}>
             <div style={{ fontSize: 13, color: '#791F1F', fontWeight: 500, marginBottom: 10, textAlign: 'center' }}>¿Confirmás la eliminación?</div>
             <div style={{ display: 'flex', gap: 8 }}>
-              <button onClick={() => onEliminar(gasto)} style={{ flex: 1, padding: '9px', background: '#791F1F', color: 'white', border: 'none', borderRadius: 'var(--radius-md)', fontSize: 13, fontWeight: 600, cursor: 'pointer' }}>Sí, eliminar</button>
+              <button onClick={() => ejecutar(() => onEliminar(gasto))} disabled={guardando} style={{ flex: 1, padding: '9px', background: '#791F1F', color: 'white', border: 'none', borderRadius: 'var(--radius-md)', fontSize: 13, fontWeight: 600, cursor: 'pointer' }}>Sí, eliminar</button>
               <button onClick={() => setConfirmando(false)} style={{ flex: 1, padding: '9px', background: 'transparent', border: '0.5px solid var(--border-mid)', borderRadius: 'var(--radius-md)', fontSize: 13, cursor: 'pointer' }}>Cancelar</button>
             </div>
           </div>
@@ -1032,7 +1091,7 @@ function FormRegistro({ cfg, onGuardar, onAgregarPago, miembro, tipoRegistro = '
   const requiereNombre = !esInterno || esRegalo
   const initial = () => ({
     socio: '', entregado: false, filas: [cfg.nuevaFila()],
-    cobradoAhora: false, montoPago: '', metodoPago: 'Transferencia', cuenta: '', fechaPago: new Date().toISOString().slice(0, 10),
+    cobradoAhora: false, montoPago: '', metodoPago: 'Transferencia', cuenta: '', fechaPago: hoyISO(),
     esMembresia: false, tier: null, socioId: '',
   })
   const [form, setForm] = useState(initial)
@@ -2038,6 +2097,8 @@ function PanelGastos({ locacion, gastos, miembro, presupuestos, onNuevoGasto, on
   const [filtrocat, setFiltrocat] = useState('todas')
   const [editando, setEditando] = useState(() => target ? (gastos.find(g => g.id === target.id) || null) : null)
   const [mesesAbiertos, setMesesAbiertos] = useState(() => target ? new Set([target.mes]) : new Set())
+  const [guardando, setGuardando] = useState(false)
+  const enCurso = useRef(false)
   const set = (k, v) => setForm(f => ({ ...f, [k]: v }))
   function toggleMes(mes) {
     setMesesAbiertos(prev => {
@@ -2056,8 +2117,9 @@ function PanelGastos({ locacion, gastos, miembro, presupuestos, onNuevoGasto, on
   function cancelarDivision() { set('dividido', false) }
 
   async function guardarGasto() {
-    if (!form.descripcion.trim() || !form.categoria || !parseFloat(form.monto)) {
-      showToast('Completá descripción, categoría y monto')
+    if (enCurso.current) return
+    if (!form.descripcion.trim() || !form.categoria || !parseFloat(form.monto) || !form.fecha) {
+      showToast('Completá descripción, categoría, monto y fecha')
       return
     }
     const montoTotal = parseFloat(form.monto)
@@ -2070,15 +2132,18 @@ function PanelGastos({ locacion, gastos, miembro, presupuestos, onNuevoGasto, on
       showToast('Elegí la cuenta de la que salió el gasto')
       return
     }
-    const partes = (form.fecha || '').split('/')
-    const mes = partes.length === 3 ? `${parseInt(partes[1])}/${partes[2]}` : mesActual()
-    const nuevoGasto = { descripcion: form.descripcion.trim(), categoria: form.categoria, monto: montoTotal, fecha: form.fecha, mes, locacion, miembro: miembro || null, cuenta: form.dividido ? null : (form.cuenta || null), divisiones: divisionesFinal, presupuesto_id: form.presupuesto_id ? Number(form.presupuesto_id) : null, cuenta_estimada: false }
+    // El mes lo deriva prepararGasto() a partir de la fecha.
+    const nuevoGasto = { descripcion: form.descripcion.trim(), categoria: form.categoria, monto: montoTotal, fecha: form.fecha, locacion, miembro: miembro || null, cuenta: form.dividido ? null : (form.cuenta || null), divisiones: divisionesFinal, presupuesto_id: form.presupuesto_id ? Number(form.presupuesto_id) : null, cuenta_estimada: false }
+    enCurso.current = true
+    setGuardando(true)
     const res = await onNuevoGasto(nuevoGasto)
+    enCurso.current = false
+    setGuardando(false)
     if (res?.ok) {
       setForm({ descripcion: '', categoria: '', monto: '', fecha: '', cuenta: '', presupuesto_id: '', dividido: false, divisiones: [] })
       setMostrarForm(false)
       showToast('Gasto registrado ✓')
-    } else showToast('Error al guardar')
+    } else showToast(res?.msg || 'Error al guardar')
   }
 
   const filtrados = gastos.filter(g => filtrocat === 'todas' || g.categoria === filtrocat)
@@ -2171,7 +2236,7 @@ function PanelGastos({ locacion, gastos, miembro, presupuestos, onNuevoGasto, on
             )}
           </div>
           <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
-            <button className="btn-submit" onClick={guardarGasto} style={{ flex: 1 }}>Guardar gasto</button>
+            <button className="btn-submit" onClick={guardarGasto} disabled={guardando} style={{ flex: 1 }}>{guardando ? 'Guardando...' : 'Guardar gasto'}</button>
             <button onClick={() => setMostrarForm(false)} style={{ padding: '0 16px', border: '0.5px solid var(--border-mid)', borderRadius: 'var(--radius-md)', background: 'transparent', cursor: 'pointer', fontSize: 13, color: 'var(--text-secondary)' }}>Cancelar</button>
           </div>
         </div>
@@ -2202,8 +2267,8 @@ function PanelGastos({ locacion, gastos, miembro, presupuestos, onNuevoGasto, on
                   <div className="pedidos-list" style={{ marginTop: 8, marginLeft: 12 }}>
                     {gastosDelMes.map(g => (
                       <div className="pedido-card" key={g.id} onClick={() => setEditando(g)} style={{ cursor: 'pointer' }}>
-                        <div>
-                          <div className="pedido-nombre">{g.descripcion}</div>
+                        <div style={{ minWidth: 0 }}>
+                          <div className="pedido-nombre" style={{ overflowWrap: 'anywhere' }}>{g.descripcion}</div>
                           <div
                             className="pedido-sub"
                             title={Array.isArray(g.divisiones) && g.divisiones.length > 0 ? g.divisiones.map(d => `${d.cuenta}: ${formatPesos(d.monto)}`).join(' · ') : undefined}
@@ -2236,11 +2301,14 @@ function PanelGastos({ locacion, gastos, miembro, presupuestos, onNuevoGasto, on
           presupuestos={presupuestos}
           onGuardar={async actualizado => {
             const res = await onActualizarGasto(actualizado)
-            if (res?.ok) showToast('Gasto actualizado ✓')
-            else showToast('Error al guardar')
-            setEditando(null)
+            if (res?.ok) { showToast('Gasto actualizado ✓'); setEditando(null) }
+            return res
           }}
-          onEliminar={async g => { await onEliminarGasto(g); setEditando(null) }}
+          onEliminar={async g => {
+            const res = await onEliminarGasto(g)
+            if (res?.ok) { showToast('Gasto eliminado ✓'); setEditando(null) }
+            return res
+          }}
           onCerrar={() => setEditando(null)}
         />
       )}
@@ -2291,7 +2359,7 @@ function totalAsignado(p, aportes) {
 function estadoPresupuesto(p, gastos, aportes) {
   if (p.cerrado) return 'Cerrado'
   if (gastoDePresupuesto(p, gastos) >= totalAsignado(p, aportes)) return 'Agotado'
-  if (p.fecha_limite && p.fecha_limite < new Date().toISOString().slice(0, 10)) return 'Vencido'
+  if (p.fecha_limite && p.fecha_limite < hoyISO()) return 'Vencido'
   return 'Activo'
 }
 
@@ -2321,7 +2389,7 @@ const btnLinkStyle = color => ({ background: 'none', border: 'none', padding: 0,
 
 function TarjetaPresupuesto({ p, gastos, aportes, onAlternarCerrado, onAportar, onEliminarAporte, onEditar, mostrarLocacion }) {
   const [formAbierto, setFormAbierto] = useState(null) // null | 'aportar' | 'editar'
-  const [formAporte, setFormAporte] = useState({ monto: '', motivo: '', fecha: new Date().toISOString().slice(0, 10) })
+  const [formAporte, setFormAporte] = useState({ monto: '', motivo: '', fecha: hoyISO() })
   const [formEditar, setFormEditar] = useState({ nombre: p.nombre, fecha_limite: p.fecha_limite || '' })
 
   const aportesDelPresupuesto = (aportes || []).filter(a => a.presupuesto_id === p.id)
@@ -2335,7 +2403,7 @@ function TarjetaPresupuesto({ p, gastos, aportes, onAlternarCerrado, onAportar, 
   const pct = asignado > 0 ? Math.min(100, Math.max(0, (gastado / asignado) * 100)) : 0
 
   function abrirForm(nombre) {
-    setFormAporte({ monto: '', motivo: '', fecha: new Date().toISOString().slice(0, 10) })
+    setFormAporte({ monto: '', motivo: '', fecha: hoyISO() })
     setFormEditar({ nombre: p.nombre, fecha_limite: p.fecha_limite || '' })
     setFormAbierto(prev => prev === nombre ? null : nombre)
   }
@@ -2542,7 +2610,7 @@ function TarjetaCuentaDolar({ r, historial, onValidarSaldo, onEditarValidacion, 
   }
 
   function abrirMovimiento() {
-    setFormMov({ tipo: 'ingreso', monto: '', concepto: '', fecha: new Date().toISOString().slice(0, 10) })
+    setFormMov({ tipo: 'ingreso', monto: '', concepto: '', fecha: hoyISO() })
     setFormAbierto('movimiento')
   }
 
@@ -3034,7 +3102,7 @@ function TabFinanzas({ pedidos, esquejes, insumos, miembro, gastos, presupuestos
 
 function PanelFinanzasHormi({ locacion, pedidos, esquejes, gastos, presupuestos, setPresupuestos, aportes, setAportes, gastosFijos, setGastosFijos, totalCuentas, miembro, pedidoPagos, esquejePagos }) {
   const [mostrarForm, setMostrarForm] = useState(false)
-  const [form, setForm] = useState({ nombre: '', monto_asignado: '', fecha_asignacion: new Date().toISOString().slice(0, 10), fecha_limite: '' })
+  const [form, setForm] = useState({ nombre: '', monto_asignado: '', fecha_asignacion: hoyISO(), fecha_limite: '' })
   const [mostrarFormFijo, setMostrarFormFijo] = useState(false)
   const [formFijo, setFormFijo] = useState({ nombre: '', categoria: '', monto: '' })
   const [editandoFijo, setEditandoFijo] = useState(null)
@@ -3078,14 +3146,14 @@ function PanelFinanzasHormi({ locacion, pedidos, esquejes, gastos, presupuestos,
       nombre: form.nombre.trim(),
       locacion,
       monto_asignado: parseFloat(form.monto_asignado),
-      fecha_asignacion: form.fecha_asignacion || new Date().toISOString().slice(0, 10),
+      fecha_asignacion: form.fecha_asignacion || hoyISO(),
       fecha_limite: form.fecha_limite || null,
       creado_por: miembro || null,
     }
     const { data, error } = await supabase.from('presupuestos').insert(nuevoPresupuesto).select().single()
     if (!error && data) {
       setPresupuestos(prev => [data, ...prev])
-      setForm({ nombre: '', monto_asignado: '', fecha_asignacion: new Date().toISOString().slice(0, 10), fecha_limite: '' })
+      setForm({ nombre: '', monto_asignado: '', fecha_asignacion: hoyISO(), fecha_limite: '' })
       setMostrarForm(false)
       showToast('Presupuesto creado ✓')
     } else showToast('Error al guardar')
@@ -3333,15 +3401,21 @@ function PanelFinanzasHormi({ locacion, pedidos, esquejes, gastos, presupuestos,
 
 function TabGastos({ miembro, gastos, presupuestos, onGuardarGasto, onActualizarGasto, onEliminarGasto, target }) {
   const [locacion, setLocacion] = useState(() => target?.locacion || 'Hormi 1.0')
+  // El objetivo de "Revisar" (desde Finanzas) se usa una sola vez: si no, al volver a
+  // esa locación se reabriría solo el modal del gasto.
+  const [objetivo, setObjetivo] = useState(target)
   const gastosFiltrados = gastos.filter(g => g.locacion === locacion)
   return (
     <div className="content">
       <div className="miembro-row">
         {['Hormi 1.0', 'Hormi 2.0'].map(loc => (
-          <button key={loc} className={`miembro-btn${locacion === loc ? ' active' : ''}`} onClick={() => setLocacion(loc)}>{loc}</button>
+          <button key={loc} className={`miembro-btn${locacion === loc ? ' active' : ''}`} onClick={() => { setLocacion(loc); setObjetivo(null) }}>{loc}</button>
         ))}
       </div>
+      {/* key={locacion}: cada Hormi arranca con el formulario vacío. Sin esto, un gasto a medio
+          cargar (con su presupuesto) viajaba a la otra locación — así pasó con el gasto 449. */}
       <PanelGastos
+        key={locacion}
         locacion={locacion}
         gastos={gastosFiltrados}
         miembro={miembro}
@@ -3349,7 +3423,7 @@ function TabGastos({ miembro, gastos, presupuestos, onGuardarGasto, onActualizar
         onNuevoGasto={onGuardarGasto}
         onActualizarGasto={onActualizarGasto}
         onEliminarGasto={onEliminarGasto}
-        target={target}
+        target={objetivo}
       />
     </div>
   )
@@ -3607,7 +3681,7 @@ function PanelTareas({ locacion, tareas, tareasTipos, onAgregarTarea, onMarcarEs
     setConfirmandoBorrar(null)
   }
 
-  const hoy = new Date().toISOString().slice(0, 10)
+  const hoy = hoyISO()
   const totalVencidas = pendientes.filter(t => t.fecha_limite && t.fecha_limite < hoy).length
 
   return (
@@ -3751,7 +3825,7 @@ function FilaTarea({ tarea, hecha, confirmando, onMarcarHecha, onReabrir, onEdit
   const [nuevaFecha, setNuevaFecha] = useState(tarea.fecha_limite || '')
   const [guardandoFecha, setGuardandoFecha] = useState(false)
 
-  const hoy = new Date().toISOString().slice(0, 10)
+  const hoy = hoyISO()
   const vencida = !hecha && tarea.fecha_limite && tarea.fecha_limite < hoy
 
   async function guardarFecha() {
@@ -3928,24 +4002,35 @@ function MovimientoInsumoForm({ item, onGuardar, onCancelar }) {
   const [tipo, setTipo] = useState('compra')
   const [cantidad, setCantidad] = useState('')
   const [precioUnitario, setPrecioUnitario] = useState('')
-  const [fecha, setFecha] = useState(new Date().toISOString().slice(0, 10))
+  const [fecha, setFecha] = useState(hoyISO())
   const [locacion, setLocacion] = useState('Hormi 1.0')
+  const [cuenta, setCuenta] = useState('')
   const [nota, setNota] = useState('')
   const [error, setError] = useState('')
   const [guardando, setGuardando] = useState(false)
+  const enCurso = useRef(false)
+  // Una compra con precio genera un gasto: necesita la cuenta de la que salió la plata, igual
+  // que un gasto cargado a mano — si no, nunca se descuenta de ninguna cuenta en Finanzas.
+  const generaGasto = tipo === 'compra' && parseFloat(precioUnitario) > 0
 
   async function confirmar() {
+    if (enCurso.current) return
     const cant = parseFloat(cantidad)
     if (!cant || cant <= 0) { setError('Ingresá una cantidad válida.'); return }
+    if (!fecha) { setError('Elegí la fecha.'); return }
+    if (generaGasto && !cuenta) { setError('Elegí la cuenta de la que salió la plata.'); return }
+    enCurso.current = true
     setGuardando(true)
     const res = await onGuardar({
       tipo, cantidad: cant,
-      precioUnitario: tipo === 'compra' && precioUnitario ? parseFloat(precioUnitario) : null,
+      precioUnitario: generaGasto ? parseFloat(precioUnitario) : null,
       fecha, locacion: tipo === 'compra' ? locacion : null,
+      cuenta: generaGasto ? cuenta : null,
       nota: nota.trim() || null,
     })
+    enCurso.current = false
     setGuardando(false)
-    if (!res?.ok) setError('No se pudo guardar. Intentá de nuevo.')
+    if (!res?.ok) setError(res?.msg || 'No se pudo guardar. Intentá de nuevo.')
   }
 
   return (
@@ -3975,6 +4060,15 @@ function MovimientoInsumoForm({ item, onGuardar, onCancelar }) {
             <select className="form-control" value={locacion} onChange={e => setLocacion(e.target.value)}>
               <option>Hormi 1.0</option>
               <option>Hormi 2.0</option>
+            </select>
+          </div>
+        )}
+        {generaGasto && (
+          <div className="form-group full">
+            <label className="form-label">Cuenta de la que sale</label>
+            <select className="form-control" value={cuenta} onChange={e => setCuenta(e.target.value)}>
+              <option value="">Seleccionar...</option>
+              {CUENTAS.map(c => <option key={c} value={c}>{c}</option>)}
             </select>
           </div>
         )}
@@ -4762,17 +4856,20 @@ async function editarStockMinimoInsumo(id, nuevoValor, setFn) {
 // Registra un movimiento (compra/consumo/ajuste/baja) y ajusta el stock vivo vía RPC.
 // Una compra con precio primero genera el gasto correspondiente en `gastos` (categoría
 // según CATEGORIA_GASTO_POR_INSUMO) para dejar el gasto_id ya enlazado en el movimiento.
-async function registrarMovimientoInsumo({ insumo, tipo, cantidad, precioUnitario, fecha, miembro, nota, locacion }, setInsumosStock, setInsumosStockMovimientos, setGastos) {
+async function registrarMovimientoInsumo({ insumo, tipo, cantidad, precioUnitario, fecha, miembro, nota, locacion, cuenta }, setInsumosStock, setInsumosStockMovimientos, setGastos) {
   const delta = (tipo === 'consumo' || tipo === 'baja') ? -cantidad : cantidad
   let gastoId = null
   if (tipo === 'compra' && precioUnitario) {
-    const nuevoGasto = {
+    // Pasa por prepararGasto() como cualquier gasto: la fecha del form (aaaa-mm-dd) queda en
+    // el formato único d/m/aaaa y el mes sale de esa fecha, no del día de carga.
+    const prep = prepararGasto({
       descripcion: `${insumo.nombre}${nota ? ` — ${nota}` : ''}`,
       categoria: CATEGORIA_GASTO_POR_INSUMO[insumo.categoria] || 'Insumos cultivo',
-      monto: cantidad * precioUnitario, fecha, mes: mesActual(), locacion,
-      miembro: miembro || null, cuenta: null, presupuesto_id: null, cuenta_estimada: false,
-    }
-    const { data: gasto, error: gastoError } = await supabase.from('gastos').insert(nuevoGasto).select().single()
+      monto: cantidad * precioUnitario, fecha, locacion,
+      miembro: miembro || null, cuenta: cuenta || null, presupuesto_id: null, cuenta_estimada: false,
+    }, [])
+    if (!prep.ok) return { ok: false, msg: prep.msg }
+    const { data: gasto, error: gastoError } = await supabase.from('gastos').insert(prep.gasto).select().single()
     if (gastoError || !gasto) { console.error('Error generando gasto de compra', gastoError); return { ok: false, error: gastoError } }
     setGastos(prev => [gasto, ...prev])
     gastoId = gasto.id
@@ -4783,13 +4880,24 @@ async function registrarMovimientoInsumo({ insumo, tipo, cantidad, precioUnitari
     fecha, miembro: miembro || null, nota: nota || null, gasto_id: gastoId,
   }
   const { data: movimiento, error: movError } = await supabase.from('insumos_stock_movimientos').insert(nuevoMovimiento).select().single()
-  if (movError || !movimiento) { console.error('Error registrando movimiento de insumo', movError); return { ok: false, error: movError } }
+  if (movError || !movimiento) {
+    console.error('Error registrando movimiento de insumo', movError)
+    // Deshace el gasto recién creado: si no, queda un gasto sin movimiento y al reintentar se duplica.
+    if (gastoId) {
+      const { error: undoError } = await supabase.from('gastos').delete().eq('id', gastoId)
+      if (!undoError) setGastos(prev => prev.filter(g => g.id !== gastoId))
+      else return { ok: false, error: movError, msg: 'No se pudo registrar el movimiento y quedó un gasto suelto de esta compra en Gastos: borralo antes de reintentar.' }
+    }
+    return { ok: false, error: movError }
+  }
   setInsumosStockMovimientos(prev => [movimiento, ...prev])
   const { data: nuevoStock, error: rpcError } = await supabase.rpc('ajustar_stock_insumo', { p_insumo_id: insumo.id, p_delta: delta })
   if (rpcError) {
     console.error('Error ajustando stock de insumo', rpcError)
     alert(`Se guardó el movimiento, pero no se pudo ajustar el stock de ${insumo.nombre}. Revisalo manualmente.`)
-    return { ok: false, error: rpcError }
+    // El movimiento (y su gasto) ya quedaron guardados: se cierra el form como éxito para que
+    // nadie lo reintente y duplique el movimiento y el gasto.
+    return { ok: true }
   }
   if (nuevoStock != null) setInsumosStock(prev => prev.map(i => i.id === insumo.id ? { ...i, stock_actual: Number(nuevoStock) } : i))
   return { ok: true }
@@ -4832,6 +4940,25 @@ const insumoToDB = i => ({
   fecha: i.fecha, mes: i.mes || mesActual(), miembro: i.miembro, socio: i.socio,
   geneticas: i.geneticas, total: i.total, entregado: i.entregado, tipo: 'cliente',
 })
+
+// Único punto por el que pasa todo gasto antes de ir a la base (alta desde Gastos, edición y
+// compras de Stock): fecha obligatoria en formato único, mes derivado de esa fecha, y presupuesto
+// de la misma locación. Así ninguna pantalla puede guardar un gasto con otro criterio.
+function prepararGasto(g, presupuestos) {
+  const fecha = normalizarFechaGasto(g.fecha)
+  if (!fecha) return { ok: false, msg: 'Elegí la fecha del gasto.' }
+  if (g.presupuesto_id) {
+    const p = (presupuestos || []).find(x => x.id === Number(g.presupuesto_id))
+    if (!p || p.locacion !== g.locacion) return { ok: false, msg: `El presupuesto elegido no es de ${g.locacion}. Elegí otro o "Ninguno".` }
+  }
+  return { ok: true, gasto: { ...g, fecha, mes: mesDeFecha(fecha) } }
+}
+
+// PGRST116 = el update/insert con .single() no devolvió ninguna fila: el gasto ya no existe.
+function mensajeErrorGasto(error, accion) {
+  if (error?.code === 'PGRST116') return 'Este gasto ya no existe (puede que otro lo haya borrado). Recargá la página.'
+  return `No se pudo ${accion}. Revisá la conexión y probá de nuevo.`
+}
 
 const gastoToDB = g => ({
   descripcion: g.descripcion, categoria: g.categoria, monto: g.monto,
@@ -5246,22 +5373,26 @@ export default function App() {
   const eliminarGeneticaEsquejes = useCallback(nombre => eliminarGeneticaCatalogo('geneticas_esquejes', nombre, stockEsquejes, setGeneticasEsquejes), [stockEsquejes])
 
   const guardarGasto = useCallback(async nuevoGasto => {
-    const { data, error } = await supabase.from('gastos').insert(nuevoGasto).select().single()
-    if (error || !data) { console.error('Error al guardar gasto', error); return { ok: false, error } }
+    const prep = prepararGasto(nuevoGasto, presupuestos)
+    if (!prep.ok) return { ok: false, msg: prep.msg }
+    const { data, error } = await supabase.from('gastos').insert(prep.gasto).select().single()
+    if (error || !data) { console.error('Error al guardar gasto', error); return { ok: false, error, msg: mensajeErrorGasto(error, 'guardar el gasto') } }
     setGastos(prev => [data, ...prev])
     return { ok: true }
-  }, [])
+  }, [presupuestos])
 
   const actualizarGasto = useCallback(async gasto => {
-    const { data, error } = await supabase.from('gastos').update(gastoToDB(gasto)).eq('id', gasto.id).select().single()
-    if (error || !data) { console.error('Error al actualizar gasto', error); return { ok: false, error } }
+    const prep = prepararGasto(gasto, presupuestos)
+    if (!prep.ok) return { ok: false, msg: prep.msg }
+    const { data, error } = await supabase.from('gastos').update(gastoToDB(prep.gasto)).eq('id', gasto.id).select().single()
+    if (error || !data) { console.error('Error al actualizar gasto', error); return { ok: false, error, msg: mensajeErrorGasto(error, 'guardar los cambios') } }
     setGastos(prev => prev.map(g => g.id === data.id ? data : g))
     return { ok: true }
-  }, [])
+  }, [presupuestos])
 
   const eliminarGasto = useCallback(async gasto => {
     const { error } = await supabase.from('gastos').delete().eq('id', gasto.id)
-    if (error) { console.error('Error al eliminar gasto', error); return { ok: false, error } }
+    if (error) { console.error('Error al eliminar gasto', error); return { ok: false, error, msg: mensajeErrorGasto(error, 'eliminar el gasto') } }
     setGastos(prev => prev.filter(g => g.id !== gasto.id))
     return { ok: true }
   }, [])
@@ -5275,7 +5406,7 @@ export default function App() {
   const editarActualStock = useCallback((insumo, nuevoValor) => {
     const delta = Number(nuevoValor) - (insumo.stock_actual ?? 0)
     if (!Number.isFinite(delta) || delta === 0) return Promise.resolve({ ok: true })
-    return registrarMovimientoInsumo({ insumo, tipo: 'ajuste', cantidad: delta, precioUnitario: null, fecha: new Date().toISOString().slice(0, 10), miembro, nota: null, locacion: null }, setInsumosStock, setInsumosStockMovimientos, setGastos)
+    return registrarMovimientoInsumo({ insumo, tipo: 'ajuste', cantidad: delta, precioUnitario: null, fecha: hoyISO(), miembro, nota: null, locacion: null }, setInsumosStock, setInsumosStockMovimientos, setGastos)
   }, [miembro])
 
   const agregarTarea = useCallback(async ({ descripcion, tipo, prioridad, asignado_a, fecha_limite, locacion }) => {
@@ -5329,7 +5460,7 @@ export default function App() {
   useEffect(() => {
     if (!miembro || tareasRelevantes.length === 0) return
     const clave = `tareas_modal_visto_${miembro}`
-    const hoy = new Date().toISOString().slice(0, 10)
+    const hoy = hoyISO()
     try {
       if (localStorage.getItem(clave) === hoy) return
       localStorage.setItem(clave, hoy)
