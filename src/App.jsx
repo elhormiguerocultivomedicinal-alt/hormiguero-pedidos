@@ -1,9 +1,10 @@
-import { useState, useCallback, useEffect, useRef, useMemo } from 'react'
+import { useState, useCallback, useEffect, useRef, useMemo, useId } from 'react'
 import { Landmark, Wallet, ChevronDown, ChevronUp, Target, TriangleAlert, Info, Check, Package, Flag, Tag } from 'lucide-react'
 import './App.css'
 import { supabase } from './supabase'
 import { evaluarRegistro, colorPorIntensidad } from './parametrosTurba'
-import { evaluarFinanzas } from './agenteFinanzas'
+import { evaluarFinanzas, objetivoPago, objetivoGasto, describirDescartado } from './agenteFinanzas'
+import { gastosParecidos, pagosParecidos, ventasParecidas, capitalParecidos, devolucionPareceGasto, normalizarTexto } from './duplicados'
 
 const GENETICAS = ['OG24K', 'Choco OG', 'Z-Kiem', 'Fancy', 'Gorilla Rainbow']
 const GENETICAS_ESQUEJES = ['OG24K', 'Black Domina', 'Z-Kiem', 'Fancy', 'Gorilla Rainbow', 'Dosichoc']
@@ -167,6 +168,7 @@ const LABEL_TIPO_MOVIMIENTO = { compra: 'Compra', consumo: 'Consumo', ajuste: 'A
 // etc.), con aviso al entrar a la app ordenado por prioridad. El tipo es un
 // catálogo editable (tabla tareas_tipos), igual que genéticas/insumos.
 const MAX_PALABRAS_TAREA = 15
+const MAX_PALABRAS_PRESUPUESTO = 15
 const PRIORIDADES_TAREA = [
   { valor: 'alta', label: 'Alta' },
   { valor: 'media', label: 'Media' },
@@ -302,6 +304,25 @@ function esDesdeCorte(fechaStr, corteISO) {
 function esDesdeCorteISO(fechaISO, corteISO) {
   if (!fechaISO) return true
   return fechaISO >= (corteISO || FECHA_CORTE_DEFAULT)
+}
+
+// Cotización del dólar blue del día de una fecha DD/MM/YYYY (formato de gastos) — usa la más
+// cercana ANTERIOR si no hay fila exacta para ese día (fin de semana, o un gasto de antes de que
+// existiera esta tabla), y si no hay ninguna anterior, la más vieja disponible.
+function cotizacionParaFecha(fechaStr, cotizaciones) {
+  if (!cotizaciones || cotizaciones.length === 0) return null
+  const d = parseFechaDP(fechaStr)
+  if (!d) return cotizaciones[0] // fecha ilegible: usar la más reciente conocida
+  const iso = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+  return cotizaciones.find(c => c.fecha === iso) || cotizaciones.find(c => c.fecha < iso) || cotizaciones[cotizaciones.length - 1]
+}
+
+// Para combinar un monto en USD en un total general en pesos (KPIs de "ahora mismo", no
+// históricos) — usa la cotización de HOY, a diferencia de gastoDePresupuesto que usa la del día
+// de cada gasto puntual.
+function valorEnPesos(monto, moneda, cotizacionHoy) {
+  if (moneda !== 'USD') return monto
+  return cotizacionHoy ? monto * cotizacionHoy.promedio : 0
 }
 
 function formatFechaCompleta(d) {
@@ -473,7 +494,10 @@ function FilasDivision({ divisiones, onChange, total, conMetodo }) {
   }
   function agregar() { onChange([...divisiones, { id: Math.random(), monto: '', metodoPago: 'Transferencia', cuenta: '' }]) }
   function eliminar(id) { if (divisiones.length > 1) onChange(divisiones.filter(d => d.id !== id)) }
-  const asignado = divisiones.reduce((s, d) => s + (parseFloat(d.monto) || 0), 0)
+  // Solo cuenta las filas con cuenta elegida — mismo criterio que validarDivisiones al guardar.
+  // Si no, una fila con monto pero sin cuenta todavía seleccionada suma igual acá y el indicador
+  // se muestra "cerrado" en verde, aunque al guardar la validación real la va a rechazar.
+  const asignado = divisiones.filter(d => d.cuenta).reduce((s, d) => s + (parseFloat(d.monto) || 0), 0)
   const cierra = Math.abs(asignado - total) < 0.5
 
   return (
@@ -528,11 +552,113 @@ function estadoCobro(total, cobrado) {
   return 'parcial'
 }
 
+// ─── Control de duplicados al cargar ──────────────────────────
+// Antes de guardar algo nuevo se consulta la base (no la foto que tiene la pantalla): así
+// también se atrapa a dos personas cargando el mismo ticket a la vez. Si la consulta falla se
+// usa lo que ya está en pantalla — el aviso nunca puede impedir guardar. El criterio de
+// "parecido" vive en src/duplicados.js (el mismo que usa el agente de Finanzas).
+const TABLAS_POR_FK = {
+  pedido_id: { registros: 'pedidos', pagos: 'pedido_pagos' },
+  esqueje_id: { registros: 'esquejes', pagos: 'esqueje_pagos' },
+  insumo_id: { registros: 'insumos', pagos: 'insumo_pagos' },
+}
+
+// Tope de espera: con la red caída supabase-js reintenta los GET (1 s + 2 s + 4 s) y el botón
+// quedaba ~7 s en "Guardando..." solo por este chequeo. Pasado el tope se sigue con lo que hay
+// en pantalla.
+const LIMITE_MS_CONSULTA_DUPLICADOS = 3000
+async function filasDeLaBase(consulta, respaldo) {
+  try {
+    const vencido = new Promise(resolve => setTimeout(() => resolve(null), LIMITE_MS_CONSULTA_DUPLICADOS))
+    const res = await Promise.race([consulta, vencido])
+    return !res || res.error || !Array.isArray(res.data) ? (respaldo || []) : res.data
+  } catch {
+    return respaldo || []
+  }
+}
+
+const cargadoPorTexto = quien => (quien ? ` · cargado por ${quien}` : '')
+function describirGastoParecido(g) {
+  return `"${g.descripcion}" · ${formatPesos(g.monto)} · ${g.fecha} · ${g.locacion}${cargadoPorTexto(g.miembro)}`
+}
+function describirCapitalParecido(c) {
+  return `${c.tipo === 'aporte' ? 'Aporte de' : 'Devolución a'} ${c.inversor} · ${(c.moneda === 'USD' ? formatDolares : formatPesos)(c.monto)} · ${formatFechaDateISO(c.fecha)} · ${c.cuenta}${cargadoPorTexto(c.creado_por)}`
+}
+
+async function buscarGastosParecidos(nuevo, gastosLocales) {
+  const [gastos, devoluciones] = await Promise.all([
+    filasDeLaBase(supabase.from('gastos').select('*').eq('monto', nuevo.monto), gastosLocales),
+    filasDeLaBase(supabase.from('capital_movimientos').select('*').eq('tipo', 'devolucion').eq('moneda', 'ARS').eq('monto', nuevo.monto), []),
+  ])
+  return [
+    ...gastos.filter(g => gastosParecidos(nuevo, g)).map(describirGastoParecido),
+    ...devoluciones.filter(c => devolucionPareceGasto(c, nuevo)).map(c => `${describirCapitalParecido(c)} (en Capital — ¿es la misma devolución?)`),
+  ]
+}
+
+async function buscarPagosParecidos(fk, nuevo, pagosLocales) {
+  const pagos = await filasDeLaBase(
+    supabase.from(TABLAS_POR_FK[fk].pagos).select('*').eq(fk, nuevo[fk]).eq('monto', nuevo.monto),
+    pagosLocales,
+  )
+  return pagos.filter(pg => pagosParecidos(nuevo, pg, fk))
+    .map(pg => `Cobro de ${formatPesos(pg.monto)} · ${formatFechaISOCorta(pg.fecha)} · ${pg.cuenta || 'sin cuenta'}${cargadoPorTexto(pg.creado_por)}`)
+}
+
+async function buscarVentasParecidas(fk, nuevo) {
+  const desde = new Date(Date.now() - 4 * 86400000).toISOString()
+  const registros = await filasDeLaBase(
+    supabase.from(TABLAS_POR_FK[fk].registros).select('*').eq('total', nuevo.total).gte('created_at', desde),
+    [],
+  )
+  return registros.filter(r => ventasParecidas(nuevo, r)).map(r => {
+    const items = (r.geneticas || []).map(g => `${g.nombre} ×${g.cantidad}`).join(', ')
+    return `${r.socio} · ${formatPesos(r.total)} · ${r.fecha} · ${items}${cargadoPorTexto(r.miembro)}`
+  })
+}
+
+async function buscarCapitalParecido(nuevo, capitalLocal) {
+  const [movimientos, gastos] = await Promise.all([
+    filasDeLaBase(supabase.from('capital_movimientos').select('*').eq('tipo', nuevo.tipo).eq('monto', nuevo.monto), capitalLocal),
+    nuevo.tipo === 'devolucion' && nuevo.moneda === 'ARS'
+      ? filasDeLaBase(supabase.from('gastos').select('*').eq('monto', nuevo.monto), [])
+      : Promise.resolve([]),
+  ])
+  return [
+    ...movimientos.filter(c => c.id !== nuevo.id && capitalParecidos(nuevo, c)).map(describirCapitalParecido),
+    ...gastos.filter(g => devolucionPareceGasto(nuevo, g)).map(g => `Gasto ${describirGastoParecido(g)} (¿ya la cargaron como gasto?)`),
+  ]
+}
+
+// Nunca bloquea: muestra contra qué choca (quién y cuándo lo cargó) y deja seguir.
+// El aviso se guarda junto con el form que lo disparó (`para`): si el form cambia, deja de
+// mostrarse solo, sin tener que limpiarlo a mano en cada onChange.
+function AvisoDuplicado({ parecidos, onGuardarIgual, onCancelar, guardando }) {
+  return (
+    <div className="aviso-duplicado" style={{ marginTop: 10, background: '#FFF8ED', border: '0.5px solid #E8C77E', borderRadius: 'var(--radius-md)', padding: 10 }}>
+      <div style={{ display: 'flex', gap: 8, alignItems: 'flex-start' }}>
+        <TriangleAlert size={15} color="#854F0B" style={{ marginTop: 1, flexShrink: 0 }} />
+        <div style={{ fontSize: 12, color: '#854F0B', lineHeight: 1.5, minWidth: 0, overflowWrap: 'anywhere' }}>
+          <strong>¿Ya está cargado?</strong> Se parece a {parecidos.length === 1 ? 'esto' : 'esto que ya está en la app'}:
+          {parecidos.slice(0, 3).map((p, i) => <div key={i}>· {p}</div>)}
+          {parecidos.length > 3 && <div>· y {parecidos.length - 3} más</div>}
+        </div>
+      </div>
+      <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
+        <button className="btn-submit" style={{ flex: 1, background: '#854F0B' }} onClick={onGuardarIgual} disabled={guardando}>{guardando ? 'Guardando...' : 'Guardar igual'}</button>
+        <button onClick={onCancelar} disabled={guardando} style={{ padding: '0 16px', border: '0.5px solid var(--border-mid)', borderRadius: 'var(--radius-md)', background: 'transparent', cursor: 'pointer', fontSize: 13, color: 'var(--text-secondary)' }}>Cancelar</button>
+      </div>
+    </div>
+  )
+}
+
 function PagosRegistro({ registro, pagos, total, miembro, onAgregarPago, onEditarPago, onEliminarPago, fkCampo, compacto }) {
   const [formPara, setFormPara] = useState(null) // null | 'agregar' | id del pago que se está editando
   const [form, setForm] = useState(null)
   const [error, setError] = useState('')
   const [guardando, setGuardando] = useState(false)
+  const [avisoDup, setAvisoDup] = useState(null) // { parecidos, para: form } — ver AvisoDuplicado
+  const enCurso = useRef(false)
 
   const propios = pagosDe(pagos, registro.id, fkCampo)
   const cobrado = propios.reduce((s, pg) => s + (parseFloat(pg.monto) || 0), 0)
@@ -566,7 +692,7 @@ function PagosRegistro({ registro, pagos, total, miembro, onAgregarPago, onEdita
     setError('')
     setFormPara(pg.id)
   }
-  function cerrar() { setFormPara(null); setForm(null); setError('') }
+  function cerrar() { setFormPara(null); setForm(null); setError(''); setAvisoDup(null) }
   function setMetodoPago(val) {
     setForm(f => ({ ...f, metodoPago: val, cuenta: cuentaPara(val, f.cuenta) }))
   }
@@ -574,22 +700,33 @@ function PagosRegistro({ registro, pagos, total, miembro, onAgregarPago, onEdita
     setForm(f => ({ ...f, monto: marcar ? String(montoPagoTotal) : '' }))
   }
 
-  async function confirmar() {
+  async function confirmar(forzar = false) {
+    if (enCurso.current) return
     const monto = parseFloat(form.monto)
     if (!monto || monto <= 0) { setError('Ingresá un monto válido.'); return }
     if (!form.cuenta) { setError('Elegí una cuenta: si no, este pago no se va a reflejar en Finanzas.'); return }
+    enCurso.current = true
     setGuardando(true)
-    // cuenta_estimada siempre se limpia al guardar: tanto al cargar un pago nuevo (nunca es
-    // estimado, se elige la cuenta a mano) como al editar uno existente (corregir la cuenta
-    // es justamente lo que saca al registro de "a revisar").
-    const payload = { monto, metodo_pago: form.metodoPago, cuenta: form.cuenta, fecha: form.fecha, cuenta_estimada: false }
-    const res = formPara === 'agregar'
-      ? await onAgregarPago(registro, { ...payload, creado_por: miembro || null })
-      : await onEditarPago(formPara, payload)
-    setGuardando(false)
-    if (!res?.ok) { setError('No se pudo guardar. Intentá de nuevo.'); return }
-    cerrar()
+    try {
+      if (formPara === 'agregar' && !forzar) {
+        const parecidos = await buscarPagosParecidos(fkCampo, { [fkCampo]: registro.id, monto, fecha: form.fecha }, propios)
+        if (parecidos.length > 0) { setAvisoDup({ parecidos, para: form }); return }
+      }
+      // cuenta_estimada siempre se limpia al guardar: tanto al cargar un pago nuevo (nunca es
+      // estimado, se elige la cuenta a mano) como al editar uno existente (corregir la cuenta
+      // es justamente lo que saca al registro de "a revisar").
+      const payload = { monto, metodo_pago: form.metodoPago, cuenta: form.cuenta, fecha: form.fecha, cuenta_estimada: false }
+      const res = formPara === 'agregar'
+        ? await onAgregarPago(registro, { ...payload, creado_por: miembro || null })
+        : await onEditarPago(formPara, payload)
+      if (!res?.ok) { setError('No se pudo guardar. Intentá de nuevo.'); return }
+      cerrar()
+    } finally {
+      enCurso.current = false
+      setGuardando(false)
+    }
   }
+  const avisoVisible = avisoDup && avisoDup.para === form
 
   const camposForm = form && (
     <div>
@@ -639,10 +776,14 @@ function PagosRegistro({ registro, pagos, total, miembro, onAgregarPago, onEdita
       </div>
       {haySobrepago && <div style={{ fontSize: 11, color: '#791F1F', marginTop: 6 }}>⚠ Este cobro deja {formatPesos(excedente)} por encima del total del {registro.tipo && registro.tipo !== 'cliente' ? 'registro' : 'pedido'}.</div>}
       {error && <div style={{ fontSize: 12, color: '#791F1F', marginTop: 4 }}>{error}</div>}
-      <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
-        <button className="btn-submit" onClick={confirmar} disabled={guardando} style={{ flex: 1 }}>{formPara === 'agregar' ? 'Guardar cobro' : 'Guardar cambios'}</button>
-        <button onClick={cerrar} style={{ padding: '0 16px', border: '0.5px solid var(--border-mid)', borderRadius: 'var(--radius-md)', background: 'transparent', cursor: 'pointer', fontSize: 13, color: 'var(--text-secondary)' }}>Cancelar</button>
-      </div>
+      {avisoVisible ? (
+        <AvisoDuplicado parecidos={avisoDup.parecidos} guardando={guardando} onGuardarIgual={() => confirmar(true)} onCancelar={() => setAvisoDup(null)} />
+      ) : (
+        <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
+          <button className="btn-submit" onClick={() => confirmar()} disabled={guardando} style={{ flex: 1 }}>{formPara === 'agregar' ? 'Guardar cobro' : 'Guardar cambios'}</button>
+          <button onClick={cerrar} style={{ padding: '0 16px', border: '0.5px solid var(--border-mid)', borderRadius: 'var(--radius-md)', background: 'transparent', cursor: 'pointer', fontSize: 13, color: 'var(--text-secondary)' }}>Cancelar</button>
+        </div>
+      )}
     </div>
   )
 
@@ -1097,6 +1238,8 @@ function FormRegistro({ cfg, onGuardar, onAgregarPago, miembro, tipoRegistro = '
   const [form, setForm] = useState(initial)
   const [toast, showToast] = useToast()
   const [guardando, setGuardando] = useState(false)
+  const [avisoDup, setAvisoDup] = useState(null) // { parecidos, para: form } — ver AvisoDuplicado
+  const enCurso = useRef(false)
   // Una venta nueva de membresía solo puede quedar a nombre de un socio activo — a un socio
   // desactivado no se le vende una membresía nueva (sí se sigue viendo su historial ya cargado,
   // eso lo maneja ModalEditarRegistro con la lista completa, sin filtrar).
@@ -1125,8 +1268,8 @@ function FormRegistro({ cfg, onGuardar, onAgregarPago, miembro, tipoRegistro = '
     setForm(f => ({ ...f, socioId: id, socio: s ? s.nombre : '' }))
   }
 
-  async function guardar() {
-    if (guardando) return
+  async function guardar(forzar = false) {
+    if (guardando || enCurso.current) return
     const filasValidas = form.filas.filter(f => f.nombre)
     const sinCantidad = filasValidas.some(f => !parseFloat(f.cantidad))
     if ((requiereNombre && !form.socio.trim()) || filasValidas.length === 0 || sinCantidad) {
@@ -1167,8 +1310,15 @@ function FormRegistro({ cfg, onGuardar, onAgregarPago, miembro, tipoRegistro = '
       socioId: form.esMembresia ? (form.socioId || null) : null,
       entregado: esRegalo ? true : form.entregado,
     }
+    enCurso.current = true
     setGuardando(true)
     try {
+      // Venta repetida (mismo comprador, mismos ítems, mismo total en pocos días): solo ventas
+      // a clientes — propio/regalo no tienen total y se cargan distinto.
+      if (!forzar && !esInterno && TABLAS_POR_FK[cfg.fkPagos]) {
+        const parecidos = await buscarVentasParecidas(cfg.fkPagos, registro)
+        if (parecidos.length > 0) { setAvisoDup({ parecidos, para: form }); return }
+      }
       const res = await onGuardar(registro)
       if (!res?.ok) {
         showToast('No se pudo guardar. Revisá tu conexión e intentá de nuevo.')
@@ -1180,6 +1330,7 @@ function FormRegistro({ cfg, onGuardar, onAgregarPago, miembro, tipoRegistro = '
       setForm(initial())
       showToast(esRegalo ? 'Regalo guardado ✓' : (cfg.txtGuardado || `${cfg.singular[0].toUpperCase()}${cfg.singular.slice(1)} guardado ✓`))
     } finally {
+      enCurso.current = false
       setGuardando(false)
     }
   }
@@ -1334,7 +1485,11 @@ function FormRegistro({ cfg, onGuardar, onAgregarPago, miembro, tipoRegistro = '
         </div>
       </div>
       )}
-      <button className="btn-submit" style={{ ...(cfg.btnBg ? { background: cfg.btnBg } : {}), opacity: guardando ? 0.6 : 1 }} disabled={guardando} onClick={guardar}>{esRegalo ? 'Guardar regalo' : `Guardar ${cfg.singular}`}</button>
+      {avisoDup && avisoDup.para === form ? (
+        <AvisoDuplicado parecidos={avisoDup.parecidos} guardando={guardando} onGuardarIgual={() => guardar(true)} onCancelar={() => setAvisoDup(null)} />
+      ) : (
+        <button className="btn-submit" style={{ ...(cfg.btnBg ? { background: cfg.btnBg } : {}), opacity: guardando ? 0.6 : 1 }} disabled={guardando} onClick={() => guardar()}>{esRegalo ? 'Guardar regalo' : `Guardar ${cfg.singular}`}</button>
+      )}
       <div className={`toast${toast.show ? ' show' : ''}`}>{toast.msg}</div>
     </div>
   )
@@ -2098,6 +2253,7 @@ function PanelGastos({ locacion, gastos, miembro, presupuestos, onNuevoGasto, on
   const [editando, setEditando] = useState(() => target ? (gastos.find(g => g.id === target.id) || null) : null)
   const [mesesAbiertos, setMesesAbiertos] = useState(() => target ? new Set([target.mes]) : new Set())
   const [guardando, setGuardando] = useState(false)
+  const [avisoDup, setAvisoDup] = useState(null) // { parecidos, para: form } — ver AvisoDuplicado
   const enCurso = useRef(false)
   const set = (k, v) => setForm(f => ({ ...f, [k]: v }))
   function toggleMes(mes) {
@@ -2116,7 +2272,7 @@ function PanelGastos({ locacion, gastos, miembro, presupuestos, onNuevoGasto, on
   }
   function cancelarDivision() { set('dividido', false) }
 
-  async function guardarGasto() {
+  async function guardarGasto(forzar = false) {
     if (enCurso.current) return
     if (!form.descripcion.trim() || !form.categoria || !parseFloat(form.monto) || !form.fecha) {
       showToast('Completá descripción, categoría, monto y fecha')
@@ -2136,6 +2292,17 @@ function PanelGastos({ locacion, gastos, miembro, presupuestos, onNuevoGasto, on
     const nuevoGasto = { descripcion: form.descripcion.trim(), categoria: form.categoria, monto: montoTotal, fecha: form.fecha, locacion, miembro: miembro || null, cuenta: form.dividido ? null : (form.cuenta || null), divisiones: divisionesFinal, presupuesto_id: form.presupuesto_id ? Number(form.presupuesto_id) : null, cuenta_estimada: false }
     enCurso.current = true
     setGuardando(true)
+    // Se busca en las dos Hormis (la consulta va a la base, no a la lista filtrada de esta
+    // pantalla): también atrapa el mismo gasto cargado antes en la Hormi equivocada.
+    if (!forzar) {
+      const parecidos = await buscarGastosParecidos(nuevoGasto, gastos)
+      if (parecidos.length > 0) {
+        enCurso.current = false
+        setGuardando(false)
+        setAvisoDup({ parecidos, para: form })
+        return
+      }
+    }
     const res = await onNuevoGasto(nuevoGasto)
     enCurso.current = false
     setGuardando(false)
@@ -2235,10 +2402,14 @@ function PanelGastos({ locacion, gastos, miembro, presupuestos, onNuevoGasto, on
               </div>
             )}
           </div>
-          <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
-            <button className="btn-submit" onClick={guardarGasto} disabled={guardando} style={{ flex: 1 }}>{guardando ? 'Guardando...' : 'Guardar gasto'}</button>
-            <button onClick={() => setMostrarForm(false)} style={{ padding: '0 16px', border: '0.5px solid var(--border-mid)', borderRadius: 'var(--radius-md)', background: 'transparent', cursor: 'pointer', fontSize: 13, color: 'var(--text-secondary)' }}>Cancelar</button>
-          </div>
+          {avisoDup && avisoDup.para === form ? (
+            <AvisoDuplicado parecidos={avisoDup.parecidos} guardando={guardando} onGuardarIgual={() => guardarGasto(true)} onCancelar={() => setAvisoDup(null)} />
+          ) : (
+            <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
+              <button className="btn-submit" onClick={() => guardarGasto()} disabled={guardando} style={{ flex: 1 }}>{guardando ? 'Guardando...' : 'Guardar gasto'}</button>
+              <button onClick={() => setMostrarForm(false)} style={{ padding: '0 16px', border: '0.5px solid var(--border-mid)', borderRadius: 'var(--radius-md)', background: 'transparent', cursor: 'pointer', fontSize: 13, color: 'var(--text-secondary)' }}>Cancelar</button>
+            </div>
+          )}
         </div>
       )}
       {!mostrarForm && (
@@ -2345,20 +2516,30 @@ function formatFechaDateISO(iso) {
   return `${parseInt(d)}/${parseInt(m)}/${y}`
 }
 
-function gastoDePresupuesto(p, gastos) {
-  return gastos.filter(g => g.presupuesto_id === p.id).reduce((s, g) => s + (g.monto || 0), 0)
+// Los gastos vinculados siempre están en pesos (el flujo de Gastos no cambia por esto) — si el
+// presupuesto es en USD, cada gasto se convierte con la cotización del DÍA en que se cargó ese
+// gasto puntual (no la de hoy), para que un presupuesto viejo no quede distorsionado por la
+// devaluación acumulada desde entonces.
+function gastoDePresupuesto(p, gastos, cotizaciones) {
+  const gastosDelPresupuesto = gastos.filter(g => g.presupuesto_id === p.id)
+  if (p.moneda !== 'USD') return gastosDelPresupuesto.reduce((s, g) => s + (g.monto || 0), 0)
+  return gastosDelPresupuesto.reduce((s, g) => {
+    const cot = cotizacionParaFecha(g.fecha, cotizaciones)
+    return s + (cot ? (g.monto || 0) / cot.promedio : 0)
+  }, 0)
 }
 
 // El monto asignado original nunca se pisa — los aportes de capital extra (comisión
 // directiva) quedan como movimientos aparte en presupuesto_aportes, así se conserva
-// el historial de cuánto se sumó, cuándo y por qué.
+// el historial de cuánto se sumó, cuándo y por qué. Un aporte siempre está en la misma moneda
+// que su presupuesto (no se guarda una moneda propia por aporte, para no poder desalinearse).
 function totalAsignado(p, aportes) {
   return (p.monto_asignado || 0) + (aportes || []).filter(a => a.presupuesto_id === p.id).reduce((s, a) => s + (a.monto || 0), 0)
 }
 
-function estadoPresupuesto(p, gastos, aportes) {
+function estadoPresupuesto(p, gastos, aportes, cotizaciones) {
   if (p.cerrado) return 'Cerrado'
-  if (gastoDePresupuesto(p, gastos) >= totalAsignado(p, aportes)) return 'Agotado'
+  if (gastoDePresupuesto(p, gastos, cotizaciones) >= totalAsignado(p, aportes)) return 'Agotado'
   if (p.fecha_limite && p.fecha_limite < hoyISO()) return 'Vencido'
   return 'Activo'
 }
@@ -2370,6 +2551,68 @@ function montosPorCuenta(registro, campoMonto) {
     return registro.divisiones.filter(d => d && d.cuenta).map(d => ({ cuenta: d.cuenta, monto: parseFloat(d.monto) || 0 }))
   }
   return registro.cuenta ? [{ cuenta: registro.cuenta, monto: registro[campoMonto] || 0 }] : []
+}
+
+// Libro mayor unificado de una cuenta: todo lo que le pega desde cualquier pestaña (Ventas,
+// Gastos, la caja de ahorro en dólares) más las validaciones de saldo, en una sola línea de
+// tiempo — para ver de un vistazo de dónde viene cada número, cuándo y quién lo cargó.
+// `presupuesto_aportes` queda afuera a propósito: no mueve plata de ninguna cuenta real.
+function movimientosDeCuenta(nombre, { pedidoPagos, pedidos, esquejePagos, esquejes, insumoPagos, insumos, gastos, dolaresMovimientos, cuentasValidaciones, capitalMovimientos, esDolar }) {
+  const items = []
+
+  function agregarPagos(pagos, registros, fk, tipoRegistro, pestana) {
+    pagos.filter(pg => pg.cuenta === nombre).forEach(pg => {
+      const registro = registros.find(r => r.id === pg[fk])
+      items.push({
+        id: `pago-${tipoRegistro}-${pg.id}`, tipo: 'ingreso', pestana, monto: pg.monto || 0,
+        fecha: pg.fecha ? new Date(pg.fecha) : null, fechaLabel: formatFechaISOCorta(pg.fecha),
+        quien: pg.creado_por || 'Sin autor registrado', objetivo: objetivoPago(tipoRegistro, pg, registro),
+      })
+    })
+  }
+  agregarPagos(pedidoPagos, pedidos, 'pedido_id', 'cosecha', 'Ventas · Cosecha')
+  agregarPagos(esquejePagos, esquejes, 'esqueje_id', 'esquejes', 'Ventas · Esquejes')
+  agregarPagos(insumoPagos, insumos, 'insumo_id', 'insumos', 'Ventas · Insumos')
+
+  ;(capitalMovimientos || []).filter(c => c.cuenta === nombre).forEach(c => {
+    items.push({
+      id: `capital-${c.id}`, tipo: c.tipo === 'devolucion' ? 'egreso' : 'ingreso',
+      pestana: c.tipo === 'devolucion' ? `Capital · devolución a ${c.inversor}` : `Capital · aporte de ${c.inversor}`,
+      monto: Number(c.monto) || 0, fecha: c.fecha ? new Date(c.fecha) : null, fechaLabel: formatFechaDateISO(c.fecha),
+      quien: c.creado_por || 'Sin autor registrado', objetivo: { tab: 'finanzas', subTab: 'capital' },
+    })
+  })
+
+  gastos.forEach(g => {
+    montosPorCuenta(g, 'monto').filter(m => m.cuenta === nombre).forEach(m => {
+      items.push({
+        id: `gasto-${g.id}`, tipo: 'egreso', pestana: 'Gastos', monto: m.monto,
+        fecha: parseFechaDP(g.fecha), fechaLabel: g.fecha || '—',
+        quien: g.miembro || 'Sin autor registrado', objetivo: objetivoGasto(g),
+      })
+    })
+  })
+
+  if (esDolar) {
+    dolaresMovimientos.filter(m => m.cuenta === nombre).forEach(m => {
+      items.push({
+        id: `dolar-${m.id}`, tipo: m.tipo === 'egreso' ? 'egreso' : 'ingreso', pestana: 'Caja de ahorro en dólares', monto: m.monto || 0,
+        fecha: m.fecha ? new Date(m.fecha) : null, fechaLabel: formatFechaDateISO(m.fecha),
+        quien: m.creado_por || 'Sin autor registrado', objetivo: null, dolarMovimiento: m,
+      })
+    })
+  }
+
+  ;[...cuentasValidaciones].filter(v => v.cuenta === nombre).sort((a, b) => new Date(b.created_at) - new Date(a.created_at)).forEach((v, i) => {
+    items.push({
+      id: `validacion-${v.id}`, tipo: 'validacion', pestana: 'Validación de saldo',
+      fecha: v.fecha_corte_nueva ? new Date(v.fecha_corte_nueva) : null, fechaLabel: formatFechaDateISO(v.fecha_corte_nueva),
+      quien: v.editado_por || v.validado_por || 'Sin autor registrado', objetivo: null,
+      validacion: v, esUltimaValidacion: i === 0,
+    })
+  })
+
+  return items.sort((a, b) => (b.fecha?.getTime() || 0) - (a.fecha?.getTime() || 0))
 }
 
 function IconoCuenta({ nombre, size = 34 }) {
@@ -2387,24 +2630,28 @@ function IconoCuenta({ nombre, size = 34 }) {
 
 const btnLinkStyle = color => ({ background: 'none', border: 'none', padding: 0, fontSize: 12, color, fontWeight: 500, cursor: 'pointer' })
 
-function TarjetaPresupuesto({ p, gastos, aportes, onAlternarCerrado, onAportar, onEliminarAporte, onEditar, mostrarLocacion }) {
+function TarjetaPresupuesto({ p, gastos, aportes, cotizaciones, onAlternarCerrado, onAportar, onEliminarAporte, onEditar, mostrarLocacion }) {
   const [formAbierto, setFormAbierto] = useState(null) // null | 'aportar' | 'editar'
   const [formAporte, setFormAporte] = useState({ monto: '', motivo: '', fecha: hoyISO() })
-  const [formEditar, setFormEditar] = useState({ nombre: p.nombre, fecha_limite: p.fecha_limite || '' })
+  const [formEditar, setFormEditar] = useState({ nombre: p.nombre, fecha_limite: p.fecha_limite || '', descripcion: p.descripcion || '' })
 
+  const esUSD = p.moneda === 'USD'
+  const formatMonto = esUSD ? formatDolares : formatPesos
   const aportesDelPresupuesto = (aportes || []).filter(a => a.presupuesto_id === p.id)
   const asignado = totalAsignado(p, aportes)
-  const gastado = gastoDePresupuesto(p, gastos)
+  const gastado = gastoDePresupuesto(p, gastos, cotizaciones)
   const restante = asignado - gastado
-  const estado = estadoPresupuesto(p, gastos, aportes)
+  const estado = estadoPresupuesto(p, gastos, aportes, cotizaciones)
   const necesitaAporte = estado === 'Agotado' && !p.cerrado
   const colorEstado = estado === 'Vencido' || estado === 'Agotado' ? '#791F1F' : estado === 'Cerrado' ? 'var(--text-secondary)' : 'var(--green-dark)'
   const colorBarra = estado === 'Vencido' || estado === 'Agotado' ? '#791F1F' : estado === 'Cerrado' ? '#c2c2ba' : '#1D9E75'
   const pct = asignado > 0 ? Math.min(100, Math.max(0, (gastado / asignado) * 100)) : 0
+  const palabrasDescripcion = contarPalabras(formEditar.descripcion)
+  const excedePalabras = palabrasDescripcion > MAX_PALABRAS_PRESUPUESTO
 
   function abrirForm(nombre) {
     setFormAporte({ monto: '', motivo: '', fecha: hoyISO() })
-    setFormEditar({ nombre: p.nombre, fecha_limite: p.fecha_limite || '' })
+    setFormEditar({ nombre: p.nombre, fecha_limite: p.fecha_limite || '', descripcion: p.descripcion || '' })
     setFormAbierto(prev => prev === nombre ? null : nombre)
   }
 
@@ -2415,8 +2662,8 @@ function TarjetaPresupuesto({ p, gastos, aportes, onAlternarCerrado, onAportar, 
   }
 
   async function confirmarEditar() {
-    if (!formEditar.nombre.trim()) return
-    await onEditar(p, { nombre: formEditar.nombre.trim(), fecha_limite: formEditar.fecha_limite || null })
+    if (!formEditar.nombre.trim() || excedePalabras) return
+    await onEditar(p, { nombre: formEditar.nombre.trim(), fecha_limite: formEditar.fecha_limite || null, descripcion: formEditar.descripcion.trim() || null })
     setFormAbierto(null)
   }
 
@@ -2431,8 +2678,9 @@ function TarjetaPresupuesto({ p, gastos, aportes, onAlternarCerrado, onAportar, 
           <div style={{ fontSize: 11, color: 'var(--text-secondary)', marginTop: 2 }}>
             {mostrarLocacion ? `${p.locacion} · ` : ''}asignado {formatFechaDateISO(p.fecha_asignacion)}{p.fecha_limite ? ` · límite ${formatFechaDateISO(p.fecha_limite)}` : ''}
           </div>
+          {p.descripcion && <div style={{ fontSize: 11, color: 'var(--text-secondary)', marginTop: 2, fontStyle: 'italic' }}>{p.descripcion}</div>}
         </div>
-        <div style={{ fontSize: 12, fontWeight: 600, color: colorEstado }}>{necesitaAporte ? 'Necesita aporte' : estado}</div>
+        <div style={{ fontSize: 12, fontWeight: 600, color: colorEstado }}>{necesitaAporte ? 'Necesita ampliación' : estado}</div>
       </div>
       <div className="progreso-bar">
         <div className="progreso-fill" style={{ width: `${pct}%`, background: colorBarra }} />
@@ -2440,28 +2688,28 @@ function TarjetaPresupuesto({ p, gastos, aportes, onAlternarCerrado, onAportar, 
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '5px 12px', marginTop: 10 }}>
         <div>
           <div style={{ fontSize: 11, color: 'var(--text-secondary)' }}>Asignado</div>
-          <div style={{ fontSize: 13, fontWeight: 600 }}>{formatPesos(asignado)}</div>
+          <div style={{ fontSize: 13, fontWeight: 600 }}>{formatMonto(asignado)}</div>
           {aportesDelPresupuesto.length > 0 && (
-            <div style={{ fontSize: 10, color: 'var(--green-dark)', marginTop: 1 }}>{formatPesos(p.monto_asignado)} + {formatPesos(asignado - p.monto_asignado)} aportado</div>
+            <div style={{ fontSize: 10, color: 'var(--green-dark)', marginTop: 1 }}>{formatMonto(p.monto_asignado)} + {formatMonto(asignado - p.monto_asignado)} ampliado</div>
           )}
         </div>
         <div>
-          <div style={{ fontSize: 11, color: 'var(--text-secondary)' }}>Gastado</div>
-          <div style={{ fontSize: 13, fontWeight: 600, color: '#791F1F' }}>{formatPesos(gastado)}</div>
+          <div style={{ fontSize: 11, color: 'var(--text-secondary)' }}>Gastado{esUSD ? ' (equiv.)' : ''}</div>
+          <div style={{ fontSize: 13, fontWeight: 600, color: '#791F1F' }}>{formatMonto(gastado)}</div>
         </div>
         <div>
           <div style={{ fontSize: 11, color: 'var(--text-secondary)' }}>Restante</div>
-          <div style={{ fontSize: 13, fontWeight: 600, color: restante < 0 ? '#791F1F' : 'var(--green-dark)' }}>{formatPesos(restante)}</div>
+          <div style={{ fontSize: 13, fontWeight: 600, color: restante < 0 ? '#791F1F' : 'var(--green-dark)' }}>{formatMonto(restante)}</div>
         </div>
       </div>
 
       {aportesDelPresupuesto.length > 0 && (
         <div style={{ marginTop: 10, paddingTop: 10, borderTop: '0.5px solid var(--border)', display: 'flex', flexDirection: 'column', gap: 5 }}>
-          <div className="form-label">Aportes de capital</div>
+          <div className="form-label">Ampliaciones</div>
           {aportesDelPresupuesto.map(a => (
             <div key={a.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
               <span style={{ fontSize: 11, color: 'var(--text-secondary)' }}>
-                {formatFechaDateISO(a.fecha)} · <strong style={{ color: 'var(--text-primary)' }}>{formatPesos(a.monto)}</strong>{a.motivo ? ` · ${a.motivo}` : ''}{a.creado_por ? ` · ${a.creado_por}` : ''}
+                {formatFechaDateISO(a.fecha)} · <strong style={{ color: 'var(--text-primary)' }}>{formatMonto(a.monto)}</strong>{a.motivo ? ` · ${a.motivo}` : ''}{a.creado_por ? ` · ${a.creado_por}` : ''}
               </span>
               {onEliminarAporte && (
                 <button onClick={() => onEliminarAporte(a.id)} style={{ ...btnLinkStyle('#791F1F'), fontSize: 14, lineHeight: 1 }}>×</button>
@@ -2473,7 +2721,7 @@ function TarjetaPresupuesto({ p, gastos, aportes, onAlternarCerrado, onAportar, 
 
       <div style={{ display: 'flex', gap: 14, flexWrap: 'wrap', marginTop: 10 }}>
         {onAportar && !p.cerrado && (
-          <button onClick={() => abrirForm('aportar')} style={btnLinkStyle('var(--green-dark)')}>+ Aportar capital</button>
+          <button onClick={() => abrirForm('aportar')} style={btnLinkStyle('var(--green-dark)')}>+ Ampliar presupuesto</button>
         )}
         {onEditar && (
           <button onClick={() => abrirForm('editar')} style={btnLinkStyle('var(--text-secondary)')}>Editar</button>
@@ -2489,7 +2737,7 @@ function TarjetaPresupuesto({ p, gastos, aportes, onAlternarCerrado, onAportar, 
         <div style={{ marginTop: 12, paddingTop: 12, borderTop: '0.5px solid var(--border)' }}>
           <div className="form-grid">
             <div className="form-group">
-              <label className="form-label">Monto a aportar ($)</label>
+              <label className="form-label">Monto a sumar ({esUSD ? 'US$' : '$'})</label>
               <InputMonto value={formAporte.monto} onChange={v => setFormAporte(f => ({ ...f, monto: v }))} />
             </div>
             <div className="form-group">
@@ -2502,7 +2750,7 @@ function TarjetaPresupuesto({ p, gastos, aportes, onAlternarCerrado, onAportar, 
             </div>
           </div>
           <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
-            <button className="btn-submit" onClick={confirmarAporte} style={{ flex: 1 }}>Guardar aporte</button>
+            <button className="btn-submit" onClick={confirmarAporte} style={{ flex: 1 }}>Guardar ampliación</button>
             <button onClick={() => setFormAbierto(null)} style={{ padding: '0 16px', border: '0.5px solid var(--border-mid)', borderRadius: 'var(--radius-md)', background: 'transparent', cursor: 'pointer', fontSize: 13, color: 'var(--text-secondary)' }}>Cancelar</button>
           </div>
         </div>
@@ -2516,12 +2764,23 @@ function TarjetaPresupuesto({ p, gastos, aportes, onAlternarCerrado, onAportar, 
               <input className="form-control" type="text" value={formEditar.nombre} onChange={e => setFormEditar(f => ({ ...f, nombre: e.target.value }))} />
             </div>
             <div className="form-group full">
+              <label className="form-label">
+                Descripción breve (opcional){excedePalabras && <span style={{ color: '#791F1F' }}> · máximo {MAX_PALABRAS_PRESUPUESTO} palabras</span>}
+              </label>
+              <input
+                className="form-control" type="text" placeholder="Ej: inyección en dólares para el terreno de Hormi 2.0"
+                value={formEditar.descripcion} onChange={e => setFormEditar(f => ({ ...f, descripcion: e.target.value }))}
+                style={excedePalabras ? { borderColor: '#791F1F' } : undefined}
+              />
+              <div style={{ fontSize: 11, color: excedePalabras ? '#791F1F' : 'var(--text-secondary)', textAlign: 'right' }}>{palabrasDescripcion}/{MAX_PALABRAS_PRESUPUESTO} palabras</div>
+            </div>
+            <div className="form-group full">
               <label className="form-label">Fecha límite (opcional)</label>
               <input className="form-control" type="date" value={formEditar.fecha_limite} onChange={e => setFormEditar(f => ({ ...f, fecha_limite: e.target.value }))} />
             </div>
           </div>
           <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
-            <button className="btn-submit" onClick={confirmarEditar} style={{ flex: 1 }}>Guardar cambios</button>
+            <button className="btn-submit" onClick={confirmarEditar} style={{ flex: 1 }} disabled={excedePalabras}>Guardar cambios</button>
             <button onClick={() => setFormAbierto(null)} style={{ padding: '0 16px', border: '0.5px solid var(--border-mid)', borderRadius: 'var(--radius-md)', background: 'transparent', cursor: 'pointer', fontSize: 13, color: 'var(--text-secondary)' }}>Cancelar</button>
           </div>
         </div>
@@ -2530,59 +2789,115 @@ function TarjetaPresupuesto({ p, gastos, aportes, onAlternarCerrado, onAportar, 
   )
 }
 
-// Historial append-only de validaciones de saldo (cuentas_validaciones): lo que el sistema
-// calculaba vs. lo que se cargó como real en cada evento, para ver con el tiempo dónde se
-// pierde/sobra plata en una cuenta. Compartido entre la card de pesos y la de dólares.
-// Solo la fila más reciente (historial[0], la lista ya viene ordenada desc) se puede editar —
-// es la única que todavía pesa en el saldo actual de la cuenta; las viejas quedan fijas.
-function DisclosureHistorialValidaciones({ historial, formatMonto, onEditar }) {
+// Libro mayor unificado de una cuenta (movimientosDeCuenta): ingresos/egresos de todas las
+// pestañas + validaciones de saldo, en una sola línea de tiempo. Compartido entre la card de
+// pesos y la de dólares. Reemplaza al viejo "Ver historial de validaciones" (solo validaciones)
+// y al "Historial de movimientos" propio de las cuentas en dólares (solo dolares_movimientos) —
+// misma data, un solo lugar, sin duplicar la lista en la card.
+function DisclosureMovimientosCuenta({ movimientos, formatMonto, onRevisar, onEditarValidacion, onEditarMovimientoDolar, onEliminarMovimientoDolar }) {
   const [abierto, setAbierto] = useState(false)
-  const [editandoId, setEditandoId] = useState(null)
+  const [editandoValidacionId, setEditandoValidacionId] = useState(null)
   const [inputValor, setInputValor] = useState('')
   const [inputFecha, setInputFecha] = useState('')
-  if (historial.length === 0) return null
+  const [editandoDolarId, setEditandoDolarId] = useState(null)
+  const [formDolar, setFormDolar] = useState(null)
+  const [guardando, setGuardando] = useState(false)
+  if (movimientos.length === 0) return null
 
-  function abrirEditar(fila) {
-    setInputValor(String(fila.saldo_validado ?? 0))
-    setInputFecha(fila.fecha_corte_nueva)
-    setEditandoId(fila.id)
+  function abrirEditarValidacion(v) {
+    setInputValor(String(v.saldo_validado ?? 0))
+    setInputFecha(v.fecha_corte_nueva)
+    setEditandoValidacionId(v.id)
   }
-  async function confirmarEditar(fila) {
-    await onEditar(fila, inputValor, inputFecha)
-    setEditandoId(null)
+  async function confirmarEditarValidacion(v) {
+    if (guardando) return
+    setGuardando(true)
+    await onEditarValidacion(v, inputValor, inputFecha)
+    setGuardando(false)
+    setEditandoValidacionId(null)
+  }
+
+  function abrirEditarDolar(m) {
+    setFormDolar({ tipo: m.tipo, monto: String(m.monto), concepto: m.concepto || '', fecha: m.fecha })
+    setEditandoDolarId(m.id)
+  }
+  async function confirmarEditarDolar(id) {
+    if (guardando || !parseFloat(formDolar.monto)) return
+    setGuardando(true)
+    await onEditarMovimientoDolar(id, { tipo: formDolar.tipo, monto: parseFloat(formDolar.monto), concepto: formDolar.concepto.trim() || null, fecha: formDolar.fecha })
+    setGuardando(false)
+    setEditandoDolarId(null)
   }
 
   return (
     <div style={{ marginTop: 10, paddingTop: 10, borderTop: '0.5px solid var(--border)' }}>
       <button className="btn-disclosure" onClick={() => setAbierto(v => !v)} style={{ width: '100%' }}>
-        <span>{abierto ? 'Ocultar historial de validaciones' : `Ver historial de validaciones (${historial.length})`}</span>
+        <span>{abierto ? 'Ocultar movimientos' : `Ver todos los movimientos (${movimientos.length})`}</span>
         {abierto ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
       </button>
       {abierto && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginTop: 8 }}>
-          {historial.map((v, i) => (
-            <div key={v.id} style={{ fontSize: 11, color: 'var(--text-secondary)' }}>
-              {editandoId === v.id ? (
+          {movimientos.map(m => (
+            <div key={m.id} style={{ fontSize: 11, color: 'var(--text-secondary)' }}>
+              {m.tipo === 'validacion' ? (
+                editandoValidacionId === m.validacion.id ? (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                    <div style={{ display: 'flex', gap: 8 }}>
+                      <InputMonto placeholder="Saldo real validado" value={inputValor} onChange={setInputValor} permiteNegativo style={{ flex: 1 }} />
+                      <input className="form-control" type="date" value={inputFecha} onChange={e => setInputFecha(e.target.value)} style={{ flex: 1 }} />
+                    </div>
+                    <div style={{ display: 'flex', gap: 8 }}>
+                      <button className="btn-submit" style={{ width: 'auto', padding: '0 14px' }} onClick={() => confirmarEditarValidacion(m.validacion)} disabled={guardando}>Guardar</button>
+                      <button onClick={() => setEditandoValidacionId(null)} style={{ padding: '0 12px', border: '0.5px solid var(--border-mid)', borderRadius: 'var(--radius-md)', background: 'transparent', cursor: 'pointer', fontSize: 13, color: 'var(--text-secondary)' }}>Cancelar</button>
+                    </div>
+                  </div>
+                ) : (
+                  <>
+                    {m.fechaLabel} · <em>Validación de saldo</em> · Calculado {formatMonto(m.validacion.saldo_calculado)} → Validado {formatMonto(m.validacion.saldo_validado)} ·{' '}
+                    <strong style={{ color: m.validacion.diferencia < 0 ? '#791F1F' : m.validacion.diferencia > 0 ? 'var(--green-dark)' : 'var(--text-secondary)' }}>
+                      {m.validacion.diferencia === 0 ? 'sin diferencia' : `${m.validacion.diferencia > 0 ? '+' : ''}${formatMonto(m.validacion.diferencia)}`}
+                    </strong>
+                    {m.validacion.validado_por ? ` · ${m.validacion.validado_por}` : ''}
+                    {m.validacion.editado_en ? ` · editado por ${m.validacion.editado_por || 'alguien'} el ${formatFechaHoraISO(m.validacion.editado_en)}` : ''}
+                    {m.esUltimaValidacion && onEditarValidacion && (
+                      <> · <button onClick={() => abrirEditarValidacion(m.validacion)} style={{ ...btnLinkStyle('var(--green-dark)'), fontSize: 11 }}>Editar</button></>
+                    )}
+                  </>
+                )
+              ) : m.dolarMovimiento && editandoDolarId === m.dolarMovimiento.id ? (
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
                   <div style={{ display: 'flex', gap: 8 }}>
-                    <InputMonto placeholder="Saldo real validado" value={inputValor} onChange={setInputValor} permiteNegativo style={{ flex: 1 }} />
-                    <input className="form-control" type="date" value={inputFecha} onChange={e => setInputFecha(e.target.value)} style={{ flex: 1 }} />
+                    <select className="form-control" value={formDolar.tipo} onChange={e => setFormDolar(f => ({ ...f, tipo: e.target.value }))} style={{ flex: 1 }}>
+                      <option value="ingreso">Compra / depósito</option>
+                      <option value="egreso">Retiro</option>
+                    </select>
+                    <InputMonto value={formDolar.monto} onChange={v => setFormDolar(f => ({ ...f, monto: v }))} style={{ flex: 1 }} />
                   </div>
                   <div style={{ display: 'flex', gap: 8 }}>
-                    <button className="btn-submit" style={{ width: 'auto', padding: '0 14px' }} onClick={() => confirmarEditar(v)}>Guardar</button>
-                    <button onClick={() => setEditandoId(null)} style={{ padding: '0 12px', border: '0.5px solid var(--border-mid)', borderRadius: 'var(--radius-md)', background: 'transparent', cursor: 'pointer', fontSize: 13, color: 'var(--text-secondary)' }}>Cancelar</button>
+                    <input className="form-control" type="date" value={formDolar.fecha} onChange={e => setFormDolar(f => ({ ...f, fecha: e.target.value }))} style={{ flex: 1 }} />
+                    <input className="form-control" type="text" placeholder="Concepto (opcional)" value={formDolar.concepto} onChange={e => setFormDolar(f => ({ ...f, concepto: e.target.value }))} style={{ flex: 1 }} />
+                  </div>
+                  <div style={{ display: 'flex', gap: 8 }}>
+                    <button className="btn-submit" style={{ width: 'auto', padding: '0 14px' }} onClick={() => confirmarEditarDolar(m.dolarMovimiento.id)} disabled={guardando}>Guardar</button>
+                    <button onClick={() => setEditandoDolarId(null)} style={{ padding: '0 12px', border: '0.5px solid var(--border-mid)', borderRadius: 'var(--radius-md)', background: 'transparent', cursor: 'pointer', fontSize: 13, color: 'var(--text-secondary)' }}>Cancelar</button>
                   </div>
                 </div>
               ) : (
                 <>
-                  {formatFechaHoraISO(v.created_at)} · Calculado {formatMonto(v.saldo_calculado)} → Validado {formatMonto(v.saldo_validado)} ·{' '}
-                  <strong style={{ color: v.diferencia < 0 ? '#791F1F' : v.diferencia > 0 ? 'var(--green-dark)' : 'var(--text-secondary)' }}>
-                    {v.diferencia === 0 ? 'sin diferencia' : `${v.diferencia > 0 ? '+' : ''}${formatMonto(v.diferencia)}`}
+                  {m.fechaLabel} · {m.pestana} ·{' '}
+                  <strong style={{ color: m.tipo === 'egreso' ? '#791F1F' : 'var(--green-dark)' }}>
+                    {m.tipo === 'egreso' ? '-' : '+'}{formatMonto(m.monto)}
                   </strong>
-                  {v.validado_por ? ` · ${v.validado_por}` : ''}
-                  {v.editado_en ? ` · editado por ${v.editado_por || 'alguien'} el ${formatFechaHoraISO(v.editado_en)}` : ''}
-                  {i === 0 && onEditar && (
-                    <> · <button onClick={() => abrirEditar(v)} style={{ ...btnLinkStyle('var(--green-dark)'), fontSize: 11 }}>Editar</button></>
+                  {m.dolarMovimiento?.concepto ? ` · ${m.dolarMovimiento.concepto}` : ''}
+                  {` · ${m.quien}`}
+                  {m.objetivo && onRevisar && (
+                    <> · <button onClick={() => onRevisar(m.objetivo)} style={{ ...btnLinkStyle('var(--green-dark)'), fontSize: 11 }}>Revisar</button></>
+                  )}
+                  {m.dolarMovimiento && onEditarMovimientoDolar && (
+                    <> · <button onClick={() => abrirEditarDolar(m.dolarMovimiento)} style={{ ...btnLinkStyle('var(--green-dark)'), fontSize: 11 }}>Editar</button></>
+                  )}
+                  {m.dolarMovimiento && onEliminarMovimientoDolar && (
+                    <> · <button onClick={() => onEliminarMovimientoDolar(m.dolarMovimiento.id)} style={{ ...btnLinkStyle('#791F1F'), fontSize: 11 }}>×</button></>
                   )}
                 </>
               )}
@@ -2597,11 +2912,12 @@ function DisclosureHistorialValidaciones({ historial, formatMonto, onEditar }) {
 // Cuentas en dólares: sin pedidos/gastos que las alimenten, el saldo es
 // saldo inicial validado + historial de movimientos manuales (compras/retiros),
 // igual patrón que los aportes de capital de un presupuesto.
-function TarjetaCuentaDolar({ r, historial, onValidarSaldo, onEditarValidacion, onAgregarMovimiento, onEliminarMovimiento }) {
+function TarjetaCuentaDolar({ r, movimientos, onValidarSaldo, onEditarValidacion, onAgregarMovimiento, onEditarMovimientoDolar, onEliminarMovimiento, onRevisar }) {
   const [formAbierto, setFormAbierto] = useState(null) // null | 'saldo' | 'movimiento'
   const [inputSaldo, setInputSaldo] = useState('')
   const [inputCorte, setInputCorte] = useState('')
   const [formMov, setFormMov] = useState({ tipo: 'ingreso', monto: '', concepto: '', fecha: new Date().toISOString().slice(0, 10) })
+  const [guardandoSaldo, setGuardandoSaldo] = useState(false)
 
   function abrirValidarSaldo() {
     setInputSaldo(String(r.saldo ?? 0))
@@ -2610,12 +2926,15 @@ function TarjetaCuentaDolar({ r, historial, onValidarSaldo, onEditarValidacion, 
   }
 
   function abrirMovimiento() {
-    setFormMov({ tipo: 'ingreso', monto: '', concepto: '', fecha: hoyISO() })
+    setFormMov({ tipo: 'ingreso', monto: '', concepto: '', fecha: new Date().toISOString().slice(0, 10) })
     setFormAbierto('movimiento')
   }
 
   async function confirmarSaldo() {
+    if (guardandoSaldo) return
+    setGuardandoSaldo(true)
     await onValidarSaldo(r.nombre, inputSaldo, inputCorte)
+    setGuardandoSaldo(false)
     setFormAbierto(null)
   }
 
@@ -2654,20 +2973,6 @@ function TarjetaCuentaDolar({ r, historial, onValidarSaldo, onEditarValidacion, 
         </div>
       </div>
 
-      {r.movimientos.length > 0 && (
-        <div className="cifra-tabular" style={{ marginTop: 10, paddingTop: 10, borderTop: '0.5px solid var(--border)', display: 'flex', flexDirection: 'column', gap: 5 }}>
-          <div className="form-label">Historial de movimientos</div>
-          {r.movimientos.map(m => (
-            <div key={m.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
-              <span style={{ fontSize: 11, color: 'var(--text-secondary)' }}>
-                {formatFechaDateISO(m.fecha)} · <strong style={{ color: m.tipo === 'egreso' ? '#791F1F' : '#33538F' }}>{m.tipo === 'egreso' ? '-' : '+'}{formatDolares(m.monto)}</strong>{m.concepto ? ` · ${m.concepto}` : ''}{m.creado_por ? ` · ${m.creado_por}` : ''}
-              </span>
-              <button onClick={() => onEliminarMovimiento(m.id)} style={{ ...btnLinkStyle('#791F1F'), fontSize: 14, lineHeight: 1 }}>×</button>
-            </div>
-          ))}
-        </div>
-      )}
-
       <div style={{ display: 'flex', gap: 14, flexWrap: 'wrap', marginTop: 10 }}>
         <button onClick={abrirMovimiento} style={btnLinkStyle('#33538F')}>+ Movimiento</button>
         <button onClick={abrirValidarSaldo} style={btnLinkStyle('var(--text-secondary)')}>Validar saldo real</button>
@@ -2686,13 +2991,13 @@ function TarjetaCuentaDolar({ r, historial, onValidarSaldo, onEditarValidacion, 
             Desde esta fecha se cuentan los movimientos nuevos — todo lo anterior queda afuera del saldo.
           </div>
           <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
-            <button className="btn-submit" style={{ width: 'auto', padding: '0 14px' }} onClick={confirmarSaldo}>Guardar</button>
+            <button className="btn-submit" style={{ width: 'auto', padding: '0 14px' }} onClick={confirmarSaldo} disabled={guardandoSaldo}>Guardar</button>
             <button onClick={() => setFormAbierto(null)} style={{ padding: '0 12px', border: '0.5px solid var(--border-mid)', borderRadius: 'var(--radius-md)', background: 'transparent', cursor: 'pointer', fontSize: 13, color: 'var(--text-secondary)' }}>Cancelar</button>
           </div>
         </div>
       )}
 
-      <DisclosureHistorialValidaciones historial={historial} formatMonto={formatDolares} onEditar={onEditarValidacion} />
+      <DisclosureMovimientosCuenta movimientos={movimientos} formatMonto={formatDolares} onRevisar={onRevisar} onEditarValidacion={onEditarValidacion} onEditarMovimientoDolar={onEditarMovimientoDolar} onEliminarMovimientoDolar={onEliminarMovimiento} />
 
       {formAbierto === 'movimiento' && (
         <div style={{ marginTop: 10 }}>
@@ -2727,23 +3032,351 @@ function TarjetaCuentaDolar({ r, historial, onValidarSaldo, onEditarValidacion, 
   )
 }
 
-function TabFinanzas({ pedidos, esquejes, insumos, miembro, gastos, presupuestos, setPresupuestos, aportes, setAportes, gastosFijos, setGastosFijos, pedidoPagos, esquejePagos, insumoPagos, cuentas, setCuentas, dolaresMovimientos, setDolaresMovimientos, cuentasValidaciones, setCuentasValidaciones, resumen, resumenDolares, hallazgosFinanzas, onRevisar }) {
+// ─── Capital: aportes y devoluciones ────────────────────────────
+// Plata REAL que entra (aporte de un socio/inversor) o sale (devolución) de una cuenta: suma o
+// resta en el saldo de esa cuenta, en pesos o en la caja de dólares, respetando la fecha de
+// corte como cualquier otro movimiento. Distinto del "+ Ampliar presupuesto" de un presupuesto
+// (presupuesto_aportes), que solo amplía lo asignado y no toca ninguna cuenta.
+const LOCACIONES_CAPITAL = [{ valor: '', label: 'General' }, { valor: 'Hormi 1.0', label: 'Hormi 1.0' }, { valor: 'Hormi 2.0', label: 'Hormi 2.0' }]
+
+// Por inversor y moneda (nunca se mezclan pesos con dólares). "Pendiente" = lo marcado "hay que
+// devolverlo" menos lo ya devuelto.
+function resumenCapitalPorInversor(movimientos) {
+  const porClave = new Map()
+  movimientos.forEach(c => {
+    const nombre = String(c.inversor || '').trim()
+    const moneda = c.moneda || 'ARS'
+    const k = `${normalizarTexto(nombre)}|${moneda}`
+    const r = porClave.get(k) || { inversor: nombre, moneda, aportado: 0, aDevolver: 0, devuelto: 0 }
+    const monto = Number(c.monto) || 0
+    if (c.tipo === 'aporte') { r.aportado += monto; if (c.a_devolver) r.aDevolver += monto }
+    else r.devuelto += monto
+    porClave.set(k, r)
+  })
+  return [...porClave.values()].map(r => ({ ...r, pendiente: r.aDevolver - r.devuelto }))
+    .sort((a, b) => (a.moneda === b.moneda ? b.aportado - a.aportado : a.moneda === 'ARS' ? -1 : 1))
+}
+
+function FormCapital({ inicial, esEdicion, inversores, capitalMovimientos, onGuardar, onCancelar }) {
+  const [form, setForm] = useState(inicial)
+  const [error, setError] = useState('')
+  const [guardando, setGuardando] = useState(false)
+  const [avisoDup, setAvisoDup] = useState(null) // { parecidos, para: form } — ver AvisoDuplicado
+  const enCurso = useRef(false)
+  const idLista = useId()
+  const set = (k, v) => setForm(f => ({ ...f, [k]: v }))
+  const esAporte = form.tipo === 'aporte'
+  const cuentas = form.moneda === 'USD' ? CUENTAS_DOLARES : CUENTAS
+  const formatMonto = form.moneda === 'USD' ? formatDolares : formatPesos
+
+  function setTipo(tipo) { setForm(f => ({ ...f, tipo, a_devolver: tipo === 'aporte' ? f.a_devolver : false })) }
+  // Cambiar de moneda limpia la cuenta si ya no corresponde: un aporte en dólares no puede
+  // quedar apuntando a una cuenta en pesos (no sumaría en ningún saldo).
+  function setMoneda(moneda) {
+    setForm(f => ({ ...f, moneda, cuenta: (moneda === 'USD' ? CUENTAS_DOLARES : CUENTAS).includes(f.cuenta) ? f.cuenta : '' }))
+  }
+
+  // Para una devolución: cuánto queda pendiente con esa persona (sin contar este mismo
+  // movimiento si se está editando), para avisar si se está devolviendo de más.
+  const pendiente = useMemo(() => {
+    if (esAporte || !form.inversor.trim()) return null
+    const otros = capitalMovimientos.filter(c => c.id !== form.id)
+    const r = resumenCapitalPorInversor(otros).find(x => x.moneda === form.moneda && normalizarTexto(x.inversor) === normalizarTexto(form.inversor))
+    return r ? r.pendiente : 0
+  }, [esAporte, form.inversor, form.moneda, form.id, capitalMovimientos])
+  const montoNum = parseFloat(form.monto) || 0
+
+  async function guardar(forzar = false) {
+    if (enCurso.current) return
+    const inversor = form.inversor.trim()
+    const monto = parseFloat(form.monto)
+    if (!inversor) { setError(esAporte ? 'Escribí quién aporta.' : 'Escribí a quién se le devuelve.'); return }
+    if (!monto || monto <= 0) { setError('Ingresá un monto válido.'); return }
+    if (!form.cuenta) { setError(esAporte ? 'Elegí la cuenta a la que entró la plata.' : 'Elegí la cuenta de la que salió la plata.'); return }
+    if (!form.fecha) { setError('Elegí la fecha.'); return }
+    setError('')
+    const mov = {
+      tipo: form.tipo, inversor, monto, moneda: form.moneda, cuenta: form.cuenta, fecha: form.fecha,
+      locacion: form.locacion || null, a_devolver: esAporte && !!form.a_devolver, motivo: form.motivo.trim() || null,
+    }
+    enCurso.current = true
+    setGuardando(true)
+    try {
+      if (!esEdicion && !forzar) {
+        const parecidos = await buscarCapitalParecido(mov, capitalMovimientos)
+        if (parecidos.length > 0) { setAvisoDup({ parecidos, para: form }); return }
+      }
+      const res = await onGuardar(mov)
+      if (!res?.ok) setError(res?.msg || 'No se pudo guardar. Revisá la conexión y probá de nuevo.')
+    } finally {
+      enCurso.current = false
+      setGuardando(false)
+    }
+  }
+
+  return (
+    <div className="card form-capital">
+      <div className="form-grid">
+        <div className="form-group full">
+          <label className="form-label">Tipo</label>
+          <div className="miembro-row" style={{ marginBottom: 0 }}>
+            <button type="button" className={`miembro-btn${esAporte ? ' active' : ''}`} onClick={() => setTipo('aporte')}>Aporte</button>
+            <button type="button" className={`miembro-btn${!esAporte ? ' active' : ''}`} onClick={() => setTipo('devolucion')}>Devolución</button>
+          </div>
+        </div>
+        <div className="form-group full">
+          <label className="form-label">{esAporte ? 'Quién aporta' : 'A quién se le devuelve'}</label>
+          <input className="form-control" type="text" list={idLista} placeholder="Ej: Bruno" value={form.inversor} onChange={e => set('inversor', e.target.value)} />
+          <datalist id={idLista}>{inversores.map(n => <option key={n} value={n} />)}</datalist>
+        </div>
+        <div className="form-group full">
+          <label className="form-label">Moneda</label>
+          <div className="miembro-row" style={{ marginBottom: 0 }}>
+            {['ARS', 'USD'].map(m => (
+              <button type="button" key={m} className={`miembro-btn${form.moneda === m ? ' active' : ''}`} onClick={() => setMoneda(m)}>{m === 'ARS' ? 'Pesos' : 'Dólares'}</button>
+            ))}
+          </div>
+        </div>
+        <div className="form-group">
+          <label className="form-label">Monto ({form.moneda === 'USD' ? 'US$' : '$'})</label>
+          <InputMonto value={form.monto} onChange={v => set('monto', v)} />
+        </div>
+        <div className="form-group">
+          <label className="form-label">Fecha</label>
+          <input className="form-control" type="date" value={form.fecha} onChange={e => set('fecha', e.target.value)} />
+        </div>
+        <div className="form-group full">
+          <label className="form-label">{esAporte ? 'Cuenta a la que entró' : 'Cuenta de la que salió'}</label>
+          <select className="form-control" value={form.cuenta} onChange={e => set('cuenta', e.target.value)}>
+            <option value="">Seleccionar...</option>
+            {cuentas.map(c => <option key={c} value={c}>{c}</option>)}
+          </select>
+        </div>
+        <div className="form-group full">
+          <label className="form-label">Hormi</label>
+          <div className="miembro-row" style={{ marginBottom: 0 }}>
+            {LOCACIONES_CAPITAL.map(l => (
+              <button type="button" key={l.label} className={`miembro-btn${form.locacion === l.valor ? ' active' : ''}`} onClick={() => set('locacion', l.valor)}>{l.label}</button>
+            ))}
+          </div>
+        </div>
+        {esAporte && (
+          <div className="form-group full">
+            <div className="toggle-row">
+              <span className="toggle-label">Hay que devolverlo</span>
+              <label className="toggle-switch">
+                <input type="checkbox" checked={!!form.a_devolver} onChange={e => set('a_devolver', e.target.checked)} />
+                <span className="toggle-slider" />
+              </label>
+            </div>
+          </div>
+        )}
+        <div className="form-group full">
+          <label className="form-label">Motivo (opcional)</label>
+          <input className="form-control" type="text" placeholder={esAporte ? 'Ej: invernadero Hormi 2.0' : 'Ej: primera cuota'} value={form.motivo} onChange={e => set('motivo', e.target.value)} />
+        </div>
+      </div>
+      {!esAporte && pendiente !== null && (
+        <div style={{ fontSize: 11, marginTop: 8, color: montoNum > pendiente + 0.5 ? '#791F1F' : 'var(--text-secondary)' }}>
+          {montoNum > pendiente + 0.5
+            ? `⚠ Esto supera lo pendiente de devolverle a ${form.inversor.trim()} (${formatMonto(Math.max(0, pendiente))}).`
+            : `Pendiente de devolverle a ${form.inversor.trim()}: ${formatMonto(Math.max(0, pendiente))}.`}
+        </div>
+      )}
+      {error && <div style={{ fontSize: 12, color: '#791F1F', marginTop: 8 }}>{error}</div>}
+      {avisoDup && avisoDup.para === form ? (
+        <AvisoDuplicado parecidos={avisoDup.parecidos} guardando={guardando} onGuardarIgual={() => guardar(true)} onCancelar={() => setAvisoDup(null)} />
+      ) : (
+        <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
+          <button className="btn-submit" style={{ flex: 1 }} disabled={guardando} onClick={() => guardar()}>
+            {guardando ? 'Guardando...' : esEdicion ? 'Guardar cambios' : esAporte ? 'Guardar aporte' : 'Guardar devolución'}
+          </button>
+          <button onClick={onCancelar} disabled={guardando} style={{ padding: '0 16px', border: '0.5px solid var(--border-mid)', borderRadius: 'var(--radius-md)', background: 'transparent', cursor: 'pointer', fontSize: 13, color: 'var(--text-secondary)' }}>Cancelar</button>
+        </div>
+      )}
+    </div>
+  )
+}
+
+function PanelCapital({ capitalMovimientos, onGuardar, onActualizar, onEliminar }) {
+  const [toast, showToast] = useToast()
+  const [nuevo, setNuevo] = useState(null) // null | 'aporte' | 'devolucion'
+  const [editandoId, setEditandoId] = useState(null)
+  const [confirmandoBorrar, setConfirmandoBorrar] = useState(null)
+  const [borrando, setBorrando] = useState(false)
+
+  const resumen = resumenCapitalPorInversor(capitalMovimientos)
+  const totales = moneda => resumen.filter(r => r.moneda === moneda).reduce((s, r) => ({
+    aportado: s.aportado + r.aportado, devuelto: s.devuelto + r.devuelto, pendiente: s.pendiente + Math.max(0, r.pendiente),
+  }), { aportado: 0, devuelto: 0, pendiente: 0 })
+  const monedas = ['ARS', ...(capitalMovimientos.some(c => c.moneda === 'USD') ? ['USD'] : [])]
+  const inversores = [...new Map([...MIEMBROS, ...capitalMovimientos.map(c => String(c.inversor || '').trim())].filter(Boolean).map(n => [normalizarTexto(n), n])).values()]
+  const ordenados = [...capitalMovimientos].sort((a, b) => String(b.fecha).localeCompare(String(a.fecha)) || new Date(b.created_at) - new Date(a.created_at))
+  const vacio = tipo => ({ tipo, inversor: '', monto: '', moneda: 'ARS', cuenta: '', fecha: hoyISO(), locacion: '', a_devolver: false, motivo: '' })
+
+  async function guardarNuevo(mov) {
+    const res = await onGuardar(mov)
+    if (res?.ok) { setNuevo(null); showToast(mov.tipo === 'aporte' ? 'Aporte registrado ✓' : 'Devolución registrada ✓') }
+    return res
+  }
+  async function guardarEdicion(id, mov) {
+    const res = await onActualizar(id, mov)
+    if (res?.ok) { setEditandoId(null); showToast('Movimiento actualizado ✓') }
+    return res
+  }
+  async function confirmarBorrar(id) {
+    if (borrando) return
+    setBorrando(true)
+    const res = await onEliminar(id)
+    setBorrando(false)
+    setConfirmandoBorrar(null)
+    showToast(res?.ok ? 'Movimiento eliminado' : 'No se pudo eliminar')
+  }
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+      {monedas.map(moneda => {
+        const t = totales(moneda)
+        const fmt = moneda === 'USD' ? formatDolares : formatPesos
+        return (
+          <div key={moneda} className="stats-row">
+            <div className="stat-card"><div className="stat-num cifra-tabular" style={{ fontSize: 15, color: 'var(--green-dark)' }}>{fmt(t.aportado)}</div><div className="stat-lbl">Aportado{moneda === 'USD' ? ' (US$)' : ''}</div></div>
+            <div className="stat-card"><div className="stat-num cifra-tabular" style={{ fontSize: 15 }}>{fmt(t.devuelto)}</div><div className="stat-lbl">Devuelto{moneda === 'USD' ? ' (US$)' : ''}</div></div>
+            <div className="stat-card"><div className="stat-num cifra-tabular" style={{ fontSize: 15, color: t.pendiente > 0 ? '#791F1F' : undefined }}>{fmt(t.pendiente)}</div><div className="stat-lbl">Pendiente{moneda === 'USD' ? ' (US$)' : ''}</div></div>
+          </div>
+        )
+      })}
+
+      {resumen.length > 0 && (
+        <div className="card resumen-capital">
+          <div className="form-label" style={{ marginBottom: 10 }}>Por inversor</div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+            {resumen.map(r => {
+              const fmt = r.moneda === 'USD' ? formatDolares : formatPesos
+              return (
+                <div key={`${r.inversor}|${r.moneda}`}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8 }}>
+                    <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--text-primary)' }}>{r.inversor}{r.moneda === 'USD' ? ' · dólares' : ''}</span>
+                    {r.aDevolver > 0 && (
+                      <span style={{ fontSize: 12, fontWeight: 600, color: r.pendiente > 0.5 ? '#791F1F' : 'var(--green-dark)' }}>
+                        {r.pendiente > 0.5 ? `Pendiente ${fmt(r.pendiente)}` : r.pendiente < -0.5 ? `Devuelto de más ${fmt(-r.pendiente)}` : 'Devuelto todo ✓'}
+                      </span>
+                    )}
+                  </div>
+                  <div style={{ fontSize: 11, color: 'var(--text-secondary)', marginTop: 2 }}>
+                    Aportó {fmt(r.aportado)}{r.aDevolver > 0 ? ` · a devolver ${fmt(r.aDevolver)}` : ''}{r.devuelto > 0 ? ` · devuelto ${fmt(r.devuelto)}` : ''}
+                  </div>
+                </div>
+              )
+            })}
+          </div>
+        </div>
+      )}
+
+      {nuevo ? (
+        <FormCapital
+          key={nuevo} inicial={vacio(nuevo)} inversores={inversores} capitalMovimientos={capitalMovimientos}
+          onGuardar={guardarNuevo} onCancelar={() => setNuevo(null)}
+        />
+      ) : (
+        <div style={{ display: 'flex', gap: 8 }}>
+          <button className="btn-agregar-fila" style={{ flex: 1 }} onClick={() => { setEditandoId(null); setNuevo('aporte') }}>+ Registrar aporte</button>
+          <button className="btn-agregar-fila" style={{ flex: 1 }} onClick={() => { setEditandoId(null); setNuevo('devolucion') }}>+ Registrar devolución</button>
+        </div>
+      )}
+
+      <div className="pedidos-list">
+        {ordenados.length === 0 && <div className="empty-state">Todavía no hay aportes ni devoluciones cargados.</div>}
+        {ordenados.map(c => {
+          const fmt = c.moneda === 'USD' ? formatDolares : formatPesos
+          const esAporte = c.tipo === 'aporte'
+          if (editandoId === c.id) {
+            return (
+              <FormCapital
+                key={c.id} esEdicion inversores={inversores} capitalMovimientos={capitalMovimientos}
+                inicial={{ id: c.id, tipo: c.tipo, inversor: c.inversor, monto: String(c.monto), moneda: c.moneda || 'ARS', cuenta: c.cuenta, fecha: c.fecha, locacion: c.locacion || '', a_devolver: !!c.a_devolver, motivo: c.motivo || '' }}
+                onGuardar={mov => guardarEdicion(c.id, mov)} onCancelar={() => setEditandoId(null)}
+              />
+            )
+          }
+          return (
+            <div key={c.id} className="pedido-card fila-capital" style={{ cursor: 'default' }}>
+              <div style={{ minWidth: 0 }}>
+                <div className="pedido-nombre">{esAporte ? `Aporte de ${c.inversor}` : `Devolución a ${c.inversor}`}</div>
+                <div className="pedido-sub">
+                  {formatFechaDateISO(c.fecha)} · {c.cuenta}{c.locacion ? ` · ${c.locacion}` : ''}{c.a_devolver ? ' · a devolver' : ''}{c.creado_por ? ` · cargado por ${c.creado_por}` : ''}
+                </div>
+                {c.motivo && <div style={{ fontSize: 11, color: 'var(--text-secondary)', marginTop: 2, fontStyle: 'italic', overflowWrap: 'anywhere' }}>{c.motivo}</div>}
+              </div>
+              <div className="pedido-right">
+                <span className="pedido-total" style={{ color: esAporte ? 'var(--green-dark)' : '#791F1F' }}>{esAporte ? '+' : '-'}{fmt(c.monto)}</span>
+              </div>
+              <div style={{ gridColumn: '1 / -1', marginTop: 10, paddingTop: 10, borderTop: '0.5px solid var(--border)', display: 'flex', gap: 14, alignItems: 'center' }}>
+                <button onClick={() => { setNuevo(null); setConfirmandoBorrar(null); setEditandoId(c.id) }} style={btnLinkStyle('var(--text-secondary)')}>Editar</button>
+                <button className="btn-eliminar-fila" style={{ width: 22, height: 22, fontSize: 10, marginLeft: 'auto' }} title="Borrar movimiento" onClick={() => setConfirmandoBorrar(c.id)}>✕</button>
+              </div>
+              {confirmandoBorrar === c.id && (
+                <div style={{ gridColumn: '1 / -1', marginTop: 10, background: '#FCEBEB', border: '0.5px solid #791F1F', borderRadius: 'var(--radius-md)', padding: 8, display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <span style={{ fontSize: 12, color: '#791F1F', flex: 1 }}>¿Borrar este movimiento? Deja de contar en el saldo de {c.cuenta}.</span>
+                  <button onClick={() => confirmarBorrar(c.id)} disabled={borrando} style={{ padding: '6px 10px', background: '#791F1F', color: 'white', border: 'none', borderRadius: 'var(--radius-md)', fontSize: 12, fontWeight: 600, cursor: 'pointer' }}>Sí, borrar</button>
+                  <button onClick={() => setConfirmandoBorrar(null)} disabled={borrando} style={{ padding: '6px 10px', background: 'transparent', border: '0.5px solid var(--border-mid)', borderRadius: 'var(--radius-md)', fontSize: 12, cursor: 'pointer' }}>Cancelar</button>
+                </div>
+              )}
+            </div>
+          )
+        })}
+      </div>
+      <div className={`toast${toast.show ? ' show' : ''}`}>{toast.msg}</div>
+    </div>
+  )
+}
+
+function TabFinanzas({ pedidos, esquejes, insumos, miembro, gastos, presupuestos, setPresupuestos, aportes, setAportes, gastosFijos, setGastosFijos, pedidoPagos, esquejePagos, insumoPagos, cuentas, setCuentas, dolaresMovimientos, setDolaresMovimientos, cuentasValidaciones, setCuentasValidaciones, cotizacionesDolar, onActualizarCotizacion, resumen, resumenDolares, hallazgosFinanzas, onRevisar, capitalMovimientos, onGuardarCapital, onActualizarCapital, onEliminarCapital, duplicadosDescartados, onDescartarDuplicado, onRestaurarDuplicado }) {
   const [subTab, setSubTab] = useState('general')
   const [editandoSaldo, setEditandoSaldo] = useState(null)
   const [inputSaldo, setInputSaldo] = useState('')
   const [inputCorte, setInputCorte] = useState('')
+  const [guardandoSaldo, setGuardandoSaldo] = useState(false)
   const [verDetalleCuentas, setVerDetalleCuentas] = useState(false)
   const [verDetalleDolares, setVerDetalleDolares] = useState(false)
   const [verPresupuestosGeneral, setVerPresupuestosGeneral] = useState(false)
   const [alertasAbiertas, setAlertasAbiertas] = useState(new Set())
+  const [verDescartados, setVerDescartados] = useState(false)
+  const [descartando, setDescartando] = useState(null) // clave en curso (guard de doble click)
   const [toast, showToast] = useToast()
 
-  function toggleAlerta(i) {
+  // Por clave estable (no por índice): al descartar un duplicado la lista se corre y, por
+  // índice, quedaría abierta la alerta de al lado sin que nadie la haya tocado.
+  const claveHallazgo = h => h.descartar || `${h.titulo}|${h.mensaje}`
+  function toggleAlerta(k) {
     setAlertasAbiertas(prev => {
       const next = new Set(prev)
-      if (next.has(i)) next.delete(i); else next.add(i)
+      if (next.has(k)) next.delete(k); else next.add(k)
       return next
     })
+  }
+
+  // Un "Revisar" que apunta a otra sub-pestaña de Finanzas (ej. un movimiento de Capital) se
+  // resuelve acá adentro; el resto sale a la pestaña correspondiente como siempre.
+  function revisar(objetivo) {
+    if (objetivo?.tab === 'finanzas') { setSubTab(objetivo.subTab || 'general'); return }
+    onRevisar(objetivo)
+  }
+
+  async function marcarNoDuplicado(clave) {
+    if (descartando) return
+    setDescartando(clave)
+    const res = await onDescartarDuplicado(clave)
+    setDescartando(null)
+    showToast(res?.ok ? 'Marcado como no duplicado ✓' : 'No se pudo guardar. Probá de nuevo.')
+  }
+
+  async function volverARevisar(clave) {
+    if (descartando) return
+    setDescartando(clave)
+    const res = await onRestaurarDuplicado(clave)
+    setDescartando(null)
+    showToast(res?.ok ? 'Vuelve a aparecer en Registros a revisar' : 'No se pudo guardar. Probá de nuevo.')
   }
 
   const totalGeneral = resumen.reduce((s, r) => s + r.saldo, 0)
@@ -2754,13 +3387,18 @@ function TabFinanzas({ pedidos, esquejes, insumos, miembro, gastos, presupuestos
   // así que no se puede restar el asignado completo del total de cuentas sin contar dos
   // veces lo que ya se gastó (eso sí bajó las cuentas, vía los gastos vinculados).
   const presupuestosActivosGeneral = useMemo(() => presupuestos.filter(p => !p.cerrado), [presupuestos])
+  // KPIs de "ahora mismo": un presupuesto en USD se convierte a pesos con la cotización de HOY
+  // antes de sumarlo al total general — mezclar montos crudos de distinta moneda daría un
+  // número sin sentido. Distinto del "gastado" de cada presupuesto puntual (gastoDePresupuesto),
+  // que usa la cotización del día de cada gasto, no la de hoy.
+  const cotizacionHoy = cotizacionesDolar[0] || null
   const totalPresupuestosAsignados = useMemo(
-    () => presupuestosActivosGeneral.reduce((s, p) => s + totalAsignado(p, aportes), 0),
-    [presupuestosActivosGeneral, aportes]
+    () => presupuestosActivosGeneral.reduce((s, p) => s + valorEnPesos(totalAsignado(p, aportes), p.moneda, cotizacionHoy), 0),
+    [presupuestosActivosGeneral, aportes, cotizacionHoy]
   )
   const totalPresupuestosRestante = useMemo(
-    () => presupuestosActivosGeneral.reduce((s, p) => s + (totalAsignado(p, aportes) - gastoDePresupuesto(p, gastos)), 0),
-    [presupuestosActivosGeneral, aportes, gastos]
+    () => presupuestosActivosGeneral.reduce((s, p) => s + valorEnPesos(totalAsignado(p, aportes) - gastoDePresupuesto(p, gastos, cotizacionesDolar), p.moneda, cotizacionHoy), 0),
+    [presupuestosActivosGeneral, aportes, gastos, cotizacionesDolar, cotizacionHoy]
   )
   const balanceTrasPresupuestos = totalGeneral - totalPresupuestosRestante
 
@@ -2770,87 +3408,76 @@ function TabFinanzas({ pedidos, esquejes, insumos, miembro, gastos, presupuestos
     const hoy = new Date(); hoy.setHours(0, 0, 0, 0)
     return presupuestosActivosGeneral
       .map(p => {
-        const restante = totalAsignado(p, aportes) - gastoDePresupuesto(p, gastos)
+        const restante = totalAsignado(p, aportes) - gastoDePresupuesto(p, gastos, cotizacionesDolar)
         if (!p.fecha_limite || restante <= 0) return null
         const [y, m, d] = p.fecha_limite.split('-').map(Number)
         const limite = new Date(y, m - 1, d)
         const dias = Math.round((limite - hoy) / 86400000)
         if (dias < 0 || dias > 7) return null
-        return { p, restante, dias }
+        return { p, restante: valorEnPesos(restante, p.moneda, cotizacionHoy), dias }
       })
       .filter(Boolean)
       .sort((a, b) => a.dias - b.dias)
-  }, [presupuestosActivosGeneral, aportes, gastos])
+  }, [presupuestosActivosGeneral, aportes, gastos, cotizacionesDolar, cotizacionHoy])
   const totalRestantePorVencer = presupuestosPorVencer.reduce((s, x) => s + x.restante, 0)
   const faltaCobertura = totalRestantePorVencer - totalGeneral
 
   const totalDolares = resumenDolares.reduce((s, r) => s + r.saldo, 0)
 
-  // Además de anclar el saldo (como siempre), deja una fila en cuentas_validaciones con lo que
-  // el sistema calculaba justo antes vs. lo que se cargó como real — historial append-only para
-  // poder ver con el tiempo cuánto se corrige por cuenta y dónde se pierde/sobra plata.
-  async function registrarValidacionHistorial(nombre, fechaCorteAnterior, corteStr, valor) {
-    const previa = resumen.find(r => r.nombre === nombre) || resumenDolares.find(r => r.nombre === nombre)
-    const saldoCalculado = previa ? previa.saldo : 0
-    const nuevo = {
-      cuenta: nombre, moneda: CUENTAS_DOLARES.includes(nombre) ? 'USD' : 'ARS',
-      fecha_corte_anterior: fechaCorteAnterior || null, fecha_corte_nueva: corteStr,
-      saldo_calculado: saldoCalculado, saldo_validado: valor, diferencia: valor - saldoCalculado,
-      validado_por: miembro || null,
-    }
-    const { data, error } = await supabase.from('cuentas_validaciones').insert(nuevo).select().single()
-    if (!error && data) setCuentasValidaciones(prev => [data, ...prev])
-  }
-
+  // Ancla el saldo Y deja una fila en cuentas_validaciones (lo que el sistema calculaba justo
+  // antes vs. lo que se cargó como real) en una sola transacción de base de datos (RPC
+  // `registrar_validacion_saldo`) — las dos escrituras se hacían antes como dos requests
+  // separadas sin chequear la segunda, así que un fallo en el insert del historial podía
+  // pasar desapercibido con la cuenta ya actualizada y un toast de "éxito" engañoso.
   async function actualizarSaldoCuenta(nombre, valorStr, corteStr) {
     const valor = parseFloat(valorStr)
     if (isNaN(valor)) { showToast('Ingresá un número válido'); return }
     if (!corteStr) { showToast('Elegí una fecha de corte'); return }
-    const ahora = new Date().toISOString()
     const existente = cuentas.find(c => c.nombre === nombre)
-    if (existente) {
-      const { error } = await supabase.from('cuentas').update({ saldo_inicial: valor, fecha_corte: corteStr, validado: true, actualizado_por: miembro || null, actualizado_en: ahora }).eq('nombre', nombre)
-      if (!error) {
-        setCuentas(prev => prev.map(c => c.nombre === nombre ? { ...c, saldo_inicial: valor, fecha_corte: corteStr, validado: true, actualizado_por: miembro || null, actualizado_en: ahora } : c))
-        await registrarValidacionHistorial(nombre, existente.fecha_corte, corteStr, valor)
-        showToast('Saldo inicial validado ✓')
-      }
-      else showToast('Error al guardar')
-    } else {
-      const { data, error } = await supabase.from('cuentas').insert({ nombre, saldo_inicial: valor, fecha_corte: corteStr, validado: true, actualizado_por: miembro || null, actualizado_en: ahora }).select().single()
-      if (!error && data) {
-        setCuentas(prev => [...prev, data])
-        await registrarValidacionHistorial(nombre, null, corteStr, valor)
-        showToast('Saldo inicial validado ✓')
-      }
-      else showToast('Error al guardar')
-    }
+    const previa = resumen.find(r => r.nombre === nombre) || resumenDolares.find(r => r.nombre === nombre)
+    const saldoCalculado = previa ? previa.saldo : 0
+    const { data, error } = await supabase.rpc('registrar_validacion_saldo', {
+      p_nombre: nombre,
+      p_moneda: CUENTAS_DOLARES.includes(nombre) ? 'USD' : 'ARS',
+      p_fecha_corte_anterior: existente?.fecha_corte || null,
+      p_fecha_corte_nueva: corteStr,
+      p_saldo_calculado: saldoCalculado,
+      p_saldo_validado: valor,
+      p_validado_por: miembro || null,
+    })
+    if (error || !data) { showToast('Error al guardar'); return }
+    setCuentasValidaciones(prev => [data, ...prev])
+    setCuentas(prev => {
+      const nuevaFila = { nombre, saldo_inicial: valor, fecha_corte: corteStr, validado: true, actualizado_por: miembro || null, actualizado_en: data.created_at }
+      return existente ? prev.map(c => c.nombre === nombre ? { ...c, ...nuevaFila } : c) : [...prev, nuevaFila]
+    })
+    showToast('Saldo inicial validado ✓')
   }
 
   // Corrige un error de tipeo en la ÚLTIMA validación de una cuenta (la única editable — es
   // la que ancla el saldo actual). No genera un evento nuevo como actualizarSaldoCuenta: pisa
   // los datos de esa fila y deja editado_por/editado_en como rastro, mismo patrón que
-  // actualizado_por/actualizado_en en el resto de la app.
+  // actualizado_por/actualizado_en en el resto de la app. Misma razón que arriba para usar un
+  // RPC (`corregir_validacion_saldo`): las dos escrituras (historial + ancla) tienen que ser
+  // atómicas, si no el saldo mostrado puede quedar desincronizado del historial sin ningún aviso.
   async function corregirValidacion(fila, valorStr, fechaStr) {
     const valor = parseFloat(valorStr)
     if (isNaN(valor)) { showToast('Ingresá un número válido'); return }
     if (!fechaStr) { showToast('Elegí una fecha de corte'); return }
-    const ahora = new Date().toISOString()
-    const diferencia = valor - fila.saldo_calculado
-    const { error } = await supabase.from('cuentas_validaciones')
-      .update({ saldo_validado: valor, fecha_corte_nueva: fechaStr, diferencia, editado_por: miembro || null, editado_en: ahora })
-      .eq('id', fila.id)
-    if (error) { showToast('Error al guardar'); return }
-    setCuentasValidaciones(prev => prev.map(v => v.id === fila.id ? { ...v, saldo_validado: valor, fecha_corte_nueva: fechaStr, diferencia, editado_por: miembro || null, editado_en: ahora } : v))
-    const { error: errorCuenta } = await supabase.from('cuentas')
-      .update({ saldo_inicial: valor, fecha_corte: fechaStr, actualizado_por: miembro || null, actualizado_en: ahora })
-      .eq('nombre', fila.cuenta)
-    if (!errorCuenta) setCuentas(prev => prev.map(c => c.nombre === fila.cuenta ? { ...c, saldo_inicial: valor, fecha_corte: fechaStr, actualizado_por: miembro || null, actualizado_en: ahora } : c))
+    const { data, error } = await supabase.rpc('corregir_validacion_saldo', {
+      p_id: fila.id, p_saldo_validado: valor, p_fecha_corte_nueva: fechaStr, p_editado_por: miembro || null,
+    })
+    if (error || !data) { showToast('Error al guardar'); return }
+    setCuentasValidaciones(prev => prev.map(v => v.id === fila.id ? { ...v, ...data } : v))
+    setCuentas(prev => prev.map(c => c.nombre === fila.cuenta ? { ...c, saldo_inicial: valor, fecha_corte: fechaStr, actualizado_por: miembro || null, actualizado_en: data.editado_en } : c))
     showToast('Validación corregida ✓')
   }
 
   async function guardarSaldoInicial(nombre) {
+    if (guardandoSaldo) return
+    setGuardandoSaldo(true)
     await actualizarSaldoCuenta(nombre, inputSaldo, inputCorte)
+    setGuardandoSaldo(false)
     setEditandoSaldo(null)
     setInputSaldo('')
     setInputCorte('')
@@ -2869,13 +3496,21 @@ function TabFinanzas({ pedidos, esquejes, insumos, miembro, gastos, presupuestos
     else showToast('Error al eliminar')
   }
 
+  // El guard de doble-submit vive en DisclosureMovimientosCuenta (mismo patrón que
+  // corregirValidacion), no hace falta duplicarlo acá.
+  async function editarMovimientoDolares(id, cambios) {
+    const { error } = await supabase.from('dolares_movimientos').update(cambios).eq('id', id)
+    if (!error) { setDolaresMovimientos(prev => prev.map(m => m.id === id ? { ...m, ...cambios } : m)); showToast('Movimiento actualizado ✓') }
+    else showToast('Error al guardar')
+  }
+
   // Punto de color en la pestaña de una locación cuando tiene presupuesto activo —
   // rojo si alguno está Agotado/Vencido, verde si están bien, nada si no hay ninguno.
   function colorPresupuestoLocacion(locacion) {
     const activos = presupuestos.filter(p => p.locacion === locacion && !p.cerrado)
     if (activos.length === 0) return null
     const hayProblema = activos.some(p => {
-      const estado = estadoPresupuesto(p, gastos, aportes)
+      const estado = estadoPresupuesto(p, gastos, aportes, cotizacionesDolar)
       return estado === 'Agotado' || estado === 'Vencido'
     })
     return hayProblema ? '#791F1F' : 'var(--green-dark)'
@@ -2884,18 +3519,21 @@ function TabFinanzas({ pedidos, esquejes, insumos, miembro, gastos, presupuestos
   return (
     <div className="content">
       <div className="miembro-row" style={{ marginBottom: 14 }}>
-        {['general', 'Hormi 1.0', 'Hormi 2.0'].map(st => {
-          const colorPunto = st !== 'general' ? colorPresupuestoLocacion(st) : null
+        {['general', 'Hormi 1.0', 'Hormi 2.0', 'capital'].map(st => {
+          const colorPunto = st.startsWith('Hormi') ? colorPresupuestoLocacion(st) : null
           return (
             <button key={st} className={`miembro-btn${subTab === st ? ' active' : ''}`} onClick={() => setSubTab(st)}>
-              {st === 'general' ? 'General' : st}
+              {st === 'general' ? 'General' : st === 'capital' ? 'Capital' : st}
               {colorPunto && <span style={{ display: 'inline-block', width: 7, height: 7, borderRadius: '50%', background: colorPunto, marginLeft: 6 }} />}
             </button>
           )
         })}
       </div>
-      {subTab !== 'general' && (
-        <PanelFinanzasHormi locacion={subTab} pedidos={pedidos} esquejes={esquejes} gastos={gastos} presupuestos={presupuestos} setPresupuestos={setPresupuestos} aportes={aportes} setAportes={setAportes} gastosFijos={gastosFijos} setGastosFijos={setGastosFijos} totalCuentas={totalGeneral} miembro={miembro} pedidoPagos={pedidoPagos} esquejePagos={esquejePagos} />
+      {subTab === 'capital' && (
+        <PanelCapital capitalMovimientos={capitalMovimientos} onGuardar={onGuardarCapital} onActualizar={onActualizarCapital} onEliminar={onEliminarCapital} />
+      )}
+      {subTab.startsWith('Hormi') && (
+        <PanelFinanzasHormi locacion={subTab} pedidos={pedidos} esquejes={esquejes} gastos={gastos} presupuestos={presupuestos} setPresupuestos={setPresupuestos} aportes={aportes} setAportes={setAportes} gastosFijos={gastosFijos} setGastosFijos={setGastosFijos} totalCuentas={totalGeneral} miembro={miembro} pedidoPagos={pedidoPagos} esquejePagos={esquejePagos} cotizacionesDolar={cotizacionesDolar} />
       )}
       {subTab === 'general' && (
       <>
@@ -2921,6 +3559,15 @@ function TabFinanzas({ pedidos, esquejes, insumos, miembro, gastos, presupuestos
           <div className="stat-lbl">Ahorro en dólares</div>
         </div>
       </div>
+      {cotizacionesDolar[0] && (
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, marginTop: 10, fontSize: 11, color: 'var(--text-secondary)' }}>
+          <span>
+            Dólar blue ({formatFechaDateISO(cotizacionesDolar[0].fecha)}): compra {formatPesos(cotizacionesDolar[0].compra)} · venta {formatPesos(cotizacionesDolar[0].venta)} · promedio {formatPesos(cotizacionesDolar[0].promedio)}
+            {String(cotizacionesDolar[0].fuente || '').startsWith('fallback') && <span style={{ color: '#854F0B' }}> · sin actualizar hoy</span>}
+          </span>
+          <button onClick={onActualizarCotizacion} style={btnLinkStyle('var(--green-dark)')}>Actualizar</button>
+        </div>
+      )}
       {presupuestosPorVencer.length > 0 && (
         <div className="card" style={{ marginTop: 14, background: '#FFF8ED', borderColor: '#E8C77E' }}>
           <div style={{ display: 'flex', gap: 8, alignItems: 'flex-start' }}>
@@ -2967,17 +3614,27 @@ function TabFinanzas({ pedidos, esquejes, insumos, miembro, gastos, presupuestos
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 0, marginTop: 10 }}>
                   {hallazgosFinanzas.map((h, i) => {
                     const color = h.severidad === 'error' ? '#791F1F' : '#854F0B'
-                    const abierta = alertasAbiertas.has(i)
+                    const k = claveHallazgo(h)
+                    const abierta = alertasAbiertas.has(k)
                     return (
-                      <div key={i} style={{ paddingTop: 8, marginTop: i === 0 ? 0 : 6, borderTop: `0.5px solid ${h.severidad === 'error' ? '#e8b4b4' : '#E8C77E'}` }}>
-                        <div onClick={() => toggleAlerta(i)} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, cursor: 'pointer' }}>
+                      <div key={k} className="alerta-finanzas" style={{ paddingTop: 8, marginTop: i === 0 ? 0 : 6, borderTop: `0.5px solid ${h.severidad === 'error' ? '#e8b4b4' : '#E8C77E'}` }}>
+                        <div onClick={() => toggleAlerta(k)} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, cursor: 'pointer' }}>
                           <span style={{ fontSize: 12, color }}><strong>{h.responsable}</strong> · {h.titulo}</span>
                           {abierta ? <ChevronUp size={14} color={color} style={{ flexShrink: 0 }} /> : <ChevronDown size={14} color={color} style={{ flexShrink: 0 }} />}
                         </div>
                         {abierta && (
                           <div style={{ marginTop: 6, display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
                             <span style={{ fontSize: 12, color }}>{h.mensaje}</span>
-                            {h.objetivo && <button onClick={() => onRevisar(h.objetivo)} style={{ ...btnLinkStyle(color), flexShrink: 0 }}>Revisar</button>}
+                            {(h.objetivo || h.descartar) && (
+                              <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 8, flexShrink: 0 }}>
+                                {h.objetivo && <button onClick={() => revisar(h.objetivo)} style={btnLinkStyle(color)}>Revisar</button>}
+                                {h.descartar && (
+                                  <button onClick={() => marcarNoDuplicado(h.descartar)} disabled={!!descartando} style={{ ...btnLinkStyle('var(--text-secondary)'), whiteSpace: 'nowrap', opacity: descartando === h.descartar ? 0.5 : 1 }}>
+                                    No es duplicado
+                                  </button>
+                                )}
+                              </div>
+                            )}
                           </div>
                         )}
                       </div>
@@ -2988,6 +3645,27 @@ function TabFinanzas({ pedidos, esquejes, insumos, miembro, gastos, presupuestos
             ) : (
               <div style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
                 <strong style={{ color: 'var(--text-primary)' }}>Registros a revisar</strong> · Sin registros a validar.
+              </div>
+            )}
+            {/* Lo marcado "No es duplicado" se puede deshacer: si alguien se equivocó, vuelve a la lista. */}
+            {duplicadosDescartados.length > 0 && (
+              <div style={{ marginTop: 10, paddingTop: 8, borderTop: '0.5px solid var(--border)' }}>
+                <button onClick={() => setVerDescartados(v => !v)} style={{ ...btnLinkStyle('var(--text-secondary)'), display: 'flex', alignItems: 'center', gap: 4 }}>
+                  Marcados como no duplicados ({duplicadosDescartados.length}) {verDescartados ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
+                </button>
+                {verDescartados && (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginTop: 8 }}>
+                    {duplicadosDescartados.map(d => (
+                      <div key={d.clave} className="fila-descartado" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, fontSize: 11, color: 'var(--text-secondary)' }}>
+                        <span style={{ minWidth: 0, overflowWrap: 'anywhere' }}>
+                          {describirDescartado(d.clave, { gastos, pedidos, esquejes, insumos, pedidoPagos, esquejePagos, insumoPagos, capitalMovimientos }, { pesos: formatPesos, dolares: formatDolares, fechaISO: formatFechaISOSinAnio })}
+                          {d.descartado_por ? ` · lo marcó ${d.descartado_por}` : ''}
+                        </span>
+                        <button onClick={() => volverARevisar(d.clave)} disabled={!!descartando} style={{ ...btnLinkStyle('var(--green-dark)'), fontSize: 11, whiteSpace: 'nowrap', flexShrink: 0 }}>Volver a revisar</button>
+                      </div>
+                    ))}
+                  </div>
+                )}
               </div>
             )}
           </div>
@@ -3044,7 +3722,7 @@ function TabFinanzas({ pedidos, esquejes, insumos, miembro, gastos, presupuestos
                   Desde esta fecha se cuentan los movimientos nuevos — todo lo anterior queda afuera del saldo (sigue disponible en Pedidos/Gastos).
                 </div>
                 <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
-                  <button className="btn-submit" style={{ width: 'auto', padding: '0 14px' }} onClick={() => guardarSaldoInicial(r.nombre)}>Guardar</button>
+                  <button className="btn-submit" style={{ width: 'auto', padding: '0 14px' }} onClick={() => guardarSaldoInicial(r.nombre)} disabled={guardandoSaldo}>Guardar</button>
                   <button onClick={() => { setEditandoSaldo(null); setInputSaldo(''); setInputCorte('') }} style={{ padding: '0 12px', border: '0.5px solid var(--border-mid)', borderRadius: 'var(--radius-md)', background: 'transparent', cursor: 'pointer', fontSize: 13, color: 'var(--text-secondary)' }}>Cancelar</button>
                 </div>
               </div>
@@ -3053,7 +3731,10 @@ function TabFinanzas({ pedidos, esquejes, insumos, miembro, gastos, presupuestos
                 Validar saldo real
               </button>
             )}
-            <DisclosureHistorialValidaciones historial={cuentasValidaciones.filter(v => v.cuenta === r.nombre)} formatMonto={formatPesos} onEditar={corregirValidacion} />
+            <DisclosureMovimientosCuenta
+              movimientos={movimientosDeCuenta(r.nombre, { pedidoPagos, pedidos, esquejePagos, esquejes, insumoPagos, insumos, gastos, dolaresMovimientos, cuentasValidaciones, capitalMovimientos, esDolar: false })}
+              formatMonto={formatPesos} onRevisar={revisar} onEditarValidacion={corregirValidacion}
+            />
           </div>
         ))}
       </div>
@@ -3068,25 +3749,27 @@ function TabFinanzas({ pedidos, esquejes, insumos, miembro, gastos, presupuestos
           <TarjetaCuentaDolar
             key={r.nombre}
             r={r}
-            historial={cuentasValidaciones.filter(v => v.cuenta === r.nombre)}
+            movimientos={movimientosDeCuenta(r.nombre, { pedidoPagos, pedidos, esquejePagos, esquejes, insumoPagos, insumos, gastos, dolaresMovimientos, cuentasValidaciones, capitalMovimientos, esDolar: true })}
             onValidarSaldo={actualizarSaldoCuenta}
             onEditarValidacion={corregirValidacion}
             onAgregarMovimiento={agregarMovimientoDolares}
+            onEditarMovimientoDolar={editarMovimientoDolares}
             onEliminarMovimiento={eliminarMovimientoDolares}
+            onRevisar={revisar}
           />
         ))}
       </div>
       )}
-      {presupuestos.length > 0 && (
+      {presupuestosActivosGeneral.length > 0 && (
         <div>
           <button className="btn-disclosure" onClick={() => setVerPresupuestosGeneral(v => !v)}>
-            <span>{verPresupuestosGeneral ? 'Ocultar presupuestos activos' : `Ver presupuestos activos (${presupuestos.length})`}</span>
+            <span>{verPresupuestosGeneral ? 'Ocultar presupuestos activos' : `Ver presupuestos activos (${presupuestosActivosGeneral.length})`}</span>
             {verPresupuestosGeneral ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
           </button>
           {verPresupuestosGeneral && (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 12, marginTop: 12 }}>
-            {presupuestos.map(p => (
-              <TarjetaPresupuesto key={p.id} p={p} gastos={gastos} aportes={aportes} mostrarLocacion />
+            {presupuestosActivosGeneral.map(p => (
+              <TarjetaPresupuesto key={p.id} p={p} gastos={gastos} aportes={aportes} cotizaciones={cotizacionesDolar} mostrarLocacion />
             ))}
           </div>
           )}
@@ -3100,9 +3783,9 @@ function TabFinanzas({ pedidos, esquejes, insumos, miembro, gastos, presupuestos
   )
 }
 
-function PanelFinanzasHormi({ locacion, pedidos, esquejes, gastos, presupuestos, setPresupuestos, aportes, setAportes, gastosFijos, setGastosFijos, totalCuentas, miembro, pedidoPagos, esquejePagos }) {
+function PanelFinanzasHormi({ locacion, pedidos, esquejes, gastos, presupuestos, setPresupuestos, aportes, setAportes, gastosFijos, setGastosFijos, totalCuentas, miembro, pedidoPagos, esquejePagos, cotizacionesDolar }) {
   const [mostrarForm, setMostrarForm] = useState(false)
-  const [form, setForm] = useState({ nombre: '', monto_asignado: '', fecha_asignacion: hoyISO(), fecha_limite: '' })
+  const [form, setForm] = useState({ nombre: '', monto_asignado: '', fecha_asignacion: hoyISO(), fecha_limite: '', moneda: 'ARS', descripcion: '' })
   const [mostrarFormFijo, setMostrarFormFijo] = useState(false)
   const [formFijo, setFormFijo] = useState({ nombre: '', categoria: '', monto: '' })
   const [editandoFijo, setEditandoFijo] = useState(null)
@@ -3142,18 +3825,24 @@ function PanelFinanzasHormi({ locacion, pedidos, esquejes, gastos, presupuestos,
       showToast('Completá nombre y monto asignado')
       return
     }
+    if (contarPalabras(form.descripcion) > MAX_PALABRAS_PRESUPUESTO) {
+      showToast(`La descripción no puede superar las ${MAX_PALABRAS_PRESUPUESTO} palabras`)
+      return
+    }
     const nuevoPresupuesto = {
       nombre: form.nombre.trim(),
       locacion,
       monto_asignado: parseFloat(form.monto_asignado),
       fecha_asignacion: form.fecha_asignacion || hoyISO(),
       fecha_limite: form.fecha_limite || null,
+      moneda: form.moneda,
+      descripcion: form.descripcion.trim() || null,
       creado_por: miembro || null,
     }
     const { data, error } = await supabase.from('presupuestos').insert(nuevoPresupuesto).select().single()
     if (!error && data) {
       setPresupuestos(prev => [data, ...prev])
-      setForm({ nombre: '', monto_asignado: '', fecha_asignacion: hoyISO(), fecha_limite: '' })
+      setForm({ nombre: '', monto_asignado: '', fecha_asignacion: hoyISO(), fecha_limite: '', moneda: 'ARS', descripcion: '' })
       setMostrarForm(false)
       showToast('Presupuesto creado ✓')
     } else showToast('Error al guardar')
@@ -3168,7 +3857,7 @@ function PanelFinanzasHormi({ locacion, pedidos, esquejes, gastos, presupuestos,
   async function aportarCapital(p, { monto, motivo, fecha }) {
     const nuevoAporte = { presupuesto_id: p.id, monto, motivo, fecha, creado_por: miembro || null }
     const { data, error } = await supabase.from('presupuesto_aportes').insert(nuevoAporte).select().single()
-    if (!error && data) { setAportes(prev => [data, ...prev]); showToast('Aporte registrado ✓') }
+    if (!error && data) { setAportes(prev => [data, ...prev]); showToast('Presupuesto ampliado ✓') }
     else showToast('Error al guardar')
   }
 
@@ -3178,9 +3867,9 @@ function PanelFinanzasHormi({ locacion, pedidos, esquejes, gastos, presupuestos,
     else showToast('Error al eliminar')
   }
 
-  async function editarPresupuesto(p, { nombre, fecha_limite }) {
-    const { error } = await supabase.from('presupuestos').update({ nombre, fecha_limite }).eq('id', p.id)
-    if (!error) setPresupuestos(prev => prev.map(x => x.id === p.id ? { ...x, nombre, fecha_limite } : x))
+  async function editarPresupuesto(p, { nombre, fecha_limite, descripcion }) {
+    const { error } = await supabase.from('presupuestos').update({ nombre, fecha_limite, descripcion }).eq('id', p.id)
+    if (!error) setPresupuestos(prev => prev.map(x => x.id === p.id ? { ...x, nombre, fecha_limite, descripcion } : x))
     else showToast('Error al guardar')
   }
 
@@ -3358,11 +4047,35 @@ function PanelFinanzasHormi({ locacion, pedidos, esquejes, gastos, presupuestos,
         <div className="card" style={{ marginBottom: 14 }}>
           <div className="form-grid">
             <div className="form-group full">
+              <label className="form-label">Moneda</label>
+              <div className="miembro-row" style={{ marginBottom: 0 }}>
+                {['ARS', 'USD'].map(m => (
+                  <button type="button" key={m} className={`miembro-btn${form.moneda === m ? ' active' : ''}`} onClick={() => setForm(f => ({ ...f, moneda: m }))}>{m === 'ARS' ? 'Pesos' : 'Dólares'}</button>
+                ))}
+              </div>
+              {form.moneda === 'USD' && cotizacionesDolar[0] && (
+                <div style={{ fontSize: 11, color: 'var(--text-secondary)', marginTop: 6 }}>
+                  Dólar blue hoy: compra {formatPesos(cotizacionesDolar[0].compra)} · venta {formatPesos(cotizacionesDolar[0].venta)} · promedio {formatPesos(cotizacionesDolar[0].promedio)}
+                </div>
+              )}
+            </div>
+            <div className="form-group full">
               <label className="form-label">Nombre / proyecto</label>
               <input className="form-control" type="text" placeholder="Ej: LED" value={form.nombre} onChange={e => setForm(f => ({ ...f, nombre: e.target.value }))} />
             </div>
+            <div className="form-group full">
+              <label className="form-label">
+                Descripción breve (opcional){contarPalabras(form.descripcion) > MAX_PALABRAS_PRESUPUESTO && <span style={{ color: '#791F1F' }}> · máximo {MAX_PALABRAS_PRESUPUESTO} palabras</span>}
+              </label>
+              <input
+                className="form-control" type="text" placeholder="Ej: inyección en dólares para el terreno de Hormi 2.0"
+                value={form.descripcion} onChange={e => setForm(f => ({ ...f, descripcion: e.target.value }))}
+                style={contarPalabras(form.descripcion) > MAX_PALABRAS_PRESUPUESTO ? { borderColor: '#791F1F' } : undefined}
+              />
+              <div style={{ fontSize: 11, color: contarPalabras(form.descripcion) > MAX_PALABRAS_PRESUPUESTO ? '#791F1F' : 'var(--text-secondary)', textAlign: 'right' }}>{contarPalabras(form.descripcion)}/{MAX_PALABRAS_PRESUPUESTO} palabras</div>
+            </div>
             <div className="form-group">
-              <label className="form-label">Monto asignado ($)</label>
+              <label className="form-label">Monto asignado ({form.moneda === 'USD' ? 'US$' : '$'})</label>
               <InputMonto value={form.monto_asignado} onChange={v => setForm(f => ({ ...f, monto_asignado: v }))} />
             </div>
             <div className="form-group">
@@ -3375,7 +4088,7 @@ function PanelFinanzasHormi({ locacion, pedidos, esquejes, gastos, presupuestos,
             </div>
           </div>
           <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
-            <button className="btn-submit" onClick={guardarPresupuesto} style={{ flex: 1 }}>Guardar presupuesto</button>
+            <button className="btn-submit" onClick={guardarPresupuesto} style={{ flex: 1 }} disabled={contarPalabras(form.descripcion) > MAX_PALABRAS_PRESUPUESTO}>Guardar presupuesto</button>
             <button onClick={() => setMostrarForm(false)} style={{ padding: '0 16px', border: '0.5px solid var(--border-mid)', borderRadius: 'var(--radius-md)', background: 'transparent', cursor: 'pointer', fontSize: 13, color: 'var(--text-secondary)' }}>Cancelar</button>
           </div>
         </div>
@@ -3389,7 +4102,7 @@ function PanelFinanzasHormi({ locacion, pedidos, esquejes, gastos, presupuestos,
         : (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
             {presupuestosLocacion.map(p => (
-              <TarjetaPresupuesto key={p.id} p={p} gastos={gastos} aportes={aportes} onAlternarCerrado={alternarCerrado} onAportar={aportarCapital} onEliminarAporte={eliminarAporte} onEditar={editarPresupuesto} />
+              <TarjetaPresupuesto key={p.id} p={p} gastos={gastos} aportes={aportes} cotizaciones={cotizacionesDolar} onAlternarCerrado={alternarCerrado} onAportar={aportarCapital} onEliminarAporte={eliminarAporte} onEditar={editarPresupuesto} />
             ))}
           </div>
         )
@@ -3604,7 +4317,7 @@ function PanelInsumosStock({ categoria, items, movimientos, onAgregarItem, onEli
 // ─── Tareas: pestaña de anotaciones/pendientes del equipo ───────────────────
 // Igual que Gastos: cada Hormi tiene sus propias tareas, separadas por un picker
 // arriba (no hay un "general" compartido para tareas, todas pertenecen a una locación).
-function TabTareas({ tareas, tareasTipos, onAgregarTarea, onMarcarEstado, onEliminarTarea, onAgregarTipo, onEliminarTipo, onEditarFechaLimite }) {
+function TabTareas({ tareas, tareasTipos, onAgregarTarea, onMarcarEstado, onEliminarTarea, onAgregarTipo, onEliminarTipo, onEditarTarea }) {
   const [locacion, setLocacion] = useState('Hormi 1.0')
   const tareasFiltradas = tareas.filter(t => t.locacion === locacion)
   return (
@@ -3623,13 +4336,13 @@ function TabTareas({ tareas, tareasTipos, onAgregarTarea, onMarcarEstado, onElim
         onEliminarTarea={onEliminarTarea}
         onAgregarTipo={onAgregarTipo}
         onEliminarTipo={onEliminarTipo}
-        onEditarFechaLimite={onEditarFechaLimite}
+        onEditarTarea={onEditarTarea}
       />
     </div>
   )
 }
 
-function PanelTareas({ locacion, tareas, tareasTipos, onAgregarTarea, onMarcarEstado, onEliminarTarea, onAgregarTipo, onEliminarTipo, onEditarFechaLimite }) {
+function PanelTareas({ locacion, tareas, tareasTipos, onAgregarTarea, onMarcarEstado, onEliminarTarea, onAgregarTipo, onEliminarTipo, onEditarTarea }) {
   const [toast, showToast] = useToast()
   const [descripcion, setDescripcion] = useState('')
   const [tipo, setTipo] = useState('')
@@ -3669,9 +4382,10 @@ function PanelTareas({ locacion, tareas, tareasTipos, onAgregarTarea, onMarcarEs
     showToast(res?.ok === false ? 'No se pudo actualizar' : (estado === 'hecha' ? `${t.descripcion}: marcada como hecha` : `${t.descripcion}: reabierta`))
   }
 
-  async function editarFecha(t, fecha_limite) {
-    const res = await onEditarFechaLimite(t.id, fecha_limite)
-    showToast(res?.ok === false ? 'No se pudo actualizar la fecha' : (fecha_limite ? `${t.descripcion}: fecha límite actualizada` : `${t.descripcion}: fecha límite quitada`))
+  async function editarTarea(t, cambios) {
+    const res = await onEditarTarea(t.id, cambios)
+    if (res?.ok === false) showToast('No se pudo guardar la tarea')
+    else showToast(cambios.locacion !== t.locacion ? `${cambios.descripcion}: movida a ${cambios.locacion}` : `${cambios.descripcion}: actualizada`)
     return res
   }
 
@@ -3767,9 +4481,9 @@ function PanelTareas({ locacion, tareas, tareasTipos, onAgregarTarea, onMarcarEs
                 <div className="pedidos-list" style={{ marginTop: 8 }}>
                   {items.map(t => (
                     <FilaTarea
-                      key={t.id} tarea={t} confirmando={confirmandoBorrar === t.id}
+                      key={t.id} tarea={t} tareasTipos={tareasTipos} confirmando={confirmandoBorrar === t.id}
                       onMarcarHecha={() => cambiarEstado(t, 'hecha')}
-                      onEditarFecha={fecha => editarFecha(t, fecha)}
+                      onEditar={cambios => editarTarea(t, cambios)}
                       onPedirBorrar={() => setConfirmandoBorrar(t.id)}
                       onCancelarBorrar={() => setConfirmandoBorrar(null)}
                       onConfirmarBorrar={() => confirmarBorrar(t)}
@@ -3800,9 +4514,9 @@ function PanelTareas({ locacion, tareas, tareasTipos, onAgregarTarea, onMarcarEs
             <div className="pedidos-list" style={{ marginTop: 8 }}>
               {hechas.map(t => (
                 <FilaTarea
-                  key={t.id} tarea={t} hecha confirmando={confirmandoBorrar === t.id}
+                  key={t.id} tarea={t} tareasTipos={tareasTipos} hecha confirmando={confirmandoBorrar === t.id}
                   onReabrir={() => cambiarEstado(t, 'pendiente')}
-                  onEditarFecha={fecha => editarFecha(t, fecha)}
+                  onEditar={cambios => editarTarea(t, cambios)}
                   onPedirBorrar={() => setConfirmandoBorrar(t.id)}
                   onCancelarBorrar={() => setConfirmandoBorrar(null)}
                   onConfirmarBorrar={() => confirmarBorrar(t)}
@@ -3820,19 +4534,87 @@ function PanelTareas({ locacion, tareas, tareasTipos, onAgregarTarea, onMarcarEs
 
 const seccionTituloTareas = { fontSize: 15, fontWeight: 600, color: 'var(--text-primary)' }
 
-function FilaTarea({ tarea, hecha, confirmando, onMarcarHecha, onReabrir, onEditarFecha, onPedirBorrar, onCancelarBorrar, onConfirmarBorrar }) {
-  const [editandoFecha, setEditandoFecha] = useState(false)
-  const [nuevaFecha, setNuevaFecha] = useState(tarea.fecha_limite || '')
-  const [guardandoFecha, setGuardandoFecha] = useState(false)
+// Todo lo que se carga en una tarea se puede corregir después (pendiente o hecha), incluido
+// moverla a la otra Hormi — el form de edición es el mismo set de campos que el alta.
+function FilaTarea({ tarea, tareasTipos, hecha, confirmando, onMarcarHecha, onReabrir, onEditar, onPedirBorrar, onCancelarBorrar, onConfirmarBorrar }) {
+  const [editando, setEditando] = useState(null) // null | copia editable de los campos
+  const [guardando, setGuardando] = useState(false)
+  const enCurso = useRef(false)
 
   const hoy = hoyISO()
   const vencida = !hecha && tarea.fecha_limite && tarea.fecha_limite < hoy
+  // Si el tipo actual ya no está en el catálogo igual se muestra, para no pisarlo sin querer.
+  const opcionesTipo = tareasTipos.includes(tarea.tipo) ? tareasTipos : [tarea.tipo, ...tareasTipos]
+  const palabras = editando ? contarPalabras(editando.descripcion) : 0
+  const excedePalabras = palabras > MAX_PALABRAS_TAREA
+  const setCampo = (k, v) => setEditando(e => ({ ...e, [k]: v }))
 
-  async function guardarFecha() {
-    setGuardandoFecha(true)
-    const res = await onEditarFecha(nuevaFecha || null)
-    setGuardandoFecha(false)
-    if (res?.ok !== false) setEditandoFecha(false)
+  function abrirEditar() {
+    setEditando({ descripcion: tarea.descripcion, tipo: tarea.tipo, asignado_a: tarea.asignado_a || '', prioridad: tarea.prioridad, fecha_limite: tarea.fecha_limite || '', locacion: tarea.locacion })
+  }
+
+  async function guardar() {
+    if (enCurso.current || !editando.descripcion.trim() || excedePalabras) return
+    enCurso.current = true
+    setGuardando(true)
+    const res = await onEditar({
+      descripcion: editando.descripcion.trim(), tipo: editando.tipo, asignado_a: editando.asignado_a || null,
+      prioridad: editando.prioridad, fecha_limite: editando.fecha_limite || null, locacion: editando.locacion,
+    })
+    enCurso.current = false
+    setGuardando(false)
+    if (res?.ok !== false) setEditando(null)
+  }
+
+  if (editando) {
+    return (
+      <div className="card fila-tarea-editando">
+        <div className="form-grid">
+          <div className="form-group full">
+            <label className="form-label">
+              Descripción{excedePalabras && <span style={{ color: '#791F1F' }}> · máximo {MAX_PALABRAS_TAREA} palabras</span>}
+            </label>
+            <input className="form-control" type="text" value={editando.descripcion} disabled={guardando} onChange={e => setCampo('descripcion', e.target.value)} style={excedePalabras ? { borderColor: '#791F1F' } : undefined} />
+            <div style={{ fontSize: 11, color: excedePalabras ? '#791F1F' : 'var(--text-secondary)', textAlign: 'right' }}>{palabras}/{MAX_PALABRAS_TAREA} palabras</div>
+          </div>
+          <div className="form-group">
+            <label className="form-label">Tipo</label>
+            <select className="form-control" value={editando.tipo} disabled={guardando} onChange={e => setCampo('tipo', e.target.value)}>
+              {opcionesTipo.map(t => <option key={t} value={t}>{t}</option>)}
+            </select>
+          </div>
+          <div className="form-group">
+            <label className="form-label">Asignado a</label>
+            <select className="form-control" value={editando.asignado_a} disabled={guardando} onChange={e => setCampo('asignado_a', e.target.value)}>
+              <option value="">Sin asignar</option>
+              {MIEMBROS.map(m => <option key={m} value={m}>{m}</option>)}
+            </select>
+          </div>
+          <div className="form-group">
+            <label className="form-label">Fecha límite (opcional)</label>
+            <input className="form-control" type="date" value={editando.fecha_limite} disabled={guardando} onChange={e => setCampo('fecha_limite', e.target.value)} />
+          </div>
+          <div className="form-group">
+            <label className="form-label">Hormi</label>
+            <select className="form-control" value={editando.locacion} disabled={guardando} onChange={e => setCampo('locacion', e.target.value)}>
+              {['Hormi 1.0', 'Hormi 2.0'].map(l => <option key={l} value={l}>{l}</option>)}
+            </select>
+          </div>
+          <div className="form-group full">
+            <label className="form-label">Prioridad</label>
+            <div className="miembro-row" style={{ marginBottom: 0 }}>
+              {PRIORIDADES_TAREA.map(p => (
+                <button key={p.valor} type="button" className={`miembro-btn${editando.prioridad === p.valor ? ' active' : ''}`} disabled={guardando} onClick={() => setCampo('prioridad', p.valor)}>{p.label}</button>
+              ))}
+            </div>
+          </div>
+        </div>
+        <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
+          <button className="btn-submit" style={{ flex: 1 }} disabled={guardando || !editando.descripcion.trim() || excedePalabras} onClick={guardar}>{guardando ? 'Guardando...' : 'Guardar cambios'}</button>
+          <button onClick={() => setEditando(null)} disabled={guardando} style={{ padding: '0 16px', border: '0.5px solid var(--border-mid)', borderRadius: 'var(--radius-md)', background: 'transparent', cursor: 'pointer', fontSize: 13, color: 'var(--text-secondary)' }}>Cancelar</button>
+        </div>
+      </div>
+    )
   }
 
   return (
@@ -3840,7 +4622,7 @@ function FilaTarea({ tarea, hecha, confirmando, onMarcarHecha, onReabrir, onEdit
       <div style={{ minWidth: 0 }}>
         <div className="pedido-nombre" style={{ textDecoration: hecha ? 'line-through' : 'none' }}>{tarea.descripcion}</div>
         <div className="pedido-sub">
-          {tarea.tipo} · {tarea.asignado_a || 'Sin asignar'}{tarea.creado_por ? ` · cargada por ${tarea.creado_por}` : ''} · cargada {formatFechaDateISO(tarea.created_at.slice(0, 10))}
+          {tarea.tipo} · {tarea.asignado_a || 'Sin asignar'}{tarea.creado_por ? ` · cargada por ${tarea.creado_por}` : ''} · cargada {new Date(tarea.created_at).toLocaleDateString('es-AR')}
         </div>
         {tarea.fecha_limite && (
           <div className="pedido-badges">
@@ -3855,15 +4637,7 @@ function FilaTarea({ tarea, hecha, confirmando, onMarcarHecha, onReabrir, onEdit
         {hecha
           ? <button onClick={onReabrir} style={btnLinkStyle('var(--green-dark)')}>Reabrir</button>
           : <button onClick={onMarcarHecha} style={btnLinkStyle('var(--green-dark)')}>Marcar hecha</button>}
-        {!editandoFecha
-          ? <button onClick={() => { setNuevaFecha(tarea.fecha_limite || ''); setEditandoFecha(true) }} style={btnLinkStyle('var(--text-secondary)')}>{tarea.fecha_limite ? 'Editar fecha' : '+ Fecha límite'}</button>
-          : (
-            <span style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-              <input className="form-control" type="date" value={nuevaFecha} disabled={guardandoFecha} onChange={e => setNuevaFecha(e.target.value)} style={{ padding: '4px 8px', fontSize: 12, width: 'auto' }} />
-              <button onClick={guardarFecha} disabled={guardandoFecha} style={btnLinkStyle('var(--green-dark)')}>Guardar</button>
-              <button onClick={() => setEditandoFecha(false)} disabled={guardandoFecha} style={btnLinkStyle('var(--text-secondary)')}>Cancelar</button>
-            </span>
-          )}
+        <button onClick={abrirEditar} style={btnLinkStyle('var(--text-secondary)')}>Editar</button>
         <button className="btn-eliminar-fila" style={{ width: 22, height: 22, fontSize: 10, marginLeft: 'auto' }} title="Borrar tarea" onClick={onPedirBorrar}>✕</button>
       </div>
       {confirmando && (
@@ -4996,6 +5770,7 @@ export default function App() {
   const [cuentas, setCuentas] = useState([])
   const [dolaresMovimientos, setDolaresMovimientos] = useState([])
   const [cuentasValidaciones, setCuentasValidaciones] = useState([])
+  const [cotizacionesDolar, setCotizacionesDolar] = useState([])
   const [socios, setSocios] = useState([])
   const [stockEsquejes, setStockEsquejes] = useState(STOCK_ESQUEJES_INICIAL)
   const [stockEsquejesInicial, setStockEsquejesInicial] = useState(STOCK_ESQUEJES_INICIAL)
@@ -5006,6 +5781,8 @@ export default function App() {
   const [insumosStockMovimientos, setInsumosStockMovimientos] = useState([])
   const [tareas, setTareas] = useState([])
   const [tareasTipos, setTareasTipos] = useState([])
+  const [capitalMovimientos, setCapitalMovimientos] = useState([])
+  const [duplicadosDescartados, setDuplicadosDescartados] = useState([])
   const [mostrarModalTareas, setMostrarModalTareas] = useState(false)
   const [cargando, setCargando] = useState(true)
   const [errorCarga, setErrorCarga] = useState(false)
@@ -5037,7 +5814,7 @@ export default function App() {
     async function cargarDatos() {
       setCargando(true)
       setErrorCarga(false)
-      const [pedidosRes, stockRes, esquejesRes, stockEsquejesRes, insumosRes, insumoPagosRes, gastosRes, presupuestosRes, aportesRes, gastosFijosRes, pedidoPagosRes, esquejePagosRes, cuentasRes, dolaresMovimientosRes, cuentasValidacionesRes, sociosRes, geneticasCosechaRes, geneticasEsquejesRes, insumosStockRes, insumosStockMovimientosRes, tareasRes, tareasTiposRes] = await Promise.all([
+      const [pedidosRes, stockRes, esquejesRes, stockEsquejesRes, insumosRes, insumoPagosRes, gastosRes, presupuestosRes, aportesRes, gastosFijosRes, pedidoPagosRes, esquejePagosRes, cuentasRes, dolaresMovimientosRes, cuentasValidacionesRes, cotizacionesDolarRes, sociosRes, geneticasCosechaRes, geneticasEsquejesRes, insumosStockRes, insumosStockMovimientosRes, tareasRes, tareasTiposRes, capitalRes, descartadosRes] = await Promise.all([
         supabase.from('pedidos').select('*').order('created_at', { ascending: false }),
         supabase.from('stock').select('*'),
         supabase.from('esquejes').select('*').order('created_at', { ascending: false }),
@@ -5053,6 +5830,7 @@ export default function App() {
         supabase.from('cuentas').select('*'),
         supabase.from('dolares_movimientos').select('*').order('fecha', { ascending: false }),
         supabase.from('cuentas_validaciones').select('*').order('created_at', { ascending: false }),
+        supabase.from('cotizaciones_dolar').select('*').order('fecha', { ascending: false }),
         supabase.from('socios').select('*').order('nombre', { ascending: true }),
         supabase.from('geneticas_cosecha').select('nombre').order('nombre', { ascending: true }),
         supabase.from('geneticas_esquejes').select('nombre').order('nombre', { ascending: true }),
@@ -5060,9 +5838,11 @@ export default function App() {
         supabase.from('insumos_stock_movimientos').select('*').order('fecha', { ascending: false }),
         supabase.from('tareas').select('*').order('created_at', { ascending: true }),
         supabase.from('tareas_tipos').select('nombre').order('nombre', { ascending: true }),
+        supabase.from('capital_movimientos').select('*').order('fecha', { ascending: false }),
+        supabase.from('duplicados_descartados').select('*').order('created_at', { ascending: false }),
       ])
       if (cancelado) return
-      const conError = [pedidosRes, stockRes, esquejesRes, stockEsquejesRes, insumosRes, insumoPagosRes, gastosRes, presupuestosRes, aportesRes, gastosFijosRes, pedidoPagosRes, esquejePagosRes, cuentasRes, dolaresMovimientosRes, cuentasValidacionesRes, sociosRes, geneticasCosechaRes, geneticasEsquejesRes, insumosStockRes, insumosStockMovimientosRes, tareasRes, tareasTiposRes].filter(r => r.error)
+      const conError = [pedidosRes, stockRes, esquejesRes, stockEsquejesRes, insumosRes, insumoPagosRes, gastosRes, presupuestosRes, aportesRes, gastosFijosRes, pedidoPagosRes, esquejePagosRes, cuentasRes, dolaresMovimientosRes, cuentasValidacionesRes, cotizacionesDolarRes, sociosRes, geneticasCosechaRes, geneticasEsquejesRes, insumosStockRes, insumosStockMovimientosRes, tareasRes, tareasTiposRes, capitalRes, descartadosRes].filter(r => r.error)
       if (conError.length > 0) {
         console.error('Error al cargar datos', conError.map(r => r.error))
         setErrorCarga(true)
@@ -5094,6 +5874,7 @@ export default function App() {
       setCuentas(cuentasRes.data || [])
       setDolaresMovimientos(dolaresMovimientosRes.data || [])
       setCuentasValidaciones(cuentasValidacionesRes.data || [])
+      setCotizacionesDolar(cotizacionesDolarRes.data || [])
       setSocios((sociosRes.data || []).map(conAliasSocio))
       setGeneticasCosecha((geneticasCosechaRes.data || []).map(g => g.nombre))
       setGeneticasEsquejes((geneticasEsquejesRes.data || []).map(g => g.nombre))
@@ -5101,6 +5882,8 @@ export default function App() {
       setInsumosStockMovimientos(insumosStockMovimientosRes.data || [])
       setTareas(tareasRes.data || [])
       setTareasTipos((tareasTiposRes.data || []).map(t => t.nombre))
+      setCapitalMovimientos(capitalRes.data || [])
+      setDuplicadosDescartados(descartadosRes.data || [])
       setCargando(false)
     }
     cargarDatos()
@@ -5120,9 +5903,14 @@ export default function App() {
     const ingresosPedidos = pedidoPagos.filter(pg => pg.cuenta === nombre && esDesdeCorteISO(pg.fecha, info.fecha_corte)).reduce((s, pg) => s + (pg.monto || 0), 0)
     const ingresosEsquejes = esquejePagos.filter(pg => pg.cuenta === nombre && esDesdeCorteISO(pg.fecha, info.fecha_corte)).reduce((s, pg) => s + (pg.monto || 0), 0)
     const ingresosInsumos = insumoPagos.filter(pg => pg.cuenta === nombre && esDesdeCorteISO(pg.fecha, info.fecha_corte)).reduce((s, pg) => s + (pg.monto || 0), 0)
-    const egresos = gastos.filter(g => esDesdeCorte(g.fecha, info.fecha_corte))
+    const egresosGastos = gastos.filter(g => esDesdeCorte(g.fecha, info.fecha_corte))
       .flatMap(g => montosPorCuenta(g, 'monto')).filter(m => m.cuenta === nombre).reduce((s, m) => s + m.monto, 0)
-    const ingresos = ingresosPedidos + ingresosEsquejes + ingresosInsumos
+    // Capital (Finanzas → Capital): un aporte entra a la cuenta, una devolución sale.
+    const capitalCuenta = capitalMovimientos.filter(c => (c.moneda || 'ARS') === 'ARS' && c.cuenta === nombre && esDesdeCorteISO(c.fecha, info.fecha_corte))
+    const aportesCapital = capitalCuenta.filter(c => c.tipo === 'aporte').reduce((s, c) => s + (Number(c.monto) || 0), 0)
+    const devolucionesCapital = capitalCuenta.filter(c => c.tipo === 'devolucion').reduce((s, c) => s + (Number(c.monto) || 0), 0)
+    const egresos = egresosGastos + devolucionesCapital
+    const ingresos = ingresosPedidos + ingresosEsquejes + ingresosInsumos + aportesCapital
     const saldo = (info.saldo_inicial || 0) + ingresos - egresos
     const estimados =
       pedidoPagos.filter(pg => pg.cuenta === nombre && pg.cuenta_estimada).length +
@@ -5130,17 +5918,20 @@ export default function App() {
       insumoPagos.filter(pg => pg.cuenta === nombre && pg.cuenta_estimada).length +
       gastos.filter(g => g.cuenta === nombre && g.cuenta_estimada).length
     return { nombre, info, ingresos, egresos, saldo, estimados }
-  }), [pedidoPagos, esquejePagos, insumoPagos, gastos, cuentas])
+  }), [pedidoPagos, esquejePagos, insumoPagos, gastos, cuentas, capitalMovimientos])
 
   const resumenDolares = useMemo(() => CUENTAS_DOLARES.map(nombre => {
     const info = cuentas.find(c => c.nombre === nombre) || { nombre, saldo_inicial: 0, fecha_corte: FECHA_CORTE_DEFAULT, validado: false }
     const movimientos = dolaresMovimientos.filter(m => m.cuenta === nombre)
     const movimientosContados = movimientos.filter(m => esDesdeCorteISO(m.fecha, info.fecha_corte))
+    const capitalCuenta = capitalMovimientos.filter(c => c.moneda === 'USD' && c.cuenta === nombre && esDesdeCorteISO(c.fecha, info.fecha_corte))
     const ingresos = movimientosContados.filter(m => m.tipo === 'ingreso').reduce((s, m) => s + (m.monto || 0), 0)
+      + capitalCuenta.filter(c => c.tipo === 'aporte').reduce((s, c) => s + (Number(c.monto) || 0), 0)
     const egresos = movimientosContados.filter(m => m.tipo === 'egreso').reduce((s, m) => s + (m.monto || 0), 0)
+      + capitalCuenta.filter(c => c.tipo === 'devolucion').reduce((s, c) => s + (Number(c.monto) || 0), 0)
     const saldo = (info.saldo_inicial || 0) + ingresos - egresos
     return { nombre, info, ingresos, egresos, saldo, movimientos }
-  }), [cuentas, dolaresMovimientos])
+  }), [cuentas, dolaresMovimientos, capitalMovimientos])
 
   // Corte más viejo entre las cuentas configuradas: lo anterior a esto es plata migrada del
   // historial que nunca va a tener cuenta, así que el agente no la reclama.
@@ -5152,15 +5943,24 @@ export default function App() {
   // nunca inventa un dato, siempre señala el registro puntual y quién puede corregirlo). Corre
   // siempre, no solo al entrar a Finanzas, para que el badge de la pestaña esté al día — ver
   // src/agenteFinanzas.js.
+  const clavesDescartadas = useMemo(() => new Set(duplicadosDescartados.map(d => d.clave)), [duplicadosDescartados])
   const hallazgosFinanzas = useMemo(() => evaluarFinanzas({
     cuentas, dolaresMovimientos, gastos, presupuestos, aportes,
     pedidoPagos, esquejePagos, insumoPagos, pedidos, esquejes, insumos,
     resumen: resumenCuentas, resumenDolares, corteMinimo: corteMinimoFinanzas,
     cuentasConocidas: CUENTAS, cuentasDolaresConocidas: CUENTAS_DOLARES,
     cuentaEfectivo: CUENTA_EFECTIVO, cuentaHormiguero: CUENTA_HORMIGUERO,
-    cuentasValidaciones,
+    cuentasValidaciones, cotizacionesDolar, capitalMovimientos, duplicadosDescartados: clavesDescartadas,
   }, { pesos: formatPesos, dolares: formatDolares, fechaISO: formatFechaISOSinAnio }),
-  [cuentas, dolaresMovimientos, gastos, presupuestos, aportes, pedidoPagos, esquejePagos, insumoPagos, pedidos, esquejes, insumos, resumenCuentas, resumenDolares, corteMinimoFinanzas, cuentasValidaciones])
+  [cuentas, dolaresMovimientos, gastos, presupuestos, aportes, pedidoPagos, esquejePagos, insumoPagos, pedidos, esquejes, insumos, resumenCuentas, resumenDolares, corteMinimoFinanzas, cuentasValidaciones, cotizacionesDolar, capitalMovimientos, clavesDescartadas])
+
+  // Llama al mismo RPC que corre el cron diario — botón manual para no depender 100% de que el
+  // trigger de fondo funcione en silencio.
+  const actualizarCotizacionDolar = useCallback(async () => {
+    const { data, error } = await supabase.rpc('actualizar_cotizacion_dolar')
+    if (!error && data) setCotizacionesDolar(prev => [data, ...prev.filter(c => c.fecha !== data.fecha)])
+    return { ok: !error }
+  }, [])
 
   const guardarPedido = useCallback(async p => {
     const { data, error } = await supabase.from('pedidos').insert(pedidoToDB(p)).select().single()
@@ -5426,9 +6226,11 @@ export default function App() {
     return { ok: true, data }
   }, [miembro])
 
-  const editarFechaLimiteTarea = useCallback(async (id, fecha_limite) => {
-    const { data, error } = await supabase.from('tareas').update({ fecha_limite: fecha_limite || null }).eq('id', id).select().single()
-    if (error || !data) { console.error('Error al actualizar fecha límite', error); return { ok: false, error } }
+  // Edición completa de una tarea ya cargada (descripción, tipo, asignado, prioridad, fecha
+  // límite, Hormi) — los CHECK y la FK de tipo de la base siguen siendo la red de seguridad.
+  const editarTarea = useCallback(async (id, cambios) => {
+    const { data, error } = await supabase.from('tareas').update(cambios).eq('id', id).select().single()
+    if (error || !data) { console.error('Error al editar tarea', error); return { ok: false, error } }
     setTareas(prev => prev.map(t => t.id === id ? data : t))
     return { ok: true, data }
   }, [])
@@ -5437,6 +6239,48 @@ export default function App() {
     const { error } = await supabase.from('tareas').delete().eq('id', id)
     if (error) { console.error('Error al eliminar tarea', error); return { ok: false, error } }
     setTareas(prev => prev.filter(t => t.id !== id))
+    return { ok: true }
+  }, [])
+
+  // ── Capital (Finanzas → Capital) ──
+  const guardarCapital = useCallback(async mov => {
+    const { data, error } = await supabase.from('capital_movimientos').insert({ ...mov, creado_por: miembro || null }).select().single()
+    if (error || !data) { console.error('Error al guardar movimiento de capital', error); return { ok: false, error } }
+    setCapitalMovimientos(prev => [data, ...prev])
+    return { ok: true, data }
+  }, [miembro])
+
+  const actualizarCapital = useCallback(async (id, cambios) => {
+    const { data, error } = await supabase.from('capital_movimientos').update(cambios).eq('id', id).select().single()
+    if (error || !data) {
+      console.error('Error al actualizar movimiento de capital', error)
+      // PGRST116 = el update no encontró la fila: otro la borró mientras esta pantalla la tenía abierta.
+      return { ok: false, error, msg: error?.code === 'PGRST116' ? 'Este movimiento ya no existe (puede que otro lo haya borrado). Recargá la página.' : undefined }
+    }
+    setCapitalMovimientos(prev => prev.map(c => c.id === id ? data : c))
+    return { ok: true, data }
+  }, [])
+
+  const eliminarCapital = useCallback(async id => {
+    const { error } = await supabase.from('capital_movimientos').delete().eq('id', id)
+    if (error) { console.error('Error al eliminar movimiento de capital', error); return { ok: false, error } }
+    setCapitalMovimientos(prev => prev.filter(c => c.id !== id))
+    return { ok: true }
+  }, [])
+
+  // ── "No es duplicado" en Registros a revisar ──
+  const descartarDuplicado = useCallback(async clave => {
+    const { data, error } = await supabase.from('duplicados_descartados').insert({ clave, descartado_por: miembro || null }).select().single()
+    // 23505 = otro ya lo marcó en paralelo (clave única): para esta pantalla da lo mismo.
+    if (error && error.code !== '23505') { console.error('Error al descartar duplicado', error); return { ok: false, error } }
+    setDuplicadosDescartados(prev => prev.some(d => d.clave === clave) ? prev : [data || { clave, descartado_por: miembro || null }, ...prev])
+    return { ok: true }
+  }, [miembro])
+
+  const restaurarDuplicado = useCallback(async clave => {
+    const { error } = await supabase.from('duplicados_descartados').delete().eq('clave', clave)
+    if (error) { console.error('Error al restaurar duplicado', error); return { ok: false, error } }
+    setDuplicadosDescartados(prev => prev.filter(d => d.clave !== clave))
     return { ok: true }
   }, [])
 
@@ -5598,7 +6442,7 @@ export default function App() {
         />
       )}
       {tab === 'gastos' && <TabGastos target={objetivoRevision} miembro={miembro} gastos={gastos} presupuestos={presupuestos} onGuardarGasto={guardarGasto} onActualizarGasto={actualizarGasto} onEliminarGasto={eliminarGasto} />}
-      {tab === 'finanzas' && <TabFinanzas onRevisar={irARevisar} pedidos={pedidos} esquejes={esquejes} insumos={insumos} miembro={miembro} gastos={gastos} presupuestos={presupuestos} setPresupuestos={setPresupuestos} aportes={aportes} setAportes={setAportes} gastosFijos={gastosFijos} setGastosFijos={setGastosFijos} pedidoPagos={pedidoPagos} esquejePagos={esquejePagos} insumoPagos={insumoPagos} cuentas={cuentas} setCuentas={setCuentas} dolaresMovimientos={dolaresMovimientos} setDolaresMovimientos={setDolaresMovimientos} cuentasValidaciones={cuentasValidaciones} setCuentasValidaciones={setCuentasValidaciones} resumen={resumenCuentas} resumenDolares={resumenDolares} hallazgosFinanzas={hallazgosFinanzas} />}
+      {tab === 'finanzas' && <TabFinanzas onRevisar={irARevisar} pedidos={pedidos} esquejes={esquejes} insumos={insumos} miembro={miembro} gastos={gastos} presupuestos={presupuestos} setPresupuestos={setPresupuestos} aportes={aportes} setAportes={setAportes} gastosFijos={gastosFijos} setGastosFijos={setGastosFijos} pedidoPagos={pedidoPagos} esquejePagos={esquejePagos} insumoPagos={insumoPagos} cuentas={cuentas} setCuentas={setCuentas} dolaresMovimientos={dolaresMovimientos} setDolaresMovimientos={setDolaresMovimientos} cuentasValidaciones={cuentasValidaciones} setCuentasValidaciones={setCuentasValidaciones} cotizacionesDolar={cotizacionesDolar} onActualizarCotizacion={actualizarCotizacionDolar} resumen={resumenCuentas} resumenDolares={resumenDolares} hallazgosFinanzas={hallazgosFinanzas} capitalMovimientos={capitalMovimientos} onGuardarCapital={guardarCapital} onActualizarCapital={actualizarCapital} onEliminarCapital={eliminarCapital} duplicadosDescartados={duplicadosDescartados} onDescartarDuplicado={descartarDuplicado} onRestaurarDuplicado={restaurarDuplicado} />}
       {tab === 'cultivo' && <TabCultivo />}
       {tab === 'stock' && (
         <TabStock
@@ -5620,7 +6464,7 @@ export default function App() {
           onEliminarTarea={eliminarTarea}
           onAgregarTipo={agregarTareaTipo}
           onEliminarTipo={eliminarTareaTipo}
-          onEditarFechaLimite={editarFechaLimiteTarea}
+          onEditarTarea={editarTarea}
         />
       )}
       {mostrarCambiarPass && <ModalCambiarPassword onCerrar={() => setMostrarCambiarPass(false)} />}
