@@ -5,6 +5,7 @@ import { supabase } from './supabase'
 import { evaluarRegistro, colorPorIntensidad } from './parametrosTurba'
 import { evaluarFinanzas, objetivoPago, objetivoGasto, describirDescartado } from './agenteFinanzas'
 import { gastosParecidos, pagosParecidos, ventasParecidas, capitalParecidos, devolucionPareceGasto, normalizarTexto } from './duplicados'
+import { resumenAporte, resumenCapitalPorInversor, interesPactado, equivalenteDevolucion, parseDecimal, cotizacionParaFechaISO, TOLERANCIA_CAPITAL } from './capital'
 
 const GENETICAS = ['OG24K', 'Choco OG', 'Z-Kiem', 'Fancy', 'Gorilla Rainbow']
 const GENETICAS_ESQUEJES = ['OG24K', 'Black Domina', 'Z-Kiem', 'Fancy', 'Gorilla Rainbow', 'Dosichoc']
@@ -619,6 +620,18 @@ async function buscarVentasParecidas(fk, nuevo) {
     const items = (r.geneticas || []).map(g => `${g.nombre} ×${g.cantidad}`).join(', ')
     return `${r.socio} · ${formatPesos(r.total)} · ${r.fecha} · ${items}${cargadoPorTexto(r.miembro)}`
   })
+}
+
+// Los triggers de Capital (capital_movimientos_validar / capital_cambios_validar) rechazan con un
+// código CAPITAL_* y el detalle ya escrito en criollo; 23503 es querer borrar un aporte que tiene
+// devoluciones o cambios a pesos colgados; PGRST116, que el update no encontró la fila (otro la
+// borró mientras esta pantalla la tenía abierta).
+function mensajeErrorCapital(error) {
+  if (!error) return undefined
+  if (String(error.message || '').startsWith('CAPITAL_') && error.details) return error.details
+  if (error.code === '23503') return 'Este aporte tiene devoluciones o cambios a pesos cargados: borralos primero.'
+  if (error.code === 'PGRST116') return 'Este movimiento ya no existe (puede que otro lo haya borrado). Recargá la página.'
+  return undefined
 }
 
 async function buscarCapitalParecido(nuevo, capitalLocal) {
@@ -3067,64 +3080,121 @@ function metodoDeCapital(c) {
   return c.cuenta === CUENTA_EFECTIVO || c.cuenta === CUENTA_EFECTIVO_DOLARES ? 'efectivo' : 'transferencia'
 }
 
-// Por inversor y moneda (nunca se mezclan pesos con dólares). "Pendiente" = lo marcado "hay que
-// devolverlo" menos lo ya devuelto.
-function resumenCapitalPorInversor(movimientos) {
-  const porClave = new Map()
-  movimientos.forEach(c => {
-    const nombre = String(c.inversor || '').trim()
-    const moneda = c.moneda || 'ARS'
-    const k = `${normalizarTexto(nombre)}|${moneda}`
-    const r = porClave.get(k) || { inversor: nombre, moneda, aportado: 0, aDevolver: 0, devuelto: 0 }
-    const monto = Number(c.monto) || 0
-    if (c.tipo === 'aporte') { r.aportado += monto; if (c.a_devolver) r.aDevolver += monto }
-    else r.devuelto += monto
-    porClave.set(k, r)
-  })
-  return [...porClave.values()].map(r => ({ ...r, pendiente: r.aDevolver - r.devuelto }))
-    .sort((a, b) => (a.moneda === b.moneda ? b.aportado - a.aportado : a.moneda === 'ARS' ? -1 : 1))
+// Retorno prometido: "30% anual", "2,5% mensual".
+function formatTasa(tasa, periodo) {
+  return `${Number(tasa).toLocaleString('es-AR', { maximumFractionDigits: 2 })}% ${periodo === 'mensual' ? 'mensual' : 'anual'}`
 }
 
-function FormCapital({ inicial, esEdicion, inversores, capitalMovimientos, onGuardar, onCancelar }) {
+// Cotización y % de retorno: se guarda lo tipeado y se interpreta con parseDecimal (src/capital.js)
+// — InputMonto no sirve acá porque descarta los decimales y muestra "$".
+function InputDecimal({ value, onChange, placeholder }) {
+  return <input className="form-control" type="text" inputMode="decimal" placeholder={placeholder} value={value} onChange={e => onChange(e.target.value.replace(/[^\d.,]/g, ''))} />
+}
+
+// Aportes que se pueden elegir en una devolución: los marcados "hay que devolverlo", el más viejo
+// primero. Los ya devueltos quedan afuera, salvo el que la devolución ya tiene (al editarla).
+function aportesParaDevolver(movimientos, hoy, aporteActualId) {
+  return movimientos.filter(c => c.tipo === 'aporte' && c.a_devolver)
+    .map(a => resumenAporte(a, movimientos, hoy))
+    .filter(r => r.estado !== 'devuelto' || String(r.aporte.id) === String(aporteActualId))
+    .sort((x, y) => String(x.aporte.fecha).localeCompare(String(y.aporte.fecha)) || new Date(x.aporte.created_at) - new Date(y.aporte.created_at))
+}
+
+function FormCapital({ inicial, esEdicion, inversores, capitalMovimientos, cotizaciones, onGuardar, onCancelar }) {
   const [form, setForm] = useState(inicial)
   const [error, setError] = useState('')
   const [guardando, setGuardando] = useState(false)
   const [avisoDup, setAvisoDup] = useState(null) // { parecidos, para: form } — ver AvisoDuplicado
   const enCurso = useRef(false)
+  // Si alguien escribió la cotización a mano, cambiar la fecha ya no se la pisa con la del blue.
+  const cotizacionTocada = useRef(!!inicial.cotizacion)
   const idLista = useId()
+  const hoy = hoyISO()
   const set = (k, v) => setForm(f => ({ ...f, [k]: v }))
   const esAporte = form.tipo === 'aporte'
   const cuentas = cuentasCapital(form.metodo, form.moneda)
   const formatMonto = form.moneda === 'USD' ? formatDolares : formatPesos
+  const cotHoy = cotizaciones[0] || null
 
-  function setTipo(tipo) { setForm(f => ({ ...f, tipo, a_devolver: tipo === 'aporte' ? f.a_devolver : false })) }
-  function setMoneda(moneda) { setForm(f => ({ ...f, moneda, cuenta: cuentaCapitalPara(f.metodo, moneda, f.cuenta) })) }
+  // Al editar, este mismo movimiento no cuenta (ni como aporte elegible ni como devolución ya hecha).
+  const otros = useMemo(() => capitalMovimientos.filter(c => c.id !== form.id), [capitalMovimientos, form.id])
+  const opcionesAporte = useMemo(() => (esAporte ? [] : aportesParaDevolver(otros, hoy, inicial.aporte_id)), [esAporte, otros, hoy, inicial.aporte_id])
+  const elegido = opcionesAporte.find(r => String(r.aporte.id) === String(form.aporte_id)) || null
+  const aporte = elegido?.aporte || null
+  const fmtAporte = aporte?.moneda === 'USD' ? formatDolares : formatPesos
+  const monedaDistinta = !esAporte && !!aporte && form.moneda !== aporte.moneda
+  const cotDia = cotizacionParaFechaISO(form.fecha, cotizaciones)
+  const devolucionesDeEste = esEdicion && inicial.tipo === 'aporte' ? capitalMovimientos.filter(c => c.tipo === 'devolucion' && String(c.aporte_id) === String(form.id)).length : 0
+
+  const aporteDe = id => capitalMovimientos.find(c => c.tipo === 'aporte' && String(c.id) === String(id)) || null
+  // Devolución en otra moneda que su aporte: la cotización arranca en el blue promedio de ese día.
+  function conCotizacion(f) {
+    if (f.tipo !== 'devolucion' || cotizacionTocada.current) return f
+    const a = aporteDe(f.aporte_id)
+    if (!a || f.moneda === a.moneda) return { ...f, cotizacion: '' }
+    const c = cotizacionParaFechaISO(f.fecha, cotizaciones)
+    return { ...f, cotizacion: c ? String(Number(c.promedio)) : '' }
+  }
+  function setTipo(tipo) {
+    setForm(f => conCotizacion({ ...f, tipo, a_devolver: tipo === 'aporte' ? f.a_devolver : false, aporte_id: tipo === 'aporte' ? '' : f.aporte_id }))
+  }
+  function setMoneda(moneda) { setForm(f => conCotizacion({ ...f, moneda, cuenta: cuentaCapitalPara(f.metodo, moneda, f.cuenta) })) }
   function setMetodo(metodo) { setForm(f => ({ ...f, metodo, cuenta: cuentaCapitalPara(metodo, f.moneda, f.cuenta) })) }
+  function setFecha(fecha) { setForm(f => conCotizacion({ ...f, fecha })) }
+  function setCotizacion(v) { cotizacionTocada.current = true; set('cotizacion', v) }
+  // Elegir el aporte trae su inversor y su moneda (se puede pagar en la otra).
+  function elegirAporte(id) {
+    const a = aporteDe(id)
+    setForm(f => {
+      const moneda = a ? a.moneda : f.moneda
+      return conCotizacion({ ...f, aporte_id: id, inversor: a ? a.inversor : '', moneda, cuenta: cuentaCapitalPara(f.metodo, moneda, f.cuenta) })
+    })
+  }
+  function setADevolver(v) { setForm(f => ({ ...f, a_devolver: v, periodo_tasa: f.periodo_tasa || 'anual' })) }
 
-  // Para una devolución: cuánto queda pendiente con esa persona (sin contar este mismo
-  // movimiento si se está editando), para avisar si se está devolviendo de más.
-  const pendiente = useMemo(() => {
-    if (esAporte || !form.inversor.trim()) return null
-    const otros = capitalMovimientos.filter(c => c.id !== form.id)
-    const r = resumenCapitalPorInversor(otros).find(x => x.moneda === form.moneda && normalizarTexto(x.inversor) === normalizarTexto(form.inversor))
-    return r ? r.pendiente : 0
-  }, [esAporte, form.inversor, form.moneda, form.id, capitalMovimientos])
   const montoNum = parseFloat(form.monto) || 0
+  const tasaNum = parseDecimal(form.tasa_retorno)
+  const cotNum = parseDecimal(form.cotizacion)
+  const equivalente = aporte && montoNum ? equivalenteDevolucion({ monto: montoNum, moneda: form.moneda, cotizacion: monedaDistinta ? cotNum : null }, aporte) : 0
+  const pactadoBorrador = esAporte && form.a_devolver && montoNum && form.fecha_devolucion
+    ? montoNum + interesPactado({ ...form, monto: montoNum, a_devolver: true, tasa_retorno: tasaNum > 0 ? tasaNum : null })
+    : null
 
   async function guardar(forzar = false) {
     if (enCurso.current) return
-    const inversor = form.inversor.trim()
+    const inversor = esAporte ? form.inversor.trim() : (aporte?.inversor || '').trim()
     const monto = parseFloat(form.monto)
-    if (!inversor) { setError(esAporte ? 'Escribí quién aporta.' : 'Escribí a quién se le devuelve.'); return }
+    if (!esAporte && !aporte) { setError('Elegí qué aporte se devuelve.'); return }
+    if (!inversor) { setError('Escribí quién aporta.'); return }
     if (!monto || monto <= 0) { setError('Ingresá un monto válido.'); return }
     if (!form.metodo) { setError(esAporte ? 'Elegí cómo se recibió la plata: efectivo o transferencia.' : 'Elegí cómo se devolvió la plata: efectivo o transferencia.'); return }
     // También frena una cuenta vieja que ya no corresponde al método/moneda (ej. al editar).
     if (!cuentas.includes(form.cuenta)) { setError(esAporte ? 'Elegí la cuenta a la que entró la plata.' : 'Elegí la cuenta de la que salió la plata.'); return }
     if (!form.fecha) { setError('Elegí la fecha.'); return }
+    const conRetorno = esAporte && !!form.a_devolver
+    if (conRetorno) {
+      if (!form.fecha_devolucion) { setError('Elegí la fecha de devolución.'); return }
+      if (form.fecha_devolucion < form.fecha) { setError('La fecha de devolución no puede ser anterior al aporte.'); return }
+      if (String(form.tasa_retorno).trim() && !(tasaNum >= 0)) { setError('Revisá el % de retorno: tiene que ser un número, ej. 30 o 2,5.'); return }
+    }
+    // Mismo criterio que la base (trigger capital_movimientos_validar), avisado antes de mandar.
+    if (devolucionesDeEste > 0) {
+      const original = capitalMovimientos.find(c => c.id === form.id)
+      if (!esAporte || !form.a_devolver) { setError(`Este aporte tiene ${devolucionesDeEste === 1 ? 'una devolución cargada' : `${devolucionesDeEste} devoluciones cargadas`}: para ${!esAporte ? 'pasarlo a devolución' : 'apagar "Hay que devolverlo"'} primero borralas o pasalas a otro aporte.`); return }
+      if (original && original.moneda !== form.moneda) { setError('Este aporte tiene devoluciones cargadas: para cambiarle la moneda primero borralas.'); return }
+    }
+    if (monedaDistinta && !(cotNum > 0)) { setError('Poné la cotización con la que se pagó (pesos por dólar).'); return }
     setError('')
     const mov = {
       tipo: form.tipo, inversor, monto, moneda: form.moneda, metodo: form.metodo, cuenta: form.cuenta, fecha: form.fecha,
-      locacion: form.locacion || null, a_devolver: esAporte && !!form.a_devolver, motivo: form.motivo.trim() || null,
+      locacion: form.locacion || null, a_devolver: conRetorno, motivo: form.motivo.trim() || null,
+      tasa_retorno: conRetorno && tasaNum > 0 ? tasaNum : null,
+      periodo_tasa: conRetorno && tasaNum > 0 ? form.periodo_tasa : null,
+      fecha_devolucion: conRetorno ? form.fecha_devolucion : null,
+      aporte_id: esAporte ? null : Number(aporte.id),
+      cotizacion: monedaDistinta ? cotNum : null,
+      // "Dado por devuelto" solo existe en un aporte a devolver; si deja de serlo, se limpia.
+      ...(conRetorno ? {} : { saldado_en: null, saldado_por: null }),
     }
     enCurso.current = true
     setGuardando(true)
@@ -3151,13 +3221,26 @@ function FormCapital({ inicial, esEdicion, inversores, capitalMovimientos, onGua
             <button type="button" className={`miembro-btn${!esAporte ? ' active' : ''}`} onClick={() => setTipo('devolucion')}>Devolución</button>
           </div>
         </div>
+        {esAporte ? (
+          <div className="form-group full">
+            <label className="form-label">Quién aporta</label>
+            <input className="form-control" type="text" list={idLista} placeholder="Ej: Bruno" value={form.inversor} onChange={e => set('inversor', e.target.value)} />
+            <datalist id={idLista}>{inversores.map(n => <option key={n} value={n} />)}</datalist>
+          </div>
+        ) : (
+          <div className="form-group full">
+            <label className="form-label">Qué aporte se devuelve</label>
+            <select className="form-control" value={String(form.aporte_id || '')} onChange={e => elegirAporte(e.target.value)}>
+              <option value="">{opcionesAporte.length ? 'Seleccionar...' : 'No hay aportes para devolver'}</option>
+              {opcionesAporte.map(r => {
+                const f = r.aporte.moneda === 'USD' ? formatDolares : formatPesos
+                return <option key={r.aporte.id} value={String(r.aporte.id)}>{r.aporte.inversor} · {formatFechaDateISO(r.aporte.fecha)} · {f(r.capital)} · pendiente {f(r.pendiente)}</option>
+              })}
+            </select>
+          </div>
+        )}
         <div className="form-group full">
-          <label className="form-label">{esAporte ? 'Quién aporta' : 'A quién se le devuelve'}</label>
-          <input className="form-control" type="text" list={idLista} placeholder="Ej: Bruno" value={form.inversor} onChange={e => set('inversor', e.target.value)} />
-          <datalist id={idLista}>{inversores.map(n => <option key={n} value={n} />)}</datalist>
-        </div>
-        <div className="form-group full">
-          <label className="form-label">Moneda</label>
+          <label className="form-label">{esAporte ? 'Moneda' : 'Moneda en que se paga'}</label>
           <div className="miembro-row" style={{ marginBottom: 0 }}>
             {['ARS', 'USD'].map(m => (
               <button type="button" key={m} className={`miembro-btn${form.moneda === m ? ' active' : ''}`} onClick={() => setMoneda(m)}>{m === 'ARS' ? 'Pesos' : 'Dólares'}</button>
@@ -3170,8 +3253,22 @@ function FormCapital({ inicial, esEdicion, inversores, capitalMovimientos, onGua
         </div>
         <div className="form-group">
           <label className="form-label">Fecha</label>
-          <input className="form-control" type="date" value={form.fecha} onChange={e => set('fecha', e.target.value)} />
+          <input className="form-control" type="date" value={form.fecha} onChange={e => setFecha(e.target.value)} />
         </div>
+        {monedaDistinta && (
+          <div className="form-group full">
+            <label className="form-label">Cotización (pesos por dólar)</label>
+            <InputDecimal value={form.cotizacion} onChange={setCotizacion} />
+            {cotDia && (
+              <div style={{ fontSize: 11, color: 'var(--text-secondary)', marginTop: 4 }}>
+                Blue promedio del {formatFechaDateISO(cotDia.fecha)}: {formatPesos(cotDia.promedio)}
+                {!(Math.abs(cotNum - Number(cotDia.promedio)) <= 0.005) && (
+                  <> · <button type="button" onClick={() => { cotizacionTocada.current = false; setForm(f => conCotizacion(f)) }} style={{ ...btnLinkStyle('var(--green-dark)'), fontSize: 11 }}>Usar esa</button></>
+                )}
+              </div>
+            )}
+          </div>
+        )}
         <div className="form-group full">
           <label className="form-label">{esAporte ? 'Cómo se recibió' : 'Cómo se devolvió'}</label>
           <div className="miembro-row" style={{ marginBottom: 0 }}>
@@ -3202,24 +3299,55 @@ function FormCapital({ inicial, esEdicion, inversores, capitalMovimientos, onGua
             <div className="toggle-row">
               <span className="toggle-label">Hay que devolverlo</span>
               <label className="toggle-switch">
-                <input type="checkbox" checked={!!form.a_devolver} onChange={e => set('a_devolver', e.target.checked)} />
+                <input type="checkbox" checked={!!form.a_devolver} onChange={e => setADevolver(e.target.checked)} />
                 <span className="toggle-slider" />
               </label>
             </div>
           </div>
+        )}
+        {esAporte && form.a_devolver && (
+          <>
+            <div className="form-group">
+              <label className="form-label">% de retorno</label>
+              <InputDecimal value={form.tasa_retorno} onChange={v => set('tasa_retorno', v)} placeholder="Ej: 30" />
+            </div>
+            <div className="form-group">
+              <label className="form-label">Período</label>
+              <div className="miembro-row" style={{ marginBottom: 0 }}>
+                {['anual', 'mensual'].map(p => (
+                  <button type="button" key={p} className={`miembro-btn${form.periodo_tasa === p ? ' active' : ''}`} onClick={() => set('periodo_tasa', p)}>{p === 'anual' ? 'Anual' : 'Mensual'}</button>
+                ))}
+              </div>
+            </div>
+            <div className="form-group full">
+              <label className="form-label">Fecha de devolución</label>
+              <input className="form-control" type="date" value={form.fecha_devolucion} onChange={e => set('fecha_devolucion', e.target.value)} />
+            </div>
+            {pactadoBorrador !== null && (
+              <div style={{ gridColumn: '1 / -1', fontSize: 11, color: 'var(--text-secondary)', lineHeight: 1.5 }}>
+                A devolver el {formatFechaDateISO(form.fecha_devolucion)}: <strong style={{ color: 'var(--text-primary)' }}>{formatMonto(pactadoBorrador)}</strong>
+                {pactadoBorrador - montoNum > TOLERANCIA_CAPITAL ? ` (${formatMonto(montoNum)} + ${formatMonto(pactadoBorrador - montoNum)} de interés)` : ' (solo el capital)'}
+                {form.moneda === 'USD' && cotHoy ? ` · ≈ ${formatPesos(pactadoBorrador * cotHoy.promedio)} al blue de hoy` : ''}
+              </div>
+            )}
+          </>
         )}
         <div className="form-group full">
           <label className="form-label">Motivo (opcional)</label>
           <input className="form-control" type="text" placeholder={esAporte ? 'Ej: invernadero Hormi 2.0' : 'Ej: primera cuota'} value={form.motivo} onChange={e => set('motivo', e.target.value)} />
         </div>
       </div>
-      {!esAporte && pendiente !== null && (
-        <div style={{ fontSize: 11, marginTop: 8, color: montoNum > pendiente + 0.5 ? '#791F1F' : 'var(--text-secondary)' }}>
-          {montoNum > pendiente + 0.5
-            ? `⚠ Esto supera lo pendiente de devolverle a ${form.inversor.trim()} (${formatMonto(Math.max(0, pendiente))}).`
-            : `Pendiente de devolverle a ${form.inversor.trim()}: ${formatMonto(Math.max(0, pendiente))}.`}
-        </div>
-      )}
+      {elegido && (() => {
+        const excede = equivalente > elegido.pendiente + TOLERANCIA_CAPITAL
+        return (
+          <div style={{ fontSize: 11, marginTop: 8, color: excede ? '#791F1F' : 'var(--text-secondary)' }}>
+            {monedaDistinta && equivalente > 0 ? `Descuenta ${fmtAporte(equivalente)} de la deuda. ` : ''}
+            {excede
+              ? `⚠ Esto supera lo pendiente de devolverle a ${aporte.inversor} (${fmtAporte(elegido.pendiente)}).`
+              : `Pendiente de devolverle a ${aporte.inversor}: ${fmtAporte(elegido.pendiente)}${aporte.moneda === 'USD' && cotHoy && elegido.pendiente > TOLERANCIA_CAPITAL ? ` (≈ ${formatPesos(elegido.pendiente * cotHoy.promedio)} al blue de hoy)` : ''}.`}
+          </div>
+        )
+      })()}
       {error && <div style={{ fontSize: 12, color: '#791F1F', marginTop: 8 }}>{error}</div>}
       {avisoDup && avisoDup.para === form ? (
         <AvisoDuplicado parecidos={avisoDup.parecidos} guardando={guardando} onGuardarIgual={() => guardar(true)} onCancelar={() => setAvisoDup(null)} />
@@ -3235,22 +3363,34 @@ function FormCapital({ inicial, esEdicion, inversores, capitalMovimientos, onGua
   )
 }
 
-function PanelCapital({ capitalMovimientos, onGuardar, onActualizar, onEliminar }) {
+function PanelCapital({ capitalMovimientos, cotizacionesDolar, miembro, onGuardar, onActualizar, onEliminar }) {
   const [toast, showToast] = useToast()
-  const [nuevo, setNuevo] = useState(null) // null | 'aporte' | 'devolucion'
+  const [nuevo, setNuevo] = useState(null) // null | { tipo, aporteId? } — con aporteId, la devolución se abre debajo de ese aporte
   const [editandoId, setEditandoId] = useState(null)
   const [confirmandoBorrar, setConfirmandoBorrar] = useState(null)
-  const [borrando, setBorrando] = useState(false)
+  const [confirmandoSaldar, setConfirmandoSaldar] = useState(null)
+  // Borrar / dar por devuelto: el ref corta los clicks en ráfaga (el estado recién se ve en el
+  // próximo render); el estado deshabilita los botones.
+  const [enCurso, setEnCurso] = useState(false)
+  const enCursoRef = useRef(false)
 
-  const resumen = resumenCapitalPorInversor(capitalMovimientos)
+  const hoy = hoyISO()
+  const cotHoy = cotizacionesDolar[0] || null
+  const cotHoyVieja = String(cotHoy?.fuente || '').startsWith('fallback')
+  const resumen = resumenCapitalPorInversor(capitalMovimientos, hoy)
   const totales = moneda => resumen.filter(r => r.moneda === moneda).reduce((s, r) => ({
-    aportado: s.aportado + r.aportado, devuelto: s.devuelto + r.devuelto, pendiente: s.pendiente + Math.max(0, r.pendiente),
+    aportado: s.aportado + r.aportado, devuelto: s.devuelto + r.devuelto, pendiente: s.pendiente + r.pendiente,
   }), { aportado: 0, devuelto: 0, pendiente: 0 })
   const monedas = ['ARS', ...(capitalMovimientos.some(c => c.moneda === 'USD') ? ['USD'] : [])]
   const inversores = [...new Map([...MIEMBROS, ...capitalMovimientos.map(c => String(c.inversor || '').trim())].filter(Boolean).map(n => [normalizarTexto(n), n])).values()]
   const ordenados = [...capitalMovimientos].sort((a, b) => String(b.fecha).localeCompare(String(a.fecha)) || new Date(b.created_at) - new Date(a.created_at))
-  const vacio = tipo => ({ tipo, inversor: '', monto: '', moneda: 'ARS', metodo: '', cuenta: '', fecha: hoyISO(), locacion: '', a_devolver: false, motivo: '' })
+  const aporteDe = id => capitalMovimientos.find(c => c.tipo === 'aporte' && String(c.id) === String(id)) || null
+  const vacio = (tipo, aporte) => ({
+    tipo, inversor: aporte?.inversor || '', monto: '', moneda: aporte?.moneda || 'ARS', metodo: '', cuenta: '', fecha: hoy, locacion: aporte?.locacion || '',
+    a_devolver: false, motivo: '', tasa_retorno: '', periodo_tasa: 'anual', fecha_devolucion: '', aporte_id: aporte ? String(aporte.id) : '', cotizacion: '',
+  })
 
+  function abrirNuevo(tipo, aporte) { setEditandoId(null); setConfirmandoBorrar(null); setConfirmandoSaldar(null); setNuevo({ tipo, aporteId: aporte?.id ?? null }) }
   async function guardarNuevo(mov) {
     const res = await onGuardar(mov)
     if (res?.ok) { setNuevo(null); showToast(mov.tipo === 'aporte' ? 'Aporte registrado ✓' : 'Devolución registrada ✓') }
@@ -3262,13 +3402,33 @@ function PanelCapital({ capitalMovimientos, onGuardar, onActualizar, onEliminar 
     return res
   }
   async function confirmarBorrar(id) {
-    if (borrando) return
-    setBorrando(true)
+    if (enCursoRef.current) return
+    enCursoRef.current = true
+    setEnCurso(true)
     const res = await onEliminar(id)
-    setBorrando(false)
+    enCursoRef.current = false
+    setEnCurso(false)
     setConfirmandoBorrar(null)
-    showToast(res?.ok ? 'Movimiento eliminado' : 'No se pudo eliminar')
+    showToast(res?.ok ? 'Movimiento eliminado' : (res?.msg || 'No se pudo eliminar'))
   }
+  // "Dar por devuelto" a mano (cuando se cerró con otro número) y su vuelta atrás.
+  async function saldar(c, dar) {
+    if (enCursoRef.current) return
+    enCursoRef.current = true
+    setEnCurso(true)
+    const res = await onActualizar(c.id, dar ? { saldado_en: new Date().toISOString(), saldado_por: miembro || null } : { saldado_en: null, saldado_por: null })
+    enCursoRef.current = false
+    setEnCurso(false)
+    setConfirmandoSaldar(null)
+    showToast(res?.ok ? (dar ? 'Dado por devuelto ✓' : 'Vuelve a figurar como pendiente') : (res?.msg || 'No se pudo guardar'))
+  }
+
+  const formNuevo = aporte => (
+    <FormCapital
+      key={aporte ? `dev-${aporte.id}` : nuevo.tipo} inicial={vacio(nuevo.tipo, aporte)} inversores={inversores} capitalMovimientos={capitalMovimientos}
+      cotizaciones={cotizacionesDolar} onGuardar={guardarNuevo} onCancelar={() => setNuevo(null)}
+    />
+  )
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
@@ -3276,10 +3436,18 @@ function PanelCapital({ capitalMovimientos, onGuardar, onActualizar, onEliminar 
         const t = totales(moneda)
         const fmt = moneda === 'USD' ? formatDolares : formatPesos
         return (
-          <div key={moneda} className="stats-row">
-            <div className="stat-card"><div className="stat-num cifra-tabular" style={{ fontSize: 15, color: 'var(--green-dark)' }}>{fmt(t.aportado)}</div><div className="stat-lbl">Aportado{moneda === 'USD' ? ' (US$)' : ''}</div></div>
-            <div className="stat-card"><div className="stat-num cifra-tabular" style={{ fontSize: 15 }}>{fmt(t.devuelto)}</div><div className="stat-lbl">Devuelto{moneda === 'USD' ? ' (US$)' : ''}</div></div>
-            <div className="stat-card"><div className="stat-num cifra-tabular" style={{ fontSize: 15, color: t.pendiente > 0 ? '#791F1F' : undefined }}>{fmt(t.pendiente)}</div><div className="stat-lbl">Pendiente{moneda === 'USD' ? ' (US$)' : ''}</div></div>
+          <div key={moneda}>
+            <div className="stats-row">
+              <div className="stat-card"><div className="stat-num cifra-tabular" style={{ fontSize: 15, color: 'var(--green-dark)' }}>{fmt(t.aportado)}</div><div className="stat-lbl">Aportado{moneda === 'USD' ? ' (US$)' : ''}</div></div>
+              <div className="stat-card"><div className="stat-num cifra-tabular" style={{ fontSize: 15 }}>{fmt(t.devuelto)}</div><div className="stat-lbl">Devuelto{moneda === 'USD' ? ' (US$)' : ''}</div></div>
+              <div className="stat-card"><div className="stat-num cifra-tabular" style={{ fontSize: 15, color: t.pendiente > TOLERANCIA_CAPITAL ? '#791F1F' : undefined }}>{fmt(t.pendiente)}</div><div className="stat-lbl">Pendiente{moneda === 'USD' ? ' (US$)' : ''}</div></div>
+            </div>
+            {moneda === 'USD' && cotHoy && t.pendiente > TOLERANCIA_CAPITAL && (
+              <div style={{ fontSize: 11, color: 'var(--text-secondary)', marginTop: 6 }}>
+                Pendiente ≈ {formatPesos(t.pendiente * cotHoy.promedio)} al blue promedio de hoy ({formatPesos(cotHoy.promedio)})
+                {cotHoyVieja && <span style={{ color: '#854F0B' }}> · sin actualizar hoy</span>}
+              </div>
+            )}
           </div>
         )
       })}
@@ -3294,14 +3462,14 @@ function PanelCapital({ capitalMovimientos, onGuardar, onActualizar, onEliminar 
                 <div key={`${r.inversor}|${r.moneda}`}>
                   <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8 }}>
                     <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--text-primary)' }}>{r.inversor}{r.moneda === 'USD' ? ' · dólares' : ''}</span>
-                    {r.aDevolver > 0 && (
-                      <span style={{ fontSize: 12, fontWeight: 600, color: r.pendiente > 0.5 ? '#791F1F' : 'var(--green-dark)' }}>
-                        {r.pendiente > 0.5 ? `Pendiente ${fmt(r.pendiente)}` : r.pendiente < -0.5 ? `Devuelto de más ${fmt(-r.pendiente)}` : 'Devuelto todo ✓'}
+                    {r.pactado > 0 && (
+                      <span style={{ fontSize: 12, fontWeight: 600, color: r.pendiente > TOLERANCIA_CAPITAL ? '#791F1F' : 'var(--green-dark)' }}>
+                        {r.pendiente > TOLERANCIA_CAPITAL ? `Pendiente ${fmt(r.pendiente)}` : 'Devuelto todo ✓'}
                       </span>
                     )}
                   </div>
                   <div style={{ fontSize: 11, color: 'var(--text-secondary)', marginTop: 2 }}>
-                    Aportó {fmt(r.aportado)}{r.aDevolver > 0 ? ` · a devolver ${fmt(r.aDevolver)}` : ''}{r.devuelto > 0 ? ` · devuelto ${fmt(r.devuelto)}` : ''}
+                    Aportó {fmt(r.aportado)}{r.pactado > 0 ? ` · a devolver ${fmt(r.pactado)}` : ''}{r.devuelto > 0 ? ` · devuelto ${fmt(r.devuelto)}` : ''}
                   </div>
                 </div>
               )
@@ -3310,15 +3478,10 @@ function PanelCapital({ capitalMovimientos, onGuardar, onActualizar, onEliminar 
         </div>
       )}
 
-      {nuevo ? (
-        <FormCapital
-          key={nuevo} inicial={vacio(nuevo)} inversores={inversores} capitalMovimientos={capitalMovimientos}
-          onGuardar={guardarNuevo} onCancelar={() => setNuevo(null)}
-        />
-      ) : (
+      {nuevo && !nuevo.aporteId ? formNuevo(null) : (
         <div style={{ display: 'flex', gap: 8 }}>
-          <button className="btn-agregar-fila" style={{ flex: 1 }} onClick={() => { setEditandoId(null); setNuevo('aporte') }}>+ Registrar aporte</button>
-          <button className="btn-agregar-fila" style={{ flex: 1 }} onClick={() => { setEditandoId(null); setNuevo('devolucion') }}>+ Registrar devolución</button>
+          <button className="btn-agregar-fila" style={{ flex: 1 }} onClick={() => abrirNuevo('aporte')}>+ Registrar aporte</button>
+          <button className="btn-agregar-fila" style={{ flex: 1 }} onClick={() => abrirNuevo('devolucion')}>+ Registrar devolución</button>
         </div>
       )}
 
@@ -3330,35 +3493,85 @@ function PanelCapital({ capitalMovimientos, onGuardar, onActualizar, onEliminar 
           if (editandoId === c.id) {
             return (
               <FormCapital
-                key={c.id} esEdicion inversores={inversores} capitalMovimientos={capitalMovimientos}
-                inicial={{ id: c.id, tipo: c.tipo, inversor: c.inversor, monto: String(c.monto), moneda: c.moneda || 'ARS', metodo: metodoDeCapital(c), cuenta: c.cuenta, fecha: c.fecha, locacion: c.locacion || '', a_devolver: !!c.a_devolver, motivo: c.motivo || '' }}
+                key={c.id} esEdicion inversores={inversores} capitalMovimientos={capitalMovimientos} cotizaciones={cotizacionesDolar}
+                inicial={{
+                  id: c.id, tipo: c.tipo, inversor: c.inversor, monto: String(c.monto), moneda: c.moneda || 'ARS', metodo: metodoDeCapital(c), cuenta: c.cuenta,
+                  fecha: c.fecha, locacion: c.locacion || '', a_devolver: !!c.a_devolver, motivo: c.motivo || '',
+                  tasa_retorno: c.tasa_retorno != null ? String(Number(c.tasa_retorno)) : '', periodo_tasa: c.periodo_tasa || 'anual', fecha_devolucion: c.fecha_devolucion || '',
+                  aporte_id: c.aporte_id != null ? String(c.aporte_id) : '', cotizacion: c.cotizacion != null ? String(Number(c.cotizacion)) : '',
+                }}
                 onGuardar={mov => guardarEdicion(c.id, mov)} onCancelar={() => setEditandoId(null)}
               />
             )
           }
+          const r = esAporte ? resumenAporte(c, capitalMovimientos, hoy) : null
+          const aporteDeEsta = !esAporte && c.aporte_id != null ? aporteDe(c.aporte_id) : null
+          const fmtAporteDeEsta = aporteDeEsta?.moneda === 'USD' ? formatDolares : formatPesos
+          const devolucionesCargadas = r ? r.devoluciones.length : 0
           return (
-            <div key={c.id} className="pedido-card fila-capital" style={{ cursor: 'default' }}>
-              <div style={{ minWidth: 0 }}>
-                <div className="pedido-nombre">{esAporte ? `Aporte de ${c.inversor}` : `Devolución a ${c.inversor}`}</div>
-                <div className="pedido-sub">
-                  {formatFechaDateISO(c.fecha)} · {c.cuenta}{c.locacion ? ` · ${c.locacion}` : ''}{c.a_devolver ? ' · a devolver' : ''}{c.creado_por ? ` · cargado por ${c.creado_por}` : ''}
+            <div key={c.id} style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+              <div className="pedido-card fila-capital" style={{ cursor: 'default' }}>
+                <div style={{ minWidth: 0 }}>
+                  <div className="pedido-nombre">{esAporte ? `Aporte de ${c.inversor}` : `Devolución a ${c.inversor}`}</div>
+                  <div className="pedido-sub">
+                    {formatFechaDateISO(c.fecha)} · {c.cuenta}{c.locacion ? ` · ${c.locacion}` : ''}{c.creado_por ? ` · cargado por ${c.creado_por}` : ''}
+                    {aporteDeEsta ? ` · aporte del ${formatFechaDateISO(aporteDeEsta.fecha)}` : ''}
+                    {aporteDeEsta && c.cotizacion != null ? ` · a ${formatPesos(c.cotizacion)} = ${fmtAporteDeEsta(equivalenteDevolucion(c, aporteDeEsta))}` : ''}
+                  </div>
+                  {c.motivo && <div style={{ fontSize: 11, color: 'var(--text-secondary)', marginTop: 2, fontStyle: 'italic', overflowWrap: 'anywhere' }}>{c.motivo}</div>}
+                  {r && c.a_devolver && (
+                    <div className="devolucion-aporte" style={{ fontSize: 11, color: 'var(--text-secondary)', marginTop: 6, lineHeight: 1.5 }}>
+                      <div>
+                        {Number(c.tasa_retorno) > 0 ? formatTasa(c.tasa_retorno, c.periodo_tasa) : 'Sin interés'} · {c.fecha_devolucion
+                          ? `vence ${formatFechaDateISO(c.fecha_devolucion)}`
+                          : <span style={{ color: '#854F0B', fontWeight: 600 }}>falta la fecha de devolución</span>}
+                      </div>
+                      <div>
+                        A devolver {fmt(r.pactado)} · devuelto {fmt(r.devuelto)} ·{' '}
+                        <strong style={{ color: r.estado === 'devuelto' ? 'var(--green-dark)' : '#791F1F' }}>{r.estado === 'devuelto' ? 'Devuelto ✓' : `pendiente ${fmt(r.pendiente)}`}</strong>
+                        {c.moneda === 'USD' && cotHoy && r.pendiente > TOLERANCIA_CAPITAL ? ` (≈ ${formatPesos(r.pendiente * cotHoy.promedio)} hoy)` : ''}
+                      </div>
+                      {c.saldado_en && (
+                        <div>Dado por devuelto por {c.saldado_por || 'alguien'} el {formatFechaHoraISO(c.saldado_en).split(' ')[0]}{r.quedabanAlSaldar > TOLERANCIA_CAPITAL ? ` (quedaban ${fmt(r.quedabanAlSaldar)})` : ''}</div>
+                      )}
+                    </div>
+                  )}
                 </div>
-                {c.motivo && <div style={{ fontSize: 11, color: 'var(--text-secondary)', marginTop: 2, fontStyle: 'italic', overflowWrap: 'anywhere' }}>{c.motivo}</div>}
-              </div>
-              <div className="pedido-right">
-                <span className="pedido-total" style={{ color: esAporte ? 'var(--green-dark)' : '#791F1F' }}>{esAporte ? '+' : '-'}{fmt(c.monto)}</span>
-              </div>
-              <div style={{ gridColumn: '1 / -1', marginTop: 10, paddingTop: 10, borderTop: '0.5px solid var(--border)', display: 'flex', gap: 14, alignItems: 'center' }}>
-                <button onClick={() => { setNuevo(null); setConfirmandoBorrar(null); setEditandoId(c.id) }} style={btnLinkStyle('var(--text-secondary)')}>Editar</button>
-                <button className="btn-eliminar-fila" style={{ width: 22, height: 22, fontSize: 10, marginLeft: 'auto' }} title="Borrar movimiento" onClick={() => setConfirmandoBorrar(c.id)}>✕</button>
-              </div>
-              {confirmandoBorrar === c.id && (
-                <div style={{ gridColumn: '1 / -1', marginTop: 10, background: '#FCEBEB', border: '0.5px solid #791F1F', borderRadius: 'var(--radius-md)', padding: 8, display: 'flex', alignItems: 'center', gap: 8 }}>
-                  <span style={{ fontSize: 12, color: '#791F1F', flex: 1 }}>¿Borrar este movimiento? Deja de contar en el saldo de {c.cuenta}.</span>
-                  <button onClick={() => confirmarBorrar(c.id)} disabled={borrando} style={{ padding: '6px 10px', background: '#791F1F', color: 'white', border: 'none', borderRadius: 'var(--radius-md)', fontSize: 12, fontWeight: 600, cursor: 'pointer' }}>Sí, borrar</button>
-                  <button onClick={() => setConfirmandoBorrar(null)} disabled={borrando} style={{ padding: '6px 10px', background: 'transparent', border: '0.5px solid var(--border-mid)', borderRadius: 'var(--radius-md)', fontSize: 12, cursor: 'pointer' }}>Cancelar</button>
+                <div className="pedido-right">
+                  <span className="pedido-total" style={{ color: esAporte ? 'var(--green-dark)' : '#791F1F' }}>{esAporte ? '+' : '-'}{fmt(c.monto)}</span>
                 </div>
-              )}
+                <div style={{ gridColumn: '1 / -1', marginTop: 10, paddingTop: 10, borderTop: '0.5px solid var(--border)', display: 'flex', gap: 14, alignItems: 'center', flexWrap: 'wrap' }}>
+                  <button onClick={() => { setNuevo(null); setConfirmandoBorrar(null); setConfirmandoSaldar(null); setEditandoId(c.id) }} style={btnLinkStyle('var(--text-secondary)')}>Editar</button>
+                  {r && c.a_devolver && r.estado !== 'devuelto' && (
+                    <button onClick={() => abrirNuevo('devolucion', c)} style={btnLinkStyle('var(--green-dark)')}>+ Devolución</button>
+                  )}
+                  {r && c.a_devolver && (c.saldado_en
+                    ? <button onClick={() => saldar(c, false)} disabled={enCurso} style={btnLinkStyle('var(--text-secondary)')}>Reabrir</button>
+                    : r.estado !== 'devuelto' && <button onClick={() => { setConfirmandoBorrar(null); setConfirmandoSaldar(c.id) }} style={btnLinkStyle('var(--text-secondary)')}>Dar por devuelto</button>)}
+                  <button className="btn-eliminar-fila" style={{ width: 22, height: 22, fontSize: 10, marginLeft: 'auto' }} title="Borrar movimiento" onClick={() => { setConfirmandoSaldar(null); setConfirmandoBorrar(c.id) }}>✕</button>
+                </div>
+                {confirmandoSaldar === c.id && r && (
+                  <div style={{ gridColumn: '1 / -1', marginTop: 10, background: '#FFF8ED', border: '0.5px solid #E8C77E', borderRadius: 'var(--radius-md)', padding: 8, display: 'flex', alignItems: 'center', gap: 8 }}>
+                    <span style={{ fontSize: 12, color: '#854F0B', flex: 1 }}>¿Dar por devuelto? Quedan {fmt(r.pendiente)} sin devolver y dejan de figurar como pendiente.</span>
+                    <button onClick={() => saldar(c, true)} disabled={enCurso} style={{ padding: '6px 10px', background: '#854F0B', color: 'white', border: 'none', borderRadius: 'var(--radius-md)', fontSize: 12, fontWeight: 600, cursor: 'pointer' }}>Sí</button>
+                    <button onClick={() => setConfirmandoSaldar(null)} disabled={enCurso} style={{ padding: '6px 10px', background: 'transparent', border: '0.5px solid var(--border-mid)', borderRadius: 'var(--radius-md)', fontSize: 12, cursor: 'pointer' }}>Cancelar</button>
+                  </div>
+                )}
+                {confirmandoBorrar === c.id && (
+                  <div style={{ gridColumn: '1 / -1', marginTop: 10, background: '#FCEBEB', border: '0.5px solid #791F1F', borderRadius: 'var(--radius-md)', padding: 8, display: 'flex', alignItems: 'center', gap: 8 }}>
+                    {devolucionesCargadas > 0 ? (
+                      <span style={{ fontSize: 12, color: '#791F1F', flex: 1 }}>Este aporte tiene {devolucionesCargadas === 1 ? 'una devolución cargada' : `${devolucionesCargadas} devoluciones cargadas`}: borralas primero.</span>
+                    ) : (
+                      <>
+                        <span style={{ fontSize: 12, color: '#791F1F', flex: 1 }}>¿Borrar este movimiento? Deja de contar en el saldo de {c.cuenta}.</span>
+                        <button onClick={() => confirmarBorrar(c.id)} disabled={enCurso} style={{ padding: '6px 10px', background: '#791F1F', color: 'white', border: 'none', borderRadius: 'var(--radius-md)', fontSize: 12, fontWeight: 600, cursor: 'pointer' }}>Sí, borrar</button>
+                      </>
+                    )}
+                    <button onClick={() => setConfirmandoBorrar(null)} disabled={enCurso} style={{ padding: '6px 10px', background: 'transparent', border: '0.5px solid var(--border-mid)', borderRadius: 'var(--radius-md)', fontSize: 12, cursor: 'pointer' }}>Cancelar</button>
+                  </div>
+                )}
+              </div>
+              {nuevo?.aporteId != null && String(nuevo.aporteId) === String(c.id) && formNuevo(c)}
             </div>
           )
         })}
@@ -3567,7 +3780,7 @@ function TabFinanzas({ pedidos, esquejes, insumos, miembro, gastos, presupuestos
         })}
       </div>
       {subTab === 'capital' && (
-        <PanelCapital capitalMovimientos={capitalMovimientos} onGuardar={onGuardarCapital} onActualizar={onActualizarCapital} onEliminar={onEliminarCapital} />
+        <PanelCapital capitalMovimientos={capitalMovimientos} cotizacionesDolar={cotizacionesDolar} miembro={miembro} onGuardar={onGuardarCapital} onActualizar={onActualizarCapital} onEliminar={onEliminarCapital} />
       )}
       {subTab.startsWith('Hormi') && (
         <PanelFinanzasHormi locacion={subTab} pedidos={pedidos} esquejes={esquejes} gastos={gastos} presupuestos={presupuestos} setPresupuestos={setPresupuestos} aportes={aportes} setAportes={setAportes} gastosFijos={gastosFijos} setGastosFijos={setGastosFijos} totalCuentas={totalGeneral} miembro={miembro} pedidoPagos={pedidoPagos} esquejePagos={esquejePagos} cotizacionesDolar={cotizacionesDolar} />
@@ -6282,7 +6495,7 @@ export default function App() {
   // ── Capital (Finanzas → Capital) ──
   const guardarCapital = useCallback(async mov => {
     const { data, error } = await supabase.from('capital_movimientos').insert({ ...mov, creado_por: miembro || null }).select().single()
-    if (error || !data) { console.error('Error al guardar movimiento de capital', error); return { ok: false, error } }
+    if (error || !data) { console.error('Error al guardar movimiento de capital', error); return { ok: false, error, msg: mensajeErrorCapital(error) } }
     setCapitalMovimientos(prev => [data, ...prev])
     return { ok: true, data }
   }, [miembro])
@@ -6291,8 +6504,7 @@ export default function App() {
     const { data, error } = await supabase.from('capital_movimientos').update(cambios).eq('id', id).select().single()
     if (error || !data) {
       console.error('Error al actualizar movimiento de capital', error)
-      // PGRST116 = el update no encontró la fila: otro la borró mientras esta pantalla la tenía abierta.
-      return { ok: false, error, msg: error?.code === 'PGRST116' ? 'Este movimiento ya no existe (puede que otro lo haya borrado). Recargá la página.' : undefined }
+      return { ok: false, error, msg: mensajeErrorCapital(error) }
     }
     setCapitalMovimientos(prev => prev.map(c => c.id === id ? data : c))
     return { ok: true, data }
@@ -6300,7 +6512,7 @@ export default function App() {
 
   const eliminarCapital = useCallback(async id => {
     const { error } = await supabase.from('capital_movimientos').delete().eq('id', id)
-    if (error) { console.error('Error al eliminar movimiento de capital', error); return { ok: false, error } }
+    if (error) { console.error('Error al eliminar movimiento de capital', error); return { ok: false, error, msg: mensajeErrorCapital(error) } }
     setCapitalMovimientos(prev => prev.filter(c => c.id !== id))
     return { ok: true }
   }, [])
