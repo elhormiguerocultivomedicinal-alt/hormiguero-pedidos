@@ -64,9 +64,10 @@ function responsableGasto(gasto) {
 // Checho" → Checho). Las dos que no lo tienen se resuelven aparte: la cuenta
 // de la organización (sin dueño individual) y la caja de efectivo (usa quién
 // validó el saldo por última vez).
-function resolverResponsableCuenta(nombreCuenta, cuentaInfo, { cuentaEfectivo, cuentaHormiguero }) {
+function resolverResponsableCuenta(nombreCuenta, cuentaInfo, { cuentaEfectivo, cuentaEfectivoDolares, cuentaHormiguero }) {
   if (nombreCuenta === cuentaHormiguero) return 'Nacho y Nico'
-  if (nombreCuenta === cuentaEfectivo) return cuentaInfo?.actualizado_por || 'Sin autor registrado'
+  // Las cajas de efectivo (pesos y dólares) no son de nadie: responde quien la validó por última vez.
+  if (nombreCuenta === cuentaEfectivo || nombreCuenta === cuentaEfectivoDolares) return cuentaInfo?.actualizado_por || 'Sin autor registrado'
   const partes = nombreCuenta.split(' - ')
   if (partes.length > 1) return partes[partes.length - 1]
   return cuentaInfo?.actualizado_por || 'Sin autor registrado'
@@ -340,7 +341,7 @@ const UMBRAL_SALDO_ARS_POSITIVO = 500000
 const UMBRAL_SALDO_ARS_NEGATIVO = -200000
 const UMBRAL_SALDO_USD_POSITIVO = 500
 const UMBRAL_SALDO_USD_NEGATIVO = -200
-function chequearCuentasDesactualizadas({ resumen, resumenDolares, cuentaEfectivo, cuentaHormiguero }, fmt) {
+function chequearCuentasDesactualizadas({ resumen, resumenDolares, cuentaEfectivo, cuentaEfectivoDolares, cuentaHormiguero }, fmt) {
   const hoy = Date.now()
   const tieneMovimiento = r => r.ingresos > 0 || r.egresos > 0
   const pesaLoSuficiente = (r, positivo, negativo) => r.saldo >= positivo || r.saldo <= negativo
@@ -353,36 +354,38 @@ function chequearCuentasDesactualizadas({ resumen, resumenDolares, cuentaEfectiv
     // más leve — antes se escapaba de este chequeo entero porque el filtro exigía validado=true.
     .filter(({ r }) => !r.info.validado || !r.info.actualizado_en || (hoy - new Date(r.info.actualizado_en).getTime()) / 86400000 > UMBRAL_DIAS_SIN_VALIDAR)
     .map(({ r, formatear }) => {
-      const responsable = resolverResponsableCuenta(r.nombre, r.info, { cuentaEfectivo, cuentaHormiguero })
+      const responsable = resolverResponsableCuenta(r.nombre, r.info, { cuentaEfectivo, cuentaEfectivoDolares, cuentaHormiguero })
+      // Una caja de efectivo se confirma contando la plata, no contra un banco.
+      const contraQue = r.nombre === cuentaEfectivo || r.nombre === cuentaEfectivoDolares ? 'contando la plata de la caja' : 'contra el banco real'
       if (!r.info.validado || !r.info.actualizado_en) {
         return {
           severidad: 'atencion', responsable, titulo: 'Cuenta nunca validada',
-          mensaje: `La cuenta "${r.nombre}" nunca fue validada y ya acumula ${formatear(r.saldo)} — conviene confirmarla contra el banco real cuando puedas.`,
+          mensaje: `La cuenta "${r.nombre}" nunca fue validada y ya acumula ${formatear(r.saldo)} — conviene confirmarla ${contraQue} cuando puedas.`,
           objetivo: null,
         }
       }
       const dias = Math.round((hoy - new Date(r.info.actualizado_en).getTime()) / 86400000)
       return {
         severidad: 'atencion', responsable, titulo: 'Cuenta sin validar hace tiempo',
-        mensaje: `La cuenta "${r.nombre}" no se valida hace ${dias} días y tiene ${formatear(r.saldo)} — conviene confirmarla contra el banco real cuando puedas.`,
+        mensaje: `La cuenta "${r.nombre}" no se valida hace ${dias} días y tiene ${formatear(r.saldo)} — conviene confirmarla ${contraQue} cuando puedas.`,
         objetivo: null,
       }
     })
 }
 
 // ── 8) Saldo de cuenta negativo, explicado en criollo (no solo el número) ──
-function chequearSaldosNegativos({ resumen, resumenDolares, cuentaEfectivo, cuentaHormiguero }, fmt) {
+function chequearSaldosNegativos({ resumen, resumenDolares, cuentaEfectivo, cuentaEfectivoDolares, cuentaHormiguero }, fmt) {
   const hallazgos = []
   resumen.filter(r => r.saldo < 0).forEach(r => {
     hallazgos.push({
-      severidad: 'error', responsable: resolverResponsableCuenta(r.nombre, r.info, { cuentaEfectivo, cuentaHormiguero }), titulo: 'Saldo en rojo',
+      severidad: 'error', responsable: resolverResponsableCuenta(r.nombre, r.info, { cuentaEfectivo, cuentaEfectivoDolares, cuentaHormiguero }), titulo: 'Saldo en rojo',
       mensaje: `La cuenta "${r.nombre}" quedó en rojo: le faltan ${fmt.pesos(Math.abs(r.saldo))}. Desde el ${fmt.fechaISO(r.info.fecha_corte)} entraron ${fmt.pesos(r.ingresos)} y salieron ${fmt.pesos(r.egresos)}, arrancando con ${fmt.pesos(r.info.saldo_inicial || 0)} — no alcanza. Puede faltar cargar un cobro o un aporte de capital (Finanzas → Capital), o hay un gasto que en realidad se pagó de otra cuenta.`,
       objetivo: null,
     })
   })
   resumenDolares.filter(r => r.saldo < 0).forEach(r => {
     hallazgos.push({
-      severidad: 'error', responsable: resolverResponsableCuenta(r.nombre, r.info, { cuentaEfectivo, cuentaHormiguero }), titulo: 'Saldo en dólares en rojo',
+      severidad: 'error', responsable: resolverResponsableCuenta(r.nombre, r.info, { cuentaEfectivo, cuentaEfectivoDolares, cuentaHormiguero }), titulo: 'Saldo en dólares en rojo',
       mensaje: `La cuenta en dólares "${r.nombre}" quedó en rojo: ${fmt.dolares(r.saldo)}. Puede faltar cargar un movimiento, o hay un retiro que en realidad fue de otra cuenta.`,
       objetivo: null,
     })
@@ -398,7 +401,7 @@ const UMBRAL_DIFERENCIA_ARS_FIJO = 10000
 const UMBRAL_DIFERENCIA_ARS_PCT = 0.10
 const UMBRAL_DIFERENCIA_USD_FIJO = 15
 const UMBRAL_DIFERENCIA_USD_PCT = 0.10
-function chequearDiferenciaValidacion({ cuentasValidaciones, cuentaEfectivo, cuentaHormiguero, resumen, resumenDolares }, fmt) {
+function chequearDiferenciaValidacion({ cuentasValidaciones, cuentaEfectivo, cuentaEfectivoDolares, cuentaHormiguero, resumen, resumenDolares }, fmt) {
   const ultimaPorCuenta = new Map()
   ;[...cuentasValidaciones].sort((a, b) => new Date(a.created_at) - new Date(b.created_at)).forEach(v => ultimaPorCuenta.set(v.cuenta, v))
   const infoPorCuenta = new Map([...resumen, ...resumenDolares].map(r => [r.nombre, r.info]))
@@ -410,7 +413,7 @@ function chequearDiferenciaValidacion({ cuentasValidaciones, cuentaEfectivo, cue
   }).map(v => {
     const formatear = v.moneda === 'USD' ? fmt.dolares : fmt.pesos
     return {
-      severidad: 'error', responsable: resolverResponsableCuenta(v.cuenta, infoPorCuenta.get(v.cuenta), { cuentaEfectivo, cuentaHormiguero }), titulo: 'Diferencia grande al validar',
+      severidad: 'error', responsable: resolverResponsableCuenta(v.cuenta, infoPorCuenta.get(v.cuenta), { cuentaEfectivo, cuentaEfectivoDolares, cuentaHormiguero }), titulo: 'Diferencia grande al validar',
       mensaje: `Al validar "${v.cuenta}" el ${fmt.fechaISO(v.fecha_corte_nueva)}, lo que calculaba el sistema (${formatear(v.saldo_calculado)}) no coincidió con lo que ${v.validado_por || 'alguien'} cargó como real (${formatear(v.saldo_validado)}) — diferencia de ${formatear(v.diferencia)}. Repasá los movimientos de esa cuenta desde la validación anterior para encontrar dónde está la diferencia.`,
       objetivo: null,
     }
@@ -511,7 +514,7 @@ function chequearCotizacionDolar({ cotizacionesDolar }, fmt) {
 // datos: { cuentas, dolaresMovimientos, gastos, presupuestos, aportes,
 //   pedidoPagos, esquejePagos, insumoPagos, pedidos, esquejes, insumos,
 //   resumen, resumenDolares, cuentasConocidas, cuentasDolaresConocidas,
-//   cuentaEfectivo, cuentaHormiguero, corteMinimo, cuentasValidaciones,
+//   cuentaEfectivo, cuentaEfectivoDolares, cuentaHormiguero, corteMinimo, cuentasValidaciones,
 //   cotizacionesDolar, capitalMovimientos, duplicadosDescartados (Set de claves) }
 // fmt: { pesos, dolares, fechaISO } — formateadores ya existentes en App.jsx,
 // se inyectan para no duplicar esa lógica acá (fechaISO se pasa sin año).

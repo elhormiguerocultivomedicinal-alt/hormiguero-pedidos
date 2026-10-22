@@ -207,7 +207,11 @@ function opcionesCuenta(metodoPago, esMembresia) {
   if (metodoPago === 'Efectivo') return CUENTAS
   return CUENTAS_BANCARIAS
 }
-const CUENTAS_DOLARES = ['NaranjaX (Dólar) - Nacho', 'NaranjaX (Dólar) - Nico', 'Lemon (Dólar) - Checho']
+// Caja de efectivo en dólares: donde caen los aportes de Capital recibidos en efectivo en US$,
+// igual que CUENTA_EFECTIVO para los pesos.
+const CUENTA_EFECTIVO_DOLARES = 'Efectivo (Dólar) - Caja Hormi'
+const CUENTAS_DOLARES_BANCARIAS = ['NaranjaX (Dólar) - Nacho', 'NaranjaX (Dólar) - Nico', 'Lemon (Dólar) - Checho']
+const CUENTAS_DOLARES = [...CUENTAS_DOLARES_BANCARIAS, CUENTA_EFECTIVO_DOLARES]
 const FECHA_CORTE_DEFAULT = '2026-05-31'
 
 // ─── Esquejes: constantes y color de identidad ────────────────
@@ -2616,11 +2620,13 @@ function movimientosDeCuenta(nombre, { pedidoPagos, pedidos, esquejePagos, esque
 }
 
 function IconoCuenta({ nombre, size = 34 }) {
-  const esEfectivo = nombre === CUENTA_EFECTIVO
+  // Billetera = efectivo; el color lo da la moneda (azul dólares), así la caja en dólares no se
+  // confunde con la de pesos.
+  const esEfectivo = nombre === CUENTA_EFECTIVO || nombre === CUENTA_EFECTIVO_DOLARES
   const esDolar = CUENTAS_DOLARES.includes(nombre)
   const Icono = esEfectivo ? Wallet : Landmark
-  const bg = esEfectivo ? '#FFF8ED' : esDolar ? '#EAF0FB' : '#E1F5EE'
-  const color = esEfectivo ? '#854F0B' : esDolar ? '#33538F' : '#0F6E56'
+  const bg = esDolar ? '#EAF0FB' : esEfectivo ? '#FFF8ED' : '#E1F5EE'
+  const color = esDolar ? '#33538F' : esEfectivo ? '#854F0B' : '#0F6E56'
   return (
     <div className="cuenta-icono" style={{ width: size, height: size, background: bg }}>
       <Icono size={Math.round(size * 0.5)} color={color} strokeWidth={2} />
@@ -2916,17 +2922,17 @@ function TarjetaCuentaDolar({ r, movimientos, onValidarSaldo, onEditarValidacion
   const [formAbierto, setFormAbierto] = useState(null) // null | 'saldo' | 'movimiento'
   const [inputSaldo, setInputSaldo] = useState('')
   const [inputCorte, setInputCorte] = useState('')
-  const [formMov, setFormMov] = useState({ tipo: 'ingreso', monto: '', concepto: '', fecha: new Date().toISOString().slice(0, 10) })
+  const [formMov, setFormMov] = useState({ tipo: 'ingreso', monto: '', concepto: '', fecha: hoyISO() })
   const [guardandoSaldo, setGuardandoSaldo] = useState(false)
 
   function abrirValidarSaldo() {
     setInputSaldo(String(r.saldo ?? 0))
-    setInputCorte(new Date().toISOString().slice(0, 10))
+    setInputCorte(hoyISO())
     setFormAbierto('saldo')
   }
 
   function abrirMovimiento() {
-    setFormMov({ tipo: 'ingreso', monto: '', concepto: '', fecha: new Date().toISOString().slice(0, 10) })
+    setFormMov({ tipo: 'ingreso', monto: '', concepto: '', fecha: hoyISO() })
     setFormAbierto('movimiento')
   }
 
@@ -2950,7 +2956,7 @@ function TarjetaCuentaDolar({ r, movimientos, onValidarSaldo, onEditarValidacion
         <IconoCuenta nombre={r.nombre} />
         <div style={{ flex: 1 }}>
           <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--text-primary)' }}>{r.nombre}</div>
-          <div className="form-label" style={{ marginTop: 2 }}>Cuenta en dólares</div>
+          <div className="form-label" style={{ marginTop: 2 }}>{r.nombre === CUENTA_EFECTIVO_DOLARES ? 'Efectivo en dólares' : 'Cuenta en dólares'}</div>
         </div>
         <div className="cifra-tabular" style={{ fontSize: 18, fontWeight: 700, color: r.saldo < 0 ? '#791F1F' : '#33538F', textAlign: 'right' }}>{formatDolares(r.saldo)}</div>
       </div>
@@ -3039,6 +3045,28 @@ function TarjetaCuentaDolar({ r, movimientos, onValidarSaldo, onEditarValidacion
 // (presupuesto_aportes), que solo amplía lo asignado y no toca ninguna cuenta.
 const LOCACIONES_CAPITAL = [{ valor: '', label: 'General' }, { valor: 'Hormi 1.0', label: 'Hormi 1.0' }, { valor: 'Hormi 2.0', label: 'Hormi 2.0' }]
 
+// Cómo entró (o salió) la plata: en efectivo va siempre a la caja de esa moneda; por
+// transferencia, a una cuenta bancaria de esa moneda (mismo criterio que Ventas).
+const METODOS_CAPITAL = [{ valor: 'efectivo', label: 'Efectivo' }, { valor: 'transferencia', label: 'Transferencia' }]
+function cuentasCapital(metodo, moneda) {
+  if (metodo === 'efectivo') return [moneda === 'USD' ? CUENTA_EFECTIVO_DOLARES : CUENTA_EFECTIVO]
+  if (metodo === 'transferencia') return moneda === 'USD' ? CUENTAS_DOLARES_BANCARIAS : CUENTAS_BANCARIAS
+  return []
+}
+// Al cambiar método o moneda: una sola opción se elige sola; si la cuenta que estaba ya no
+// corresponde, se limpia (un aporte en dólares apuntando a una cuenta en pesos no sumaría en
+// ningún saldo).
+function cuentaCapitalPara(metodo, moneda, cuentaPrevia) {
+  const opciones = cuentasCapital(metodo, moneda)
+  if (opciones.length === 1) return opciones[0]
+  return opciones.includes(cuentaPrevia) ? cuentaPrevia : ''
+}
+// Movimientos cargados antes de existir el campo (o desde una pestaña vieja): se deduce de la cuenta.
+function metodoDeCapital(c) {
+  if (c.metodo) return c.metodo
+  return c.cuenta === CUENTA_EFECTIVO || c.cuenta === CUENTA_EFECTIVO_DOLARES ? 'efectivo' : 'transferencia'
+}
+
 // Por inversor y moneda (nunca se mezclan pesos con dólares). "Pendiente" = lo marcado "hay que
 // devolverlo" menos lo ya devuelto.
 function resumenCapitalPorInversor(movimientos) {
@@ -3066,15 +3094,12 @@ function FormCapital({ inicial, esEdicion, inversores, capitalMovimientos, onGua
   const idLista = useId()
   const set = (k, v) => setForm(f => ({ ...f, [k]: v }))
   const esAporte = form.tipo === 'aporte'
-  const cuentas = form.moneda === 'USD' ? CUENTAS_DOLARES : CUENTAS
+  const cuentas = cuentasCapital(form.metodo, form.moneda)
   const formatMonto = form.moneda === 'USD' ? formatDolares : formatPesos
 
   function setTipo(tipo) { setForm(f => ({ ...f, tipo, a_devolver: tipo === 'aporte' ? f.a_devolver : false })) }
-  // Cambiar de moneda limpia la cuenta si ya no corresponde: un aporte en dólares no puede
-  // quedar apuntando a una cuenta en pesos (no sumaría en ningún saldo).
-  function setMoneda(moneda) {
-    setForm(f => ({ ...f, moneda, cuenta: (moneda === 'USD' ? CUENTAS_DOLARES : CUENTAS).includes(f.cuenta) ? f.cuenta : '' }))
-  }
+  function setMoneda(moneda) { setForm(f => ({ ...f, moneda, cuenta: cuentaCapitalPara(f.metodo, moneda, f.cuenta) })) }
+  function setMetodo(metodo) { setForm(f => ({ ...f, metodo, cuenta: cuentaCapitalPara(metodo, f.moneda, f.cuenta) })) }
 
   // Para una devolución: cuánto queda pendiente con esa persona (sin contar este mismo
   // movimiento si se está editando), para avisar si se está devolviendo de más.
@@ -3092,11 +3117,13 @@ function FormCapital({ inicial, esEdicion, inversores, capitalMovimientos, onGua
     const monto = parseFloat(form.monto)
     if (!inversor) { setError(esAporte ? 'Escribí quién aporta.' : 'Escribí a quién se le devuelve.'); return }
     if (!monto || monto <= 0) { setError('Ingresá un monto válido.'); return }
-    if (!form.cuenta) { setError(esAporte ? 'Elegí la cuenta a la que entró la plata.' : 'Elegí la cuenta de la que salió la plata.'); return }
+    if (!form.metodo) { setError(esAporte ? 'Elegí cómo se recibió la plata: efectivo o transferencia.' : 'Elegí cómo se devolvió la plata: efectivo o transferencia.'); return }
+    // También frena una cuenta vieja que ya no corresponde al método/moneda (ej. al editar).
+    if (!cuentas.includes(form.cuenta)) { setError(esAporte ? 'Elegí la cuenta a la que entró la plata.' : 'Elegí la cuenta de la que salió la plata.'); return }
     if (!form.fecha) { setError('Elegí la fecha.'); return }
     setError('')
     const mov = {
-      tipo: form.tipo, inversor, monto, moneda: form.moneda, cuenta: form.cuenta, fecha: form.fecha,
+      tipo: form.tipo, inversor, monto, moneda: form.moneda, metodo: form.metodo, cuenta: form.cuenta, fecha: form.fecha,
       locacion: form.locacion || null, a_devolver: esAporte && !!form.a_devolver, motivo: form.motivo.trim() || null,
     }
     enCurso.current = true
@@ -3146,12 +3173,22 @@ function FormCapital({ inicial, esEdicion, inversores, capitalMovimientos, onGua
           <input className="form-control" type="date" value={form.fecha} onChange={e => set('fecha', e.target.value)} />
         </div>
         <div className="form-group full">
-          <label className="form-label">{esAporte ? 'Cuenta a la que entró' : 'Cuenta de la que salió'}</label>
-          <select className="form-control" value={form.cuenta} onChange={e => set('cuenta', e.target.value)}>
-            <option value="">Seleccionar...</option>
-            {cuentas.map(c => <option key={c} value={c}>{c}</option>)}
-          </select>
+          <label className="form-label">{esAporte ? 'Cómo se recibió' : 'Cómo se devolvió'}</label>
+          <div className="miembro-row" style={{ marginBottom: 0 }}>
+            {METODOS_CAPITAL.map(m => (
+              <button type="button" key={m.valor} className={`miembro-btn${form.metodo === m.valor ? ' active' : ''}`} onClick={() => setMetodo(m.valor)}>{m.label}</button>
+            ))}
+          </div>
         </div>
+        {form.metodo && (
+          <div className="form-group full">
+            <label className="form-label">{esAporte ? 'Cuenta a la que entró' : 'Cuenta de la que salió'}</label>
+            <select className="form-control" value={form.cuenta} disabled={cuentas.length === 1} onChange={e => set('cuenta', e.target.value)}>
+              <option value="">Seleccionar...</option>
+              {cuentas.map(c => <option key={c} value={c}>{c}</option>)}
+            </select>
+          </div>
+        )}
         <div className="form-group full">
           <label className="form-label">Hormi</label>
           <div className="miembro-row" style={{ marginBottom: 0 }}>
@@ -3212,7 +3249,7 @@ function PanelCapital({ capitalMovimientos, onGuardar, onActualizar, onEliminar 
   const monedas = ['ARS', ...(capitalMovimientos.some(c => c.moneda === 'USD') ? ['USD'] : [])]
   const inversores = [...new Map([...MIEMBROS, ...capitalMovimientos.map(c => String(c.inversor || '').trim())].filter(Boolean).map(n => [normalizarTexto(n), n])).values()]
   const ordenados = [...capitalMovimientos].sort((a, b) => String(b.fecha).localeCompare(String(a.fecha)) || new Date(b.created_at) - new Date(a.created_at))
-  const vacio = tipo => ({ tipo, inversor: '', monto: '', moneda: 'ARS', cuenta: '', fecha: hoyISO(), locacion: '', a_devolver: false, motivo: '' })
+  const vacio = tipo => ({ tipo, inversor: '', monto: '', moneda: 'ARS', metodo: '', cuenta: '', fecha: hoyISO(), locacion: '', a_devolver: false, motivo: '' })
 
   async function guardarNuevo(mov) {
     const res = await onGuardar(mov)
@@ -3294,7 +3331,7 @@ function PanelCapital({ capitalMovimientos, onGuardar, onActualizar, onEliminar 
             return (
               <FormCapital
                 key={c.id} esEdicion inversores={inversores} capitalMovimientos={capitalMovimientos}
-                inicial={{ id: c.id, tipo: c.tipo, inversor: c.inversor, monto: String(c.monto), moneda: c.moneda || 'ARS', cuenta: c.cuenta, fecha: c.fecha, locacion: c.locacion || '', a_devolver: !!c.a_devolver, motivo: c.motivo || '' }}
+                inicial={{ id: c.id, tipo: c.tipo, inversor: c.inversor, monto: String(c.monto), moneda: c.moneda || 'ARS', metodo: metodoDeCapital(c), cuenta: c.cuenta, fecha: c.fecha, locacion: c.locacion || '', a_devolver: !!c.a_devolver, motivo: c.motivo || '' }}
                 onGuardar={mov => guardarEdicion(c.id, mov)} onCancelar={() => setEditandoId(null)}
               />
             )
@@ -3727,7 +3764,7 @@ function TabFinanzas({ pedidos, esquejes, insumos, miembro, gastos, presupuestos
                 </div>
               </div>
             ) : (
-              <button onClick={() => { setEditandoSaldo(r.nombre); setInputSaldo(String(r.saldo ?? 0)); setInputCorte(new Date().toISOString().slice(0, 10)) }} style={{ marginTop: 10, background: 'none', border: 'none', padding: 0, fontSize: 12, color: 'var(--green-dark)', fontWeight: 500, cursor: 'pointer' }}>
+              <button onClick={() => { setEditandoSaldo(r.nombre); setInputSaldo(String(r.saldo ?? 0)); setInputCorte(hoyISO()) }} style={{ marginTop: 10, background: 'none', border: 'none', padding: 0, fontSize: 12, color: 'var(--green-dark)', fontWeight: 500, cursor: 'pointer' }}>
                 Validar saldo real
               </button>
             )}
@@ -5949,7 +5986,7 @@ export default function App() {
     pedidoPagos, esquejePagos, insumoPagos, pedidos, esquejes, insumos,
     resumen: resumenCuentas, resumenDolares, corteMinimo: corteMinimoFinanzas,
     cuentasConocidas: CUENTAS, cuentasDolaresConocidas: CUENTAS_DOLARES,
-    cuentaEfectivo: CUENTA_EFECTIVO, cuentaHormiguero: CUENTA_HORMIGUERO,
+    cuentaEfectivo: CUENTA_EFECTIVO, cuentaEfectivoDolares: CUENTA_EFECTIVO_DOLARES, cuentaHormiguero: CUENTA_HORMIGUERO,
     cuentasValidaciones, cotizacionesDolar, capitalMovimientos, duplicadosDescartados: clavesDescartadas,
   }, { pesos: formatPesos, dolares: formatDolares, fechaISO: formatFechaISOSinAnio }),
   [cuentas, dolaresMovimientos, gastos, presupuestos, aportes, pedidoPagos, esquejePagos, insumoPagos, pedidos, esquejes, insumos, resumenCuentas, resumenDolares, corteMinimoFinanzas, cuentasValidaciones, cotizacionesDolar, capitalMovimientos, clavesDescartadas])
