@@ -84,6 +84,13 @@ export function capitalParecidos(a, b) {
     && mismoMonto(a.monto, b.monto) && fechasCercanas(a.fecha, b.fecha)
 }
 
+// Cambio a pesos repetido: mismo aporte, mismos dólares, a pocos días (los pesos pueden variar
+// si se tipearon distinto, por eso no cuentan).
+export function cambiosParecidos(a, b) {
+  return a.aporte_id != null && Number(a.aporte_id) === Number(b.aporte_id)
+    && mismoMonto(a.monto_usd, b.monto_usd) && fechasCercanas(a.fecha, b.fecha)
+}
+
 // Una devolución de capital que ya se había cargado como gasto (así se hacía antes de existir
 // la sección Capital): mismo monto, fecha cercana y un gasto que "huele" a devolución.
 export function devolucionPareceGasto(capital, gasto) {

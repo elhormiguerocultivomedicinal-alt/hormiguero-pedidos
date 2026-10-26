@@ -1,11 +1,11 @@
-import { useState, useCallback, useEffect, useRef, useMemo, useId } from 'react'
+import { useState, useCallback, useEffect, useLayoutEffect, useRef, useMemo, useId, memo } from 'react'
 import { Landmark, Wallet, ChevronDown, ChevronUp, Target, TriangleAlert, Info, Check, Package, Flag, Tag } from 'lucide-react'
 import './App.css'
 import { supabase } from './supabase'
 import { evaluarRegistro, colorPorIntensidad } from './parametrosTurba'
 import { evaluarFinanzas, objetivoPago, objetivoGasto, describirDescartado } from './agenteFinanzas'
-import { gastosParecidos, pagosParecidos, ventasParecidas, capitalParecidos, devolucionPareceGasto, normalizarTexto } from './duplicados'
-import { resumenAporte, resumenCapitalPorInversor, interesPactado, equivalenteDevolucion, parseDecimal, cotizacionParaFechaISO, TOLERANCIA_CAPITAL } from './capital'
+import { gastosParecidos, pagosParecidos, ventasParecidas, capitalParecidos, cambiosParecidos, devolucionPareceGasto, normalizarTexto } from './duplicados'
+import { resumenAporte, resumenCapitalPorInversor, resumenCambios, interesPactado, equivalenteDevolucion, parseDecimal, cotizacionParaFechaISO, cotizacionLejosDelBlue, TOLERANCIA_CAPITAL } from './capital'
 
 const GENETICAS = ['OG24K', 'Choco OG', 'Z-Kiem', 'Fancy', 'Gorilla Rainbow']
 const GENETICAS_ESQUEJES = ['OG24K', 'Black Domina', 'Z-Kiem', 'Fancy', 'Gorilla Rainbow', 'Dosichoc']
@@ -25,16 +25,21 @@ function miembroDeSesion(sesion) {
   return EMAIL_MIEMBRO[email] || null
 }
 
+// Un formateador armado una sola vez: toLocaleString arma uno nuevo en cada llamada, y con miles
+// de montos en pantalla (Capital con cientos de aportes y cambios) se llevaba más de un segundo.
+const FORMATO_PESOS = new Intl.NumberFormat('es-AR')
+const FORMATO_DOLARES = new Intl.NumberFormat('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+
 function formatPesos(n) {
   const v = Number(n)
   const r = Math.round(isFinite(v) ? v : 0)
-  return (r < 0 ? '-$' : '$') + Math.abs(r).toLocaleString('es-AR')
+  return (r < 0 ? '-$' : '$') + FORMATO_PESOS.format(Math.abs(r))
 }
 
 function formatDolares(n) {
   const v = Number(n)
   const r = Math.round(isFinite(v) ? v : 0)
-  return (r < 0 ? '-US$' : 'US$') + Math.abs(r).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+  return (r < 0 ? '-US$' : 'US$') + FORMATO_DOLARES.format(Math.abs(r))
 }
 
 function hoyCompleto() {
@@ -571,6 +576,29 @@ const TABLAS_POR_FK = {
 // Tope de espera: con la red caída supabase-js reintenta los GET (1 s + 2 s + 4 s) y el botón
 // quedaba ~7 s en "Guardando..." solo por este chequeo. Pasado el tope se sigue con lo que hay
 // en pantalla.
+// Supabase entrega como máximo 1.000 filas por consulta: una tabla más grande llegaba cortada sin
+// avisar (y con ella los saldos). traerTodo la trae entera, de a tandas. `consulta(opciones)` arma
+// la misma consulta cada vez y tiene que terminar ordenada por la clave primaria, para que las
+// tandas no se pisen. Si alguien cargó o borró justo mientras se leía y la cuenta no cierra
+// contra el total que informó la base, vuelve a leer una vez.
+const TANDA_FILAS = 1000
+async function traerTodo(consulta, clave = 'id', intento = 0) {
+  const primera = await consulta({ count: 'exact' }).range(0, TANDA_FILAS - 1)
+  if (primera.error) return { data: null, error: primera.error }
+  const total = primera.count ?? primera.data.length
+  const filas = new Map(primera.data.map(f => [f[clave], f]))
+  let desde = primera.data.length
+  while (desde < total) {
+    const { data, error } = await consulta().range(desde, desde + TANDA_FILAS - 1)
+    if (error) return { data: null, error }
+    if (data.length === 0) break
+    data.forEach(f => filas.set(f[clave], f))
+    desde += data.length
+  }
+  if (filas.size !== total && intento === 0) return traerTodo(consulta, clave, 1)
+  return { data: [...filas.values()], error: null }
+}
+
 const LIMITE_MS_CONSULTA_DUPLICADOS = 3000
 async function filasDeLaBase(consulta, respaldo) {
   try {
@@ -2574,7 +2602,7 @@ function montosPorCuenta(registro, campoMonto) {
 // Gastos, la caja de ahorro en dólares) más las validaciones de saldo, en una sola línea de
 // tiempo — para ver de un vistazo de dónde viene cada número, cuándo y quién lo cargó.
 // `presupuesto_aportes` queda afuera a propósito: no mueve plata de ninguna cuenta real.
-function movimientosDeCuenta(nombre, { pedidoPagos, pedidos, esquejePagos, esquejes, insumoPagos, insumos, gastos, dolaresMovimientos, cuentasValidaciones, capitalMovimientos, esDolar }) {
+function movimientosDeCuenta(nombre, { pedidoPagos, pedidos, esquejePagos, esquejes, insumoPagos, insumos, gastos, dolaresMovimientos, cuentasValidaciones, capitalMovimientos, capitalCambios, esDolar }) {
   const items = []
 
   function agregarPagos(pagos, registros, fk, tipoRegistro, pestana) {
@@ -2596,6 +2624,17 @@ function movimientosDeCuenta(nombre, { pedidoPagos, pedidos, esquejePagos, esque
       id: `capital-${c.id}`, tipo: c.tipo === 'devolucion' ? 'egreso' : 'ingreso',
       pestana: c.tipo === 'devolucion' ? `Capital · devolución a ${c.inversor}` : `Capital · aporte de ${c.inversor}`,
       monto: Number(c.monto) || 0, fecha: c.fecha ? new Date(c.fecha) : null, fechaLabel: formatFechaDateISO(c.fecha),
+      quien: c.creado_por || 'Sin autor registrado', objetivo: { tab: 'finanzas', subTab: 'capital' },
+    })
+  })
+  // Un cambio a pesos aparece en las dos puntas: sale de la cuenta en dólares, entra a la de pesos.
+  ;(capitalCambios || []).filter(c => c.cuenta_origen === nombre || c.cuenta_destino === nombre).forEach(c => {
+    const aporte = (capitalMovimientos || []).find(a => Number(a.id) === Number(c.aporte_id))
+    const sale = c.cuenta_origen === nombre
+    items.push({
+      id: `cambio-${c.id}-${sale ? 'sale' : 'entra'}`, tipo: sale ? 'egreso' : 'ingreso',
+      pestana: `Capital · cambio a pesos${aporte ? ` (aporte de ${aporte.inversor})` : ''}`,
+      monto: Number(sale ? c.monto_usd : c.monto_ars) || 0, fecha: c.fecha ? new Date(c.fecha) : null, fechaLabel: formatFechaDateISO(c.fecha),
       quien: c.creado_por || 'Sin autor registrado', objetivo: { tab: 'finanzas', subTab: 'capital' },
     })
   })
@@ -3100,7 +3139,7 @@ function aportesParaDevolver(movimientos, hoy, aporteActualId) {
     .sort((x, y) => String(x.aporte.fecha).localeCompare(String(y.aporte.fecha)) || new Date(x.aporte.created_at) - new Date(y.aporte.created_at))
 }
 
-function FormCapital({ inicial, esEdicion, inversores, capitalMovimientos, cotizaciones, onGuardar, onCancelar }) {
+function FormCapital({ inicial, esEdicion, incrustado, inversores, capitalMovimientos, capitalCambios = [], cotizaciones, onGuardar, onCancelar }) {
   const [form, setForm] = useState(inicial)
   const [error, setError] = useState('')
   const [guardando, setGuardando] = useState(false)
@@ -3125,6 +3164,7 @@ function FormCapital({ inicial, esEdicion, inversores, capitalMovimientos, cotiz
   const monedaDistinta = !esAporte && !!aporte && form.moneda !== aporte.moneda
   const cotDia = cotizacionParaFechaISO(form.fecha, cotizaciones)
   const devolucionesDeEste = esEdicion && inicial.tipo === 'aporte' ? capitalMovimientos.filter(c => c.tipo === 'devolucion' && String(c.aporte_id) === String(form.id)).length : 0
+  const cambiosDeEste = esEdicion && inicial.tipo === 'aporte' ? resumenCambios({ id: form.id, monto: 0 }, capitalCambios) : null
 
   const aporteDe = id => capitalMovimientos.find(c => c.tipo === 'aporte' && String(c.id) === String(id)) || null
   // Devolución en otra moneda que su aporte: la cotización arranca en el blue promedio de ese día.
@@ -3183,6 +3223,11 @@ function FormCapital({ inicial, esEdicion, inversores, capitalMovimientos, cotiz
       if (!esAporte || !form.a_devolver) { setError(`Este aporte tiene ${devolucionesDeEste === 1 ? 'una devolución cargada' : `${devolucionesDeEste} devoluciones cargadas`}: para ${!esAporte ? 'pasarlo a devolución' : 'apagar "Hay que devolverlo"'} primero borralas o pasalas a otro aporte.`); return }
       if (original && original.moneda !== form.moneda) { setError('Este aporte tiene devoluciones cargadas: para cambiarle la moneda primero borralas.'); return }
     }
+    if (cambiosDeEste && cambiosDeEste.cambios.length > 0) {
+      const n = cambiosDeEste.cambios.length
+      if (!esAporte || form.moneda !== 'USD') { setError(`Este aporte tiene ${n === 1 ? 'un cambio a pesos cargado' : `${n} cambios a pesos cargados`}: para ${!esAporte ? 'pasarlo a devolución' : 'pasarlo a pesos'} primero borralos.`); return }
+      if (monto + 0.005 < cambiosDeEste.usd) { setError(`Ya se cambiaron ${formatDolares(cambiosDeEste.usd)} de este aporte a pesos: el monto no puede ser menor.`); return }
+    }
     if (monedaDistinta && !(cotNum > 0)) { setError('Poné la cotización con la que se pagó (pesos por dólar).'); return }
     setError('')
     const mov = {
@@ -3212,7 +3257,7 @@ function FormCapital({ inicial, esEdicion, inversores, capitalMovimientos, cotiz
   }
 
   return (
-    <div className="card form-capital">
+    <div className={`${incrustado ? 'form-incrustado' : 'card'} form-capital`}>
       <div className="form-grid">
         <div className="form-group full">
           <label className="form-label">Tipo</label>
@@ -3363,11 +3408,389 @@ function FormCapital({ inicial, esEdicion, inversores, capitalMovimientos, cotiz
   )
 }
 
-function PanelCapital({ capitalMovimientos, cotizacionesDolar, miembro, onGuardar, onActualizar, onEliminar }) {
+// Cuenta en pesos donde cae, de entrada, un cambio que sale de una cuenta en dólares: el efectivo
+// va a la caja en pesos; un banco, a la cuenta en pesos del mismo dueño ("NaranjaX (Dólar) - Nico"
+// → "NaranjaX - Nico"). Siempre se puede elegir otra.
+function cuentaPesosPara(cuentaDolares) {
+  if (cuentaDolares === CUENTA_EFECTIVO_DOLARES) return CUENTA_EFECTIVO
+  const pesos = String(cuentaDolares || '').replace(' (Dólar)', '')
+  return CUENTAS.includes(pesos) ? pesos : ''
+}
+
+// Cambio a pesos de un aporte en dólares: UN registro (capital_cambios) que resta US$ de la
+// cuenta de origen y suma $ en la de destino, así las dos patas se mueven juntas o ninguna.
+function FormCambio({ inicial, esEdicion, aporte, capitalCambios, cotizaciones, resumen, resumenDolares, onConsultarAporte, onGuardar, onCancelar, onYaNoExiste }) {
+  const [form, setForm] = useState(inicial)
+  const [error, setError] = useState('')
+  const [guardando, setGuardando] = useState(false)
+  const [avisoDup, setAvisoDup] = useState(null) // { parecidos, para: form } — ver AvisoDuplicado
+  const enCurso = useRef(false)
+  // Mientras nadie elija "Entra a" a mano, sigue a "Sale de".
+  const destinoTocado = useRef(!!esEdicion)
+  const set = (k, v) => setForm(f => ({ ...f, [k]: v }))
+  function setOrigen(cuenta) { setForm(f => ({ ...f, cuenta_origen: cuenta, cuenta_destino: destinoTocado.current ? f.cuenta_destino : cuentaPesosPara(cuenta) })) }
+  function setDestino(cuenta) { destinoTocado.current = true; set('cuenta_destino', cuenta) }
+
+  // Lo que queda según esta pantalla; al guardar se vuelve a mirar en la base. Al editar, este cambio no cuenta.
+  const queda = resumenCambios(aporte, capitalCambios.filter(c => c.id !== form.id)).sinCambiar
+  const usd = parseFloat(form.monto_usd) || 0
+  const ars = parseFloat(form.monto_ars) || 0
+  const cotizacion = usd > 0 && ars > 0 ? ars / usd : null
+  const blue = cotizacionParaFechaISO(form.fecha, cotizaciones)
+  const bluePromedio = blue ? Number(blue.promedio) : null
+  const arsAlBlue = bluePromedio && usd > 0 ? Math.round(usd * bluePromedio) : null
+
+  // Avisos que no frenan: puede haber un cambio real a otro precio, o plata que ya estaba contada.
+  const avisos = []
+  if (cotizacion && cotizacionLejosDelBlue(cotizacion, bluePromedio)) {
+    avisos.push(`A ${formatPesos(cotizacion)} por dólar está muy lejos del blue de ese día (${formatPesos(bluePromedio)}). ¿Se comió un cero?`)
+  }
+  const origen = resumenDolares.find(r => r.nombre === form.cuenta_origen)
+  const destino = resumen.find(r => r.nombre === form.cuenta_destino)
+  if (origen && usd > 0 && form.fecha && esDesdeCorteISO(form.fecha, origen.info.fecha_corte)) {
+    // Al editar, el saldo de hoy ya tiene restado este mismo cambio si contaba en esa cuenta.
+    const original = esEdicion ? capitalCambios.find(c => c.id === form.id) : null
+    const yaRestado = original && original.cuenta_origen === form.cuenta_origen && esDesdeCorteISO(original.fecha, origen.info.fecha_corte) ? Number(original.monto_usd) : 0
+    const despues = origen.saldo + yaRestado - usd
+    if (despues < -TOLERANCIA_CAPITAL) avisos.push(`${form.cuenta_origen} quedaría en ${formatDolares(despues)}.`)
+  }
+  ;[origen, destino].filter(r => r && form.fecha && !esDesdeCorteISO(form.fecha, r.info.fecha_corte)).forEach(r => {
+    avisos.push(`La fecha es anterior a la última validación de ${r.nombre} (${formatFechaDateISO(r.info.fecha_corte)}): no va a mover su saldo. Está bien si esa plata ya estaba contada.`)
+  })
+
+  async function guardar(forzar = false) {
+    if (enCurso.current) return
+    if (!form.fecha) { setError('Elegí la fecha del cambio.'); return }
+    if (form.fecha < aporte.fecha) { setError(`La fecha no puede ser anterior al aporte (${formatFechaDateISO(aporte.fecha)}).`); return }
+    if (!(usd > 0)) { setError('Poné cuántos dólares se cambiaron.'); return }
+    if (!(ars > 0)) { setError('Poné cuántos pesos se recibieron.'); return }
+    if (usd > queda + 0.005) { setError(`Del aporte quedan ${formatDolares(queda)} sin cambiar.`); return }
+    if (!CUENTAS_DOLARES.includes(form.cuenta_origen)) { setError('Elegí de qué cuenta en dólares salieron.'); return }
+    if (!CUENTAS.includes(form.cuenta_destino)) { setError('Elegí a qué cuenta en pesos entraron.'); return }
+    setError('')
+    enCurso.current = true
+    setGuardando(true)
+    try {
+      // El tope se vuelve a mirar en la base: otro puede haber cargado un cambio de este aporte
+      // mientras esta pantalla estaba abierta. Si la consulta falla, el trigger igual lo frena.
+      const base = await onConsultarAporte(aporte.id)
+      if (base.ok) {
+        if (!base.aporte) { setError('Este aporte ya no existe (puede que otro lo haya borrado). Recargá la página.'); return }
+        // La consulta ya lo sacó de la pantalla (y con él, este form): avisa el panel.
+        if (esEdicion && !base.cambios.some(c => c.id === form.id)) { onYaNoExiste(); return }
+        const quedaEnBase = resumenCambios(base.aporte, base.cambios.filter(c => c.id !== form.id)).sinCambiar
+        if (usd > quedaEnBase + 0.005) { setError(`Del aporte quedan ${formatDolares(quedaEnBase)} sin cambiar: alguien lo modificó mientras tenías esto abierto.`); return }
+      }
+      // ¿Ya está cargado? Mismo aporte, mismos dólares, ±3 días — contra la base (cubre también
+      // el guardado cuya respuesta se perdió y se reintenta). Solo avisa: puede haber dos cambios iguales.
+      if (!esEdicion && !forzar) {
+        const delAporte = base.ok ? base.cambios : capitalCambios.filter(c => Number(c.aporte_id) === Number(aporte.id))
+        const parecidos = delAporte.filter(c => cambiosParecidos({ aporte_id: aporte.id, monto_usd: usd, fecha: form.fecha }, c))
+          .map(c => `Cambio de ${formatDolares(c.monto_usd)} → ${formatPesos(c.monto_ars)} · ${formatFechaDateISO(c.fecha)} · a ${c.cuenta_destino}${cargadoPorTexto(c.creado_por)}`)
+        if (parecidos.length > 0) { setAvisoDup({ parecidos, para: form }); return }
+      }
+      const res = await onGuardar({
+        fecha: form.fecha, monto_usd: usd, monto_ars: ars,
+        cuenta_origen: form.cuenta_origen, cuenta_destino: form.cuenta_destino, motivo: form.motivo.trim() || null,
+      })
+      if (!res?.ok) setError(res?.msg || 'No se pudo guardar. Revisá la conexión y probá de nuevo.')
+    } finally {
+      enCurso.current = false
+      setGuardando(false)
+    }
+  }
+
+  const ayuda = { fontSize: 11, color: 'var(--text-secondary)', marginTop: 4 }
+  return (
+    <div className="form-incrustado form-cambio">
+      <div className="form-grid">
+        <div className="form-group">
+          <label className="form-label">Fecha</label>
+          <input className="form-control" type="date" value={form.fecha} onChange={e => set('fecha', e.target.value)} />
+        </div>
+        <div className="form-group">
+          <label className="form-label">US$ a cambiar</label>
+          <InputMonto value={form.monto_usd} onChange={v => set('monto_usd', v)} />
+          <div style={{ ...ayuda, color: usd > queda + 0.005 ? '#791F1F' : ayuda.color }}>Quedan {formatDolares(queda)}</div>
+        </div>
+        <div className="form-group full">
+          <label className="form-label">Pesos recibidos</label>
+          <InputMonto value={form.monto_ars} onChange={v => set('monto_ars', v)} />
+          {(cotizacion || arsAlBlue) && (
+            <div style={ayuda}>
+              {cotizacion ? `A ${formatPesos(cotizacion)} por dólar` : ''}
+              {arsAlBlue && arsAlBlue !== ars && (
+                <>{cotizacion ? ' · ' : ''}<button type="button" onClick={() => set('monto_ars', String(arsAlBlue))} style={{ ...btnLinkStyle('var(--green-dark)'), fontSize: 11 }}>
+                  Usar blue promedio ({formatPesos(bluePromedio)}{blue.fecha !== form.fecha ? `, del ${formatFechaDateISO(blue.fecha)}` : ''})
+                </button></>
+              )}
+              {arsAlBlue && arsAlBlue === ars ? ' · blue promedio' : ''}
+            </div>
+          )}
+        </div>
+        <div className="form-group full">
+          <label className="form-label">Sale de</label>
+          <select className="form-control" value={form.cuenta_origen} onChange={e => setOrigen(e.target.value)}>
+            <option value="">Seleccionar...</option>
+            {CUENTAS_DOLARES.map(c => <option key={c} value={c}>{c}</option>)}
+          </select>
+        </div>
+        <div className="form-group full">
+          <label className="form-label">Entra a</label>
+          <select className="form-control" value={form.cuenta_destino} onChange={e => setDestino(e.target.value)}>
+            <option value="">Seleccionar...</option>
+            {CUENTAS.map(c => <option key={c} value={c}>{c}</option>)}
+          </select>
+        </div>
+        <div className="form-group full">
+          <label className="form-label">Destino (opcional)</label>
+          <input className="form-control" type="text" placeholder="Ej: obra Hormi 2.0" value={form.motivo} onChange={e => set('motivo', e.target.value)} />
+        </div>
+      </div>
+      {avisos.length > 0 && (
+        <div className="avisos-cambio" style={{ fontSize: 11, color: '#854F0B', marginTop: 8, lineHeight: 1.5 }}>
+          {avisos.map((a, i) => <div key={i}>⚠ {a}</div>)}
+        </div>
+      )}
+      {error && <div style={{ fontSize: 12, color: '#791F1F', marginTop: 8 }}>{error}</div>}
+      {avisoDup && avisoDup.para === form ? (
+        <AvisoDuplicado parecidos={avisoDup.parecidos} guardando={guardando} onGuardarIgual={() => guardar(true)} onCancelar={() => setAvisoDup(null)} />
+      ) : (
+        <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
+          <button className="btn-submit" style={{ flex: 1 }} disabled={guardando} onClick={() => guardar()}>
+            {guardando ? 'Guardando...' : esEdicion ? 'Guardar cambios' : 'Guardar cambio'}
+          </button>
+          <button onClick={onCancelar} disabled={guardando} style={{ padding: '0 16px', border: '0.5px solid var(--border-mid)', borderRadius: 'var(--radius-md)', background: 'transparent', cursor: 'pointer', fontSize: 13, color: 'var(--text-secondary)' }}>Cancelar</button>
+        </div>
+      )}
+    </div>
+  )
+}
+
+// Estado del aporte: azul activo, ámbar si vence en 7 días o menos, rojo vencido, verde
+// devuelto, gris si no hay que devolverlo.
+function EstadoAporte({ r }) {
+  const d = r.diasParaVencer
+  const [clase, texto] = r.estado === 'no_se_devuelve' ? ['badge-param-sin-dato', 'No se devuelve']
+    : r.estado === 'devuelto' ? ['badge-pagado', 'Devuelto']
+    : r.estado === 'vencido' ? ['badge-sin-cobrar', 'Vencido']
+    : d !== null && d <= 7 ? ['badge-parcial', d === 0 ? 'Activo · vence hoy' : `Activo · vence en ${d} ${d === 1 ? 'día' : 'días'}`]
+    : ['badge-activo', 'Activo']
+  return <span className={`badge ${clase} estado-aporte`}>{texto}</span>
+}
+
+// Confirmación dentro de una tarjeta: roja para borrar, ámbar para "dar por devuelto".
+function ConfirmacionCapital({ texto, siLabel, onSi, onNo, deshabilitado, ambar }) {
+  const color = ambar ? '#854F0B' : '#791F1F'
+  return (
+    <div style={{ marginTop: 8, background: ambar ? '#FFF8ED' : '#FCEBEB', border: `0.5px solid ${ambar ? '#E8C77E' : '#791F1F'}`, borderRadius: 'var(--radius-md)', padding: 8, display: 'flex', alignItems: 'center', gap: 8 }}>
+      <span style={{ fontSize: 12, color, flex: 1 }}>{texto}</span>
+      {onSi && <button onClick={onSi} disabled={deshabilitado} style={{ padding: '6px 10px', background: color, color: 'white', border: 'none', borderRadius: 'var(--radius-md)', fontSize: 12, fontWeight: 600, cursor: 'pointer' }}>{siLabel}</button>}
+      <button onClick={onNo} disabled={deshabilitado} style={{ padding: '6px 10px', background: 'transparent', border: '0.5px solid var(--border-mid)', borderRadius: 'var(--radius-md)', fontSize: 12, cursor: 'pointer' }}>Cancelar</button>
+    </div>
+  )
+}
+
+// Formularios de Capital armados con los datos del panel (ctx) y sus acciones (acc).
+const porFechaCapital = (a, b) => String(a.fecha).localeCompare(String(b.fecha)) || new Date(a.created_at) - new Date(b.created_at)
+const vacioCapital = (tipo, aporte, hoy) => ({
+  tipo, inversor: aporte?.inversor || '', monto: '', moneda: aporte?.moneda || 'ARS', metodo: '', cuenta: '', fecha: hoy, locacion: aporte?.locacion || '',
+  a_devolver: false, motivo: '', tasa_retorno: '', periodo_tasa: 'anual', fecha_devolucion: '', aporte_id: aporte ? String(aporte.id) : '', cotizacion: '',
+})
+const inicialEdicionCapital = c => ({
+  id: c.id, tipo: c.tipo, inversor: c.inversor, monto: String(c.monto), moneda: c.moneda || 'ARS', metodo: metodoDeCapital(c), cuenta: c.cuenta,
+  fecha: c.fecha, locacion: c.locacion || '', a_devolver: !!c.a_devolver, motivo: c.motivo || '',
+  tasa_retorno: c.tasa_retorno != null ? String(Number(c.tasa_retorno)) : '', periodo_tasa: c.periodo_tasa || 'anual', fecha_devolucion: c.fecha_devolucion || '',
+  aporte_id: c.aporte_id != null ? String(c.aporte_id) : '', cotizacion: c.cotizacion != null ? String(Number(c.cotizacion)) : '',
+})
+const vacioCambio = (a, hoy) => ({
+  fecha: hoy, monto_usd: '', monto_ars: '', cuenta_origen: CUENTAS_DOLARES.includes(a.cuenta) ? a.cuenta : '',
+  cuenta_destino: cuentaPesosPara(a.cuenta), motivo: a.motivo || '',
+})
+const inicialCambio = c => ({
+  id: c.id, fecha: c.fecha, monto_usd: String(Number(c.monto_usd)), monto_ars: String(Number(c.monto_ars)),
+  cuenta_origen: c.cuenta_origen, cuenta_destino: c.cuenta_destino, motivo: c.motivo || '',
+})
+function formMovimientoCapital(ctx, inicial, { key, ...props }) {
+  return <FormCapital key={key} inicial={inicial} inversores={ctx.inversores} capitalMovimientos={ctx.capitalMovimientos} capitalCambios={ctx.capitalCambios} cotizaciones={ctx.cotizacionesDolar} {...props} />
+}
+function formEdicionCapital(ctx, acc, c, incrustado) {
+  return formMovimientoCapital(ctx, inicialEdicionCapital(c), { key: c.id, esEdicion: true, incrustado, onGuardar: mov => acc.guardarEdicion(c.id, mov), onCancelar: acc.cerrarEdicion })
+}
+function formCambioCapital(ctx, acc, aporte, cambio) {
+  return (
+    <FormCambio
+      key={cambio ? `cambio-${cambio.id}` : `cambio-nuevo-${aporte.id}`} esEdicion={!!cambio} inicial={cambio ? inicialCambio(cambio) : vacioCambio(aporte, ctx.hoy)}
+      aporte={aporte} capitalCambios={ctx.capitalCambios} cotizaciones={ctx.cotizacionesDolar} resumen={ctx.resumenPesos} resumenDolares={ctx.resumenDolares}
+      onConsultarAporte={ctx.onConsultarAporte} onGuardar={acc.guardarCambio} onCancelar={acc.cerrarCambio} onYaNoExiste={acc.cambioYaNoExiste}
+    />
+  )
+}
+
+const ACCIONES_CAPITAL = ['abrirNuevo', 'abrirEdicion', 'abrirCambio', 'pedirBorrar', 'pedirBorrarCambio', 'pedirSaldar', 'cancelarConfirmacion', 'guardarNuevo', 'guardarEdicion',
+  'guardarCambio', 'confirmarBorrar', 'confirmarBorrarCambio', 'saldar', 'cerrarNuevo', 'cerrarEdicion', 'cerrarCambio', 'cambioYaNoExiste']
+const ESTILO_SECCION_CAPITAL = { gridColumn: '1 / -1', marginTop: 10, paddingTop: 10, borderTop: '0.5px solid var(--border)' }
+const ESTILO_FILA_CAPITAL = { marginTop: 8, display: 'grid', gridTemplateColumns: '1fr auto', gap: '2px 10px', alignItems: 'center' }
+const ESTILO_LINEA_CAPITAL = { gridColumn: '1 / -1', fontSize: 11, color: 'var(--text-secondary)', overflowWrap: 'anywhere', lineHeight: 1.5 }
+function BotonBorrarCapital({ titulo, onClick }) {
+  return <button className="btn-eliminar-fila" style={{ width: 22, height: 22, fontSize: 10 }} title={titulo} onClick={onClick}>✕</button>
+}
+
+function FilaDevolucionCapital({ d, aporte, editando, confirmando, enCurso, acc, ctx }) {
+  if (editando) return formEdicionCapital(ctx, acc, d, true)
+  const fmt = d.moneda === 'USD' ? formatDolares : formatPesos
+  const fmtAporte = aporte?.moneda === 'USD' ? formatDolares : formatPesos
+  return (
+    <div className="fila-devolucion">
+      <div style={ESTILO_FILA_CAPITAL}>
+        <span className="cifra-tabular" style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-primary)' }}>
+          {aporte ? '' : `A ${d.inversor} · `}{formatFechaDateISO(d.fecha)} · <span style={{ color: '#791F1F' }}>-{fmt(d.monto)}</span>
+        </span>
+        <span style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
+          <button onClick={() => acc.abrirEdicion(d.id)} style={btnLinkStyle('var(--text-secondary)')}>Editar</button>
+          <BotonBorrarCapital titulo="Borrar devolución" onClick={() => acc.pedirBorrar(d.id)} />
+        </span>
+        <span style={ESTILO_LINEA_CAPITAL}>
+          {d.cuenta}{aporte && d.cotizacion != null ? ` · a ${formatPesos(d.cotizacion)} = ${fmtAporte(equivalenteDevolucion(d, aporte))}` : ''}{d.creado_por ? ` · cargado por ${d.creado_por}` : ''}
+          {d.motivo ? <span style={{ fontStyle: 'italic' }}> · {d.motivo}</span> : null}
+        </span>
+      </div>
+      {confirmando && (
+        <ConfirmacionCapital texto={`¿Borrar esta devolución? Deja de contar en el saldo de ${d.cuenta}.`} siLabel="Sí, borrar" onSi={() => acc.confirmarBorrar(d.id)} onNo={acc.cancelarConfirmacion} deshabilitado={enCurso} />
+      )}
+    </div>
+  )
+}
+
+function FilaCambioCapital({ c, aporte, abierto, confirmando, enCurso, acc, ctx }) {
+  if (abierto) return formCambioCapital(ctx, acc, aporte, c)
+  const cotizacion = Number(c.monto_ars) / Number(c.monto_usd)
+  const blue = cotizacionParaFechaISO(c.fecha, ctx.cotizacionesDolar)
+  const lejos = blue && cotizacionLejosDelBlue(cotizacion, Number(blue.promedio))
+  return (
+    <div className="fila-cambio">
+      <div style={ESTILO_FILA_CAPITAL}>
+        <span className="cifra-tabular" style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-primary)' }}>
+          {formatFechaDateISO(c.fecha)} · {formatDolares(c.monto_usd)} → {formatPesos(c.monto_ars)}
+        </span>
+        <span style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
+          <button onClick={() => acc.abrirCambio(aporte.id, c.id)} style={btnLinkStyle('var(--text-secondary)')}>Editar</button>
+          <BotonBorrarCapital titulo="Borrar cambio" onClick={() => acc.pedirBorrarCambio(c.id)} />
+        </span>
+        <span style={ESTILO_LINEA_CAPITAL}>
+          <span style={lejos ? { color: '#854F0B', fontWeight: 600 } : undefined}>{lejos ? '⚠ ' : ''}a {formatPesos(cotizacion)}{blue ? ` (blue ${formatPesos(blue.promedio)})` : ''}</span>
+          {c.cuenta_origen !== aporte.cuenta ? ` · salió de ${c.cuenta_origen}` : ''} · entró a {c.cuenta_destino}{c.creado_por ? ` · cargado por ${c.creado_por}` : ''}
+          {c.motivo ? <span style={{ fontStyle: 'italic' }}> · {c.motivo}</span> : null}
+        </span>
+      </div>
+      {confirmando && (
+        <ConfirmacionCapital texto={`¿Borrar este cambio? Deja de contar en ${c.cuenta_origen} y en ${c.cuenta_destino}.`} siLabel="Sí, borrar" onSi={() => acc.confirmarBorrarCambio(c.id)} onNo={acc.cancelarConfirmacion} deshabilitado={enCurso} />
+      )}
+    </div>
+  )
+}
+
+// Memo: con cientos de aportes, abrir un form o una confirmación redibuja solo la tarjeta que
+// la tiene (el resto recibe las mismas props: datos precalculados, ids en null y acc estable).
+const TarjetaAporte = memo(function TarjetaAporte({ a, datos, editandoId, confirmandoBorrar, confirmandoBorrarCambio, confirmandoSaldar, devolucionAbierta, cambioAbierto, enCurso, acc, ctx }) {
+  if (editandoId === a.id) return formEdicionCapital(ctx, acc, a, false)
+  const { r, rc, devoluciones } = datos
+  const fmt = a.moneda === 'USD' ? formatDolares : formatPesos
+  const linkSec = btnLinkStyle('var(--text-secondary)')
+  const colgados = [
+    devoluciones.length === 1 ? 'una devolución' : devoluciones.length > 1 ? `${devoluciones.length} devoluciones` : '',
+    !rc || rc.cambios.length === 0 ? '' : rc.cambios.length === 1 ? 'un cambio a pesos' : `${rc.cambios.length} cambios a pesos`,
+  ].filter(Boolean)
+  return (
+    <div className="pedido-card fila-capital tarjeta-aporte" style={{ cursor: 'default' }}>
+      <div style={{ minWidth: 0 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+          <span className="pedido-nombre">Aporte de {a.inversor}</span>
+          <EstadoAporte r={r} />
+        </div>
+        <div className="pedido-sub">
+          {formatFechaDateISO(a.fecha)} · {a.cuenta}{a.locacion ? ` · ${a.locacion}` : ''}{a.creado_por ? ` · cargado por ${a.creado_por}` : ''}
+        </div>
+        {a.motivo && <div style={{ fontSize: 11, color: 'var(--text-secondary)', marginTop: 2, fontStyle: 'italic', overflowWrap: 'anywhere' }}>{a.motivo}</div>}
+        {a.a_devolver && (
+          <div className="devolucion-aporte" style={{ fontSize: 11, color: 'var(--text-secondary)', marginTop: 6, lineHeight: 1.5 }}>
+            <div>
+              {Number(a.tasa_retorno) > 0 ? formatTasa(a.tasa_retorno, a.periodo_tasa) : 'Sin interés'} · {a.fecha_devolucion
+                ? `${r.diasParaVencer < 0 ? 'venció el' : 'vence'} ${formatFechaDateISO(a.fecha_devolucion)}`
+                : <span style={{ color: '#854F0B', fontWeight: 600 }}>falta la fecha de devolución</span>}
+            </div>
+            <div>
+              A devolver {fmt(r.pactado)} · devuelto {fmt(r.devuelto)} ·{' '}
+              <strong style={{ color: r.estado === 'devuelto' ? 'var(--green-dark)' : '#791F1F' }}>{r.estado === 'devuelto' ? 'Devuelto ✓' : `pendiente ${fmt(r.pendiente)}`}</strong>
+              {a.moneda === 'USD' && ctx.cotHoy && r.pendiente > TOLERANCIA_CAPITAL ? ` (≈ ${formatPesos(r.pendiente * ctx.cotHoy.promedio)} hoy)` : ''}
+            </div>
+            {a.saldado_en && (
+              <div>Dado por devuelto por {a.saldado_por || 'alguien'} el {formatFechaHoraISO(a.saldado_en).split(' ')[0]}{r.quedabanAlSaldar > TOLERANCIA_CAPITAL ? ` (quedaban ${fmt(r.quedabanAlSaldar)})` : ''}</div>
+            )}
+          </div>
+        )}
+      </div>
+      <div className="pedido-right">
+        <span className="pedido-total" style={{ color: 'var(--green-dark)' }}>+{fmt(a.monto)}</span>
+      </div>
+      <div className="acciones-aporte" style={{ gridColumn: '1 / -1', marginTop: 10, paddingTop: 10, borderTop: '0.5px solid var(--border)', display: 'flex', gap: 14, alignItems: 'center', flexWrap: 'wrap' }}>
+        <button onClick={() => acc.abrirEdicion(a.id)} style={linkSec}>Editar</button>
+        {a.a_devolver && r.estado !== 'devuelto' && (
+          <button onClick={() => acc.abrirNuevo('devolucion', a)} style={btnLinkStyle('var(--green-dark)')}>+ Devolución</button>
+        )}
+        {a.a_devolver && (a.saldado_en
+          ? <button onClick={() => acc.saldar(a, false)} disabled={enCurso} style={linkSec}>Reabrir</button>
+          : r.estado !== 'devuelto' && <button onClick={() => acc.pedirSaldar(a.id)} style={linkSec}>Dar por devuelto</button>)}
+        <span style={{ marginLeft: 'auto' }}><BotonBorrarCapital titulo="Borrar aporte" onClick={() => acc.pedirBorrar(a.id)} /></span>
+      </div>
+      {(confirmandoSaldar || confirmandoBorrar === a.id) && (
+        <div style={{ gridColumn: '1 / -1' }}>
+          {confirmandoSaldar && (
+            <ConfirmacionCapital ambar texto={`¿Dar por devuelto? Quedan ${fmt(r.pendiente)} sin devolver y dejan de figurar como pendiente.`} siLabel="Sí" onSi={() => acc.saldar(a, true)} onNo={acc.cancelarConfirmacion} deshabilitado={enCurso} />
+          )}
+          {confirmandoBorrar === a.id && (colgados.length > 0
+            ? <ConfirmacionCapital texto={`Para borrar este aporte primero hay que borrar lo que tiene cargado: ${colgados.join(' y ')}.`} onNo={acc.cancelarConfirmacion} deshabilitado={enCurso} />
+            : <ConfirmacionCapital texto={`¿Borrar este aporte? Deja de contar en el saldo de ${a.cuenta}.`} siLabel="Sí, borrar" onSi={() => acc.confirmarBorrar(a.id)} onNo={acc.cancelarConfirmacion} deshabilitado={enCurso} />)}
+        </div>
+      )}
+      {(devoluciones.length > 0 || devolucionAbierta) && (
+        <div className="devoluciones-aporte" style={ESTILO_SECCION_CAPITAL}>
+          <div className="form-label">Devoluciones</div>
+          {devoluciones.map(d => (
+            <FilaDevolucionCapital key={d.id} d={d} aporte={a} editando={editandoId === d.id} confirmando={confirmandoBorrar === d.id} enCurso={enCurso} acc={acc} ctx={ctx} />
+          ))}
+          {devolucionAbierta && formMovimientoCapital(ctx, vacioCapital('devolucion', a, ctx.hoy), { key: `dev-${a.id}`, incrustado: true, onGuardar: acc.guardarNuevo, onCancelar: acc.cerrarNuevo })}
+        </div>
+      )}
+      {rc && (
+        <div className="cambios-aporte" style={ESTILO_SECCION_CAPITAL}>
+          <div className="form-label">Cambio a pesos</div>
+          <div className="resumen-cambios cifra-tabular" style={{ fontSize: 12, color: 'var(--text-secondary)', marginTop: 4 }}>
+            {rc.cambios.length === 0
+              ? `Todavía sin cambiar · ${formatDolares(rc.sinCambiar)}`
+              : <>Cambiado {formatDolares(rc.usd)} → {formatPesos(rc.ars)} (a {formatPesos(rc.cotizacion)}) · {rc.sinCambiar > TOLERANCIA_CAPITAL
+                ? `quedan ${formatDolares(rc.sinCambiar)} sin cambiar`
+                : <strong style={{ color: 'var(--green-dark)' }}>todo cambiado ✓</strong>}</>}
+          </div>
+          {rc.cambios.map(c => (
+            <FilaCambioCapital key={c.id} c={c} aporte={a} abierto={cambioAbierto === c.id} confirmando={confirmandoBorrarCambio === c.id} enCurso={enCurso} acc={acc} ctx={ctx} />
+          ))}
+          {cambioAbierto === 'nuevo'
+            ? formCambioCapital(ctx, acc, a, null)
+            : rc.sinCambiar > TOLERANCIA_CAPITAL && <button className="btn-agregar-fila" style={{ marginTop: 8 }} onClick={() => acc.abrirCambio(a.id)}>+ Registrar cambio a pesos</button>}
+        </div>
+      )}
+    </div>
+  )
+})
+
+function PanelCapital({ capitalMovimientos, capitalCambios, cotizacionesDolar, miembro, resumen: resumenPesos, resumenDolares, onGuardar, onActualizar, onEliminar, onGuardarCambio, onActualizarCambio, onEliminarCambio, onConsultarAporte }) {
   const [toast, showToast] = useToast()
-  const [nuevo, setNuevo] = useState(null) // null | { tipo, aporteId? } — con aporteId, la devolución se abre debajo de ese aporte
+  const [nuevo, setNuevo] = useState(null) // null | { tipo, aporteId? } — con aporteId, la devolución se abre dentro de ese aporte
   const [editandoId, setEditandoId] = useState(null)
+  const [formCambio, setFormCambio] = useState(null) // null | { aporteId, cambioId } — cambioId null = cambio nuevo
   const [confirmandoBorrar, setConfirmandoBorrar] = useState(null)
+  const [confirmandoBorrarCambio, setConfirmandoBorrarCambio] = useState(null)
   const [confirmandoSaldar, setConfirmandoSaldar] = useState(null)
   // Borrar / dar por devuelto: el ref corta los clicks en ráfaga (el estado recién se ve en el
   // próximo render); el estado deshabilita los botones.
@@ -3377,20 +3800,39 @@ function PanelCapital({ capitalMovimientos, cotizacionesDolar, miembro, onGuarda
   const hoy = hoyISO()
   const cotHoy = cotizacionesDolar[0] || null
   const cotHoyVieja = String(cotHoy?.fuente || '').startsWith('fallback')
-  const resumen = resumenCapitalPorInversor(capitalMovimientos, hoy)
+  const resumen = useMemo(() => resumenCapitalPorInversor(capitalMovimientos, hoy), [capitalMovimientos, hoy])
   const totales = moneda => resumen.filter(r => r.moneda === moneda).reduce((s, r) => ({
     aportado: s.aportado + r.aportado, devuelto: s.devuelto + r.devuelto, pendiente: s.pendiente + r.pendiente,
   }), { aportado: 0, devuelto: 0, pendiente: 0 })
   const monedas = ['ARS', ...(capitalMovimientos.some(c => c.moneda === 'USD') ? ['USD'] : [])]
-  const inversores = [...new Map([...MIEMBROS, ...capitalMovimientos.map(c => String(c.inversor || '').trim())].filter(Boolean).map(n => [normalizarTexto(n), n])).values()]
-  const ordenados = [...capitalMovimientos].sort((a, b) => String(b.fecha).localeCompare(String(a.fecha)) || new Date(b.created_at) - new Date(a.created_at))
-  const aporteDe = id => capitalMovimientos.find(c => c.tipo === 'aporte' && String(c.id) === String(id)) || null
-  const vacio = (tipo, aporte) => ({
-    tipo, inversor: aporte?.inversor || '', monto: '', moneda: aporte?.moneda || 'ARS', metodo: '', cuenta: '', fecha: hoy, locacion: aporte?.locacion || '',
-    a_devolver: false, motivo: '', tasa_retorno: '', periodo_tasa: 'anual', fecha_devolucion: '', aporte_id: aporte ? String(aporte.id) : '', cotizacion: '',
-  })
+  const inversores = useMemo(() => [...new Map([...MIEMBROS, ...capitalMovimientos.map(c => String(c.inversor || '').trim())].filter(Boolean).map(n => [normalizarTexto(n), n])).values()], [capitalMovimientos])
 
-  function abrirNuevo(tipo, aporte) { setEditandoId(null); setConfirmandoBorrar(null); setConfirmandoSaldar(null); setNuevo({ tipo, aporteId: aporte?.id ?? null }) }
+  // El más viejo arriba; cada aporte lleva adentro sus devoluciones y sus cambios a pesos. Se
+  // agrupa una sola vez por aporte (no un filtro por tarjeta) y se recalcula solo si cambian los datos.
+  const { aportes, datosDe, duenoDe, sueltas, sinCambiarUSD } = useMemo(() => {
+    const agrupar = (lista, ok) => lista.reduce((m, x) => { if (ok(x)) { const k = String(x.aporte_id); m.set(k, [...(m.get(k) || []), x]) } return m }, new Map())
+    const devs = agrupar(capitalMovimientos, c => c.tipo === 'devolucion' && c.aporte_id != null)
+    const cams = agrupar(capitalCambios, () => true)
+    const aportes = capitalMovimientos.filter(c => c.tipo === 'aporte').sort(porFechaCapital)
+    const datosDe = new Map(), duenoDe = new Map() // duenoDe: "mov:<id>" / "cambio:<id>" → id del aporte
+    aportes.forEach(a => {
+      const k = String(a.id)
+      const r = resumenAporte(a, devs.get(k) || [], hoy)
+      datosDe.set(k, { r, rc: a.moneda === 'USD' ? resumenCambios(a, cams.get(k) || []) : null, devoluciones: [...r.devoluciones].sort(porFechaCapital) })
+      duenoDe.set(`mov:${k}`, k)
+      ;(devs.get(k) || []).forEach(d => duenoDe.set(`mov:${d.id}`, k))
+      ;(cams.get(k) || []).forEach(c => duenoDe.set(`cambio:${c.id}`, k))
+    })
+    // La base exige que toda devolución tenga su aporte; si esta pantalla no lo tiene, la
+    // devolución se muestra suelta igual, para no esconder plata.
+    const sueltas = capitalMovimientos.filter(c => c.tipo === 'devolucion' && !datosDe.has(String(c.aporte_id))).sort(porFechaCapital)
+    const sinCambiarUSD = aportes.reduce((s, a) => s + (datosDe.get(String(a.id)).rc?.sinCambiar || 0), 0)
+    return { aportes, datosDe, duenoDe, sueltas, sinCambiarUSD }
+  }, [capitalMovimientos, capitalCambios, hoy])
+
+  // Un solo formulario o confirmación abierto a la vez.
+  function cerrarTodo() { setNuevo(null); setEditandoId(null); setFormCambio(null); setConfirmandoBorrar(null); setConfirmandoBorrarCambio(null); setConfirmandoSaldar(null) }
+  function cancelarConfirmacion() { setConfirmandoBorrar(null); setConfirmandoBorrarCambio(null); setConfirmandoSaldar(null) }
   async function guardarNuevo(mov) {
     const res = await onGuardar(mov)
     if (res?.ok) { setNuevo(null); showToast(mov.tipo === 'aporte' ? 'Aporte registrado ✓' : 'Devolución registrada ✓') }
@@ -3401,34 +3843,59 @@ function PanelCapital({ capitalMovimientos, cotizacionesDolar, miembro, onGuarda
     if (res?.ok) { setEditandoId(null); showToast('Movimiento actualizado ✓') }
     return res
   }
-  async function confirmarBorrar(id) {
+  async function guardarCambio(cambio) {
+    const { aporteId, cambioId } = formCambio
+    const res = cambioId ? await onActualizarCambio(cambioId, cambio) : await onGuardarCambio({ ...cambio, aporte_id: aporteId })
+    if (res?.ok) { setFormCambio(null); showToast(cambioId ? 'Cambio actualizado ✓' : 'Cambio a pesos registrado ✓') }
+    return res
+  }
+  async function conGuard(fn) {
     if (enCursoRef.current) return
     enCursoRef.current = true
     setEnCurso(true)
+    try { await fn() } finally { enCursoRef.current = false; setEnCurso(false) }
+  }
+  const confirmarBorrar = id => conGuard(async () => {
     const res = await onEliminar(id)
-    enCursoRef.current = false
-    setEnCurso(false)
     setConfirmandoBorrar(null)
     showToast(res?.ok ? 'Movimiento eliminado' : (res?.msg || 'No se pudo eliminar'))
-  }
+  })
+  const confirmarBorrarCambio = id => conGuard(async () => {
+    const res = await onEliminarCambio(id)
+    setConfirmandoBorrarCambio(null)
+    showToast(res?.ok ? (res.yaNoEstaba ? 'Ese cambio ya lo había borrado otra persona' : 'Cambio eliminado') : (res?.msg || 'No se pudo eliminar'))
+  })
   // "Dar por devuelto" a mano (cuando se cerró con otro número) y su vuelta atrás.
-  async function saldar(c, dar) {
-    if (enCursoRef.current) return
-    enCursoRef.current = true
-    setEnCurso(true)
+  const saldar = (c, dar) => conGuard(async () => {
     const res = await onActualizar(c.id, dar ? { saldado_en: new Date().toISOString(), saldado_por: miembro || null } : { saldado_en: null, saldado_por: null })
-    enCursoRef.current = false
-    setEnCurso(false)
     setConfirmandoSaldar(null)
     showToast(res?.ok ? (dar ? 'Dado por devuelto ✓' : 'Vuelve a figurar como pendiente') : (res?.msg || 'No se pudo guardar'))
-  }
+  })
 
-  const formNuevo = aporte => (
-    <FormCapital
-      key={aporte ? `dev-${aporte.id}` : nuevo.tipo} inicial={vacio(nuevo.tipo, aporte)} inversores={inversores} capitalMovimientos={capitalMovimientos}
-      cotizaciones={cotizacionesDolar} onGuardar={guardarNuevo} onCancelar={() => setNuevo(null)}
-    />
-  )
+  // Acciones con identidad fija para las tarjetas (memo): cada llamada va a la versión del último render.
+  const acciones = {
+    abrirNuevo: (tipo, aporte) => { cerrarTodo(); setNuevo({ tipo, aporteId: aporte?.id ?? null }) },
+    abrirEdicion: id => { cerrarTodo(); setEditandoId(id) },
+    abrirCambio: (aporteId, cambioId = null) => { cerrarTodo(); setFormCambio({ aporteId, cambioId }) },
+    pedirBorrar: id => { cancelarConfirmacion(); setConfirmandoBorrar(id) },
+    pedirBorrarCambio: id => { cancelarConfirmacion(); setConfirmandoBorrarCambio(id) },
+    pedirSaldar: id => { cancelarConfirmacion(); setConfirmandoSaldar(id) },
+    cancelarConfirmacion, guardarNuevo, guardarEdicion, guardarCambio, confirmarBorrar, confirmarBorrarCambio, saldar,
+    cerrarNuevo: () => setNuevo(null), cerrarEdicion: () => setEditandoId(null), cerrarCambio: () => setFormCambio(null),
+    cambioYaNoExiste: () => { setFormCambio(null); showToast('Ese cambio ya no existe: lo borró otra persona') },
+  }
+  const accionesRef = useRef(acciones)
+  useLayoutEffect(() => { accionesRef.current = acciones })
+  const acc = useMemo(() => Object.fromEntries(ACCIONES_CAPITAL.map(k => [k, (...args) => accionesRef.current[k](...args)])), [])
+  const ctx = useMemo(() => ({ inversores, capitalMovimientos, capitalCambios, cotizacionesDolar, resumenPesos, resumenDolares, cotHoy, hoy, onConsultarAporte }),
+    [inversores, capitalMovimientos, capitalCambios, cotizacionesDolar, resumenPesos, resumenDolares, cotHoy, hoy, onConsultarAporte])
+
+  // A qué tarjeta pertenece cada form/confirmación abierto: las demás reciben null y no se redibujan.
+  const dueno = clave => (clave == null ? null : duenoDe.get(clave) ?? null)
+  const editandoEn = dueno(editandoId != null ? `mov:${editandoId}` : null)
+  const borrarEn = dueno(confirmandoBorrar != null ? `mov:${confirmandoBorrar}` : null)
+  const borrarCambioEn = dueno(confirmandoBorrarCambio != null ? `cambio:${confirmandoBorrarCambio}` : null)
+  const cambioEn = formCambio ? String(formCambio.aporteId) : null
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
@@ -3442,10 +3909,15 @@ function PanelCapital({ capitalMovimientos, cotizacionesDolar, miembro, onGuarda
               <div className="stat-card"><div className="stat-num cifra-tabular" style={{ fontSize: 15 }}>{fmt(t.devuelto)}</div><div className="stat-lbl">Devuelto{moneda === 'USD' ? ' (US$)' : ''}</div></div>
               <div className="stat-card"><div className="stat-num cifra-tabular" style={{ fontSize: 15, color: t.pendiente > TOLERANCIA_CAPITAL ? '#791F1F' : undefined }}>{fmt(t.pendiente)}</div><div className="stat-lbl">Pendiente{moneda === 'USD' ? ' (US$)' : ''}</div></div>
             </div>
-            {moneda === 'USD' && cotHoy && t.pendiente > TOLERANCIA_CAPITAL && (
-              <div style={{ fontSize: 11, color: 'var(--text-secondary)', marginTop: 6 }}>
-                Pendiente ≈ {formatPesos(t.pendiente * cotHoy.promedio)} al blue promedio de hoy ({formatPesos(cotHoy.promedio)})
-                {cotHoyVieja && <span style={{ color: '#854F0B' }}> · sin actualizar hoy</span>}
+            {moneda === 'USD' && (
+              <div className="cifra-tabular" style={{ fontSize: 11, color: 'var(--text-secondary)', marginTop: 6, lineHeight: 1.6 }}>
+                <div className="kpi-sin-cambiar">Sin cambiar a pesos: <strong style={{ color: 'var(--text-primary)' }}>{formatDolares(sinCambiarUSD)}</strong></div>
+                {cotHoy && t.pendiente > TOLERANCIA_CAPITAL && (
+                  <div>
+                    Pendiente ≈ {formatPesos(t.pendiente * cotHoy.promedio)} al blue promedio de hoy ({formatPesos(cotHoy.promedio)})
+                    {cotHoyVieja && <span style={{ color: '#854F0B' }}> · sin actualizar hoy</span>}
+                  </div>
+                )}
               </div>
             )}
           </div>
@@ -3478,110 +3950,46 @@ function PanelCapital({ capitalMovimientos, cotizacionesDolar, miembro, onGuarda
         </div>
       )}
 
-      {nuevo && !nuevo.aporteId ? formNuevo(null) : (
-        <div style={{ display: 'flex', gap: 8 }}>
-          <button className="btn-agregar-fila" style={{ flex: 1 }} onClick={() => abrirNuevo('aporte')}>+ Registrar aporte</button>
-          <button className="btn-agregar-fila" style={{ flex: 1 }} onClick={() => abrirNuevo('devolucion')}>+ Registrar devolución</button>
-        </div>
-      )}
+      {nuevo && !nuevo.aporteId
+        ? formMovimientoCapital(ctx, vacioCapital(nuevo.tipo, null, hoy), { key: nuevo.tipo, onGuardar: acc.guardarNuevo, onCancelar: acc.cerrarNuevo })
+        : (
+          <div style={{ display: 'flex', gap: 8 }}>
+            <button className="btn-agregar-fila" style={{ flex: 1 }} onClick={() => acc.abrirNuevo('aporte')}>+ Registrar aporte</button>
+            <button className="btn-agregar-fila" style={{ flex: 1 }} onClick={() => acc.abrirNuevo('devolucion')}>+ Registrar devolución</button>
+          </div>
+        )}
 
       <div className="pedidos-list">
-        {ordenados.length === 0 && <div className="empty-state">Todavía no hay aportes ni devoluciones cargados.</div>}
-        {ordenados.map(c => {
-          const fmt = c.moneda === 'USD' ? formatDolares : formatPesos
-          const esAporte = c.tipo === 'aporte'
-          if (editandoId === c.id) {
-            return (
-              <FormCapital
-                key={c.id} esEdicion inversores={inversores} capitalMovimientos={capitalMovimientos} cotizaciones={cotizacionesDolar}
-                inicial={{
-                  id: c.id, tipo: c.tipo, inversor: c.inversor, monto: String(c.monto), moneda: c.moneda || 'ARS', metodo: metodoDeCapital(c), cuenta: c.cuenta,
-                  fecha: c.fecha, locacion: c.locacion || '', a_devolver: !!c.a_devolver, motivo: c.motivo || '',
-                  tasa_retorno: c.tasa_retorno != null ? String(Number(c.tasa_retorno)) : '', periodo_tasa: c.periodo_tasa || 'anual', fecha_devolucion: c.fecha_devolucion || '',
-                  aporte_id: c.aporte_id != null ? String(c.aporte_id) : '', cotizacion: c.cotizacion != null ? String(Number(c.cotizacion)) : '',
-                }}
-                onGuardar={mov => guardarEdicion(c.id, mov)} onCancelar={() => setEditandoId(null)}
-              />
-            )
-          }
-          const r = esAporte ? resumenAporte(c, capitalMovimientos, hoy) : null
-          const aporteDeEsta = !esAporte && c.aporte_id != null ? aporteDe(c.aporte_id) : null
-          const fmtAporteDeEsta = aporteDeEsta?.moneda === 'USD' ? formatDolares : formatPesos
-          const devolucionesCargadas = r ? r.devoluciones.length : 0
+        {aportes.length === 0 && sueltas.length === 0 && <div className="empty-state">Todavía no hay aportes cargados.</div>}
+        {aportes.map(a => {
+          const k = String(a.id)
           return (
-            <div key={c.id} style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-              <div className="pedido-card fila-capital" style={{ cursor: 'default' }}>
-                <div style={{ minWidth: 0 }}>
-                  <div className="pedido-nombre">{esAporte ? `Aporte de ${c.inversor}` : `Devolución a ${c.inversor}`}</div>
-                  <div className="pedido-sub">
-                    {formatFechaDateISO(c.fecha)} · {c.cuenta}{c.locacion ? ` · ${c.locacion}` : ''}{c.creado_por ? ` · cargado por ${c.creado_por}` : ''}
-                    {aporteDeEsta ? ` · aporte del ${formatFechaDateISO(aporteDeEsta.fecha)}` : ''}
-                    {aporteDeEsta && c.cotizacion != null ? ` · a ${formatPesos(c.cotizacion)} = ${fmtAporteDeEsta(equivalenteDevolucion(c, aporteDeEsta))}` : ''}
-                  </div>
-                  {c.motivo && <div style={{ fontSize: 11, color: 'var(--text-secondary)', marginTop: 2, fontStyle: 'italic', overflowWrap: 'anywhere' }}>{c.motivo}</div>}
-                  {r && c.a_devolver && (
-                    <div className="devolucion-aporte" style={{ fontSize: 11, color: 'var(--text-secondary)', marginTop: 6, lineHeight: 1.5 }}>
-                      <div>
-                        {Number(c.tasa_retorno) > 0 ? formatTasa(c.tasa_retorno, c.periodo_tasa) : 'Sin interés'} · {c.fecha_devolucion
-                          ? `vence ${formatFechaDateISO(c.fecha_devolucion)}`
-                          : <span style={{ color: '#854F0B', fontWeight: 600 }}>falta la fecha de devolución</span>}
-                      </div>
-                      <div>
-                        A devolver {fmt(r.pactado)} · devuelto {fmt(r.devuelto)} ·{' '}
-                        <strong style={{ color: r.estado === 'devuelto' ? 'var(--green-dark)' : '#791F1F' }}>{r.estado === 'devuelto' ? 'Devuelto ✓' : `pendiente ${fmt(r.pendiente)}`}</strong>
-                        {c.moneda === 'USD' && cotHoy && r.pendiente > TOLERANCIA_CAPITAL ? ` (≈ ${formatPesos(r.pendiente * cotHoy.promedio)} hoy)` : ''}
-                      </div>
-                      {c.saldado_en && (
-                        <div>Dado por devuelto por {c.saldado_por || 'alguien'} el {formatFechaHoraISO(c.saldado_en).split(' ')[0]}{r.quedabanAlSaldar > TOLERANCIA_CAPITAL ? ` (quedaban ${fmt(r.quedabanAlSaldar)})` : ''}</div>
-                      )}
-                    </div>
-                  )}
-                </div>
-                <div className="pedido-right">
-                  <span className="pedido-total" style={{ color: esAporte ? 'var(--green-dark)' : '#791F1F' }}>{esAporte ? '+' : '-'}{fmt(c.monto)}</span>
-                </div>
-                <div style={{ gridColumn: '1 / -1', marginTop: 10, paddingTop: 10, borderTop: '0.5px solid var(--border)', display: 'flex', gap: 14, alignItems: 'center', flexWrap: 'wrap' }}>
-                  <button onClick={() => { setNuevo(null); setConfirmandoBorrar(null); setConfirmandoSaldar(null); setEditandoId(c.id) }} style={btnLinkStyle('var(--text-secondary)')}>Editar</button>
-                  {r && c.a_devolver && r.estado !== 'devuelto' && (
-                    <button onClick={() => abrirNuevo('devolucion', c)} style={btnLinkStyle('var(--green-dark)')}>+ Devolución</button>
-                  )}
-                  {r && c.a_devolver && (c.saldado_en
-                    ? <button onClick={() => saldar(c, false)} disabled={enCurso} style={btnLinkStyle('var(--text-secondary)')}>Reabrir</button>
-                    : r.estado !== 'devuelto' && <button onClick={() => { setConfirmandoBorrar(null); setConfirmandoSaldar(c.id) }} style={btnLinkStyle('var(--text-secondary)')}>Dar por devuelto</button>)}
-                  <button className="btn-eliminar-fila" style={{ width: 22, height: 22, fontSize: 10, marginLeft: 'auto' }} title="Borrar movimiento" onClick={() => { setConfirmandoSaldar(null); setConfirmandoBorrar(c.id) }}>✕</button>
-                </div>
-                {confirmandoSaldar === c.id && r && (
-                  <div style={{ gridColumn: '1 / -1', marginTop: 10, background: '#FFF8ED', border: '0.5px solid #E8C77E', borderRadius: 'var(--radius-md)', padding: 8, display: 'flex', alignItems: 'center', gap: 8 }}>
-                    <span style={{ fontSize: 12, color: '#854F0B', flex: 1 }}>¿Dar por devuelto? Quedan {fmt(r.pendiente)} sin devolver y dejan de figurar como pendiente.</span>
-                    <button onClick={() => saldar(c, true)} disabled={enCurso} style={{ padding: '6px 10px', background: '#854F0B', color: 'white', border: 'none', borderRadius: 'var(--radius-md)', fontSize: 12, fontWeight: 600, cursor: 'pointer' }}>Sí</button>
-                    <button onClick={() => setConfirmandoSaldar(null)} disabled={enCurso} style={{ padding: '6px 10px', background: 'transparent', border: '0.5px solid var(--border-mid)', borderRadius: 'var(--radius-md)', fontSize: 12, cursor: 'pointer' }}>Cancelar</button>
-                  </div>
-                )}
-                {confirmandoBorrar === c.id && (
-                  <div style={{ gridColumn: '1 / -1', marginTop: 10, background: '#FCEBEB', border: '0.5px solid #791F1F', borderRadius: 'var(--radius-md)', padding: 8, display: 'flex', alignItems: 'center', gap: 8 }}>
-                    {devolucionesCargadas > 0 ? (
-                      <span style={{ fontSize: 12, color: '#791F1F', flex: 1 }}>Este aporte tiene {devolucionesCargadas === 1 ? 'una devolución cargada' : `${devolucionesCargadas} devoluciones cargadas`}: borralas primero.</span>
-                    ) : (
-                      <>
-                        <span style={{ fontSize: 12, color: '#791F1F', flex: 1 }}>¿Borrar este movimiento? Deja de contar en el saldo de {c.cuenta}.</span>
-                        <button onClick={() => confirmarBorrar(c.id)} disabled={enCurso} style={{ padding: '6px 10px', background: '#791F1F', color: 'white', border: 'none', borderRadius: 'var(--radius-md)', fontSize: 12, fontWeight: 600, cursor: 'pointer' }}>Sí, borrar</button>
-                      </>
-                    )}
-                    <button onClick={() => setConfirmandoBorrar(null)} disabled={enCurso} style={{ padding: '6px 10px', background: 'transparent', border: '0.5px solid var(--border-mid)', borderRadius: 'var(--radius-md)', fontSize: 12, cursor: 'pointer' }}>Cancelar</button>
-                  </div>
-                )}
-              </div>
-              {nuevo?.aporteId != null && String(nuevo.aporteId) === String(c.id) && formNuevo(c)}
-            </div>
+            <TarjetaAporte
+              key={a.id} a={a} datos={datosDe.get(k)} acc={acc} ctx={ctx} enCurso={enCurso}
+              editandoId={editandoEn === k ? editandoId : null}
+              confirmandoBorrar={borrarEn === k ? confirmandoBorrar : null}
+              confirmandoBorrarCambio={borrarCambioEn === k ? confirmandoBorrarCambio : null}
+              confirmandoSaldar={confirmandoSaldar != null && String(confirmandoSaldar) === k}
+              devolucionAbierta={nuevo?.aporteId != null && String(nuevo.aporteId) === k}
+              cambioAbierto={cambioEn === k ? (formCambio.cambioId ?? 'nuevo') : null}
+            />
           )
         })}
+        {sueltas.length > 0 && (
+          <div className="card devoluciones-sueltas">
+            <div className="form-label">Devoluciones sin su aporte</div>
+            {sueltas.map(d => (
+              <FilaDevolucionCapital key={d.id} d={d} aporte={null} editando={editandoId === d.id} confirmando={confirmandoBorrar === d.id} enCurso={enCurso} acc={acc} ctx={ctx} />
+            ))}
+          </div>
+        )}
       </div>
       <div className={`toast${toast.show ? ' show' : ''}`}>{toast.msg}</div>
     </div>
   )
 }
 
-function TabFinanzas({ pedidos, esquejes, insumos, miembro, gastos, presupuestos, setPresupuestos, aportes, setAportes, gastosFijos, setGastosFijos, pedidoPagos, esquejePagos, insumoPagos, cuentas, setCuentas, dolaresMovimientos, setDolaresMovimientos, cuentasValidaciones, setCuentasValidaciones, cotizacionesDolar, onActualizarCotizacion, resumen, resumenDolares, hallazgosFinanzas, onRevisar, capitalMovimientos, onGuardarCapital, onActualizarCapital, onEliminarCapital, duplicadosDescartados, onDescartarDuplicado, onRestaurarDuplicado }) {
+function TabFinanzas({ pedidos, esquejes, insumos, miembro, gastos, presupuestos, setPresupuestos, aportes, setAportes, gastosFijos, setGastosFijos, pedidoPagos, esquejePagos, insumoPagos, cuentas, setCuentas, dolaresMovimientos, setDolaresMovimientos, cuentasValidaciones, setCuentasValidaciones, cotizacionesDolar, onActualizarCotizacion, resumen, resumenDolares, hallazgosFinanzas, onRevisar, capitalMovimientos, onGuardarCapital, onActualizarCapital, onEliminarCapital, capitalCambios, onGuardarCambioCapital, onActualizarCambioCapital, onEliminarCambioCapital, onConsultarAporte, duplicadosDescartados, onDescartarDuplicado, onRestaurarDuplicado }) {
   const [subTab, setSubTab] = useState('general')
   const [editandoSaldo, setEditandoSaldo] = useState(null)
   const [inputSaldo, setInputSaldo] = useState('')
@@ -3780,7 +4188,11 @@ function TabFinanzas({ pedidos, esquejes, insumos, miembro, gastos, presupuestos
         })}
       </div>
       {subTab === 'capital' && (
-        <PanelCapital capitalMovimientos={capitalMovimientos} cotizacionesDolar={cotizacionesDolar} miembro={miembro} onGuardar={onGuardarCapital} onActualizar={onActualizarCapital} onEliminar={onEliminarCapital} />
+        <PanelCapital
+          capitalMovimientos={capitalMovimientos} capitalCambios={capitalCambios} cotizacionesDolar={cotizacionesDolar} miembro={miembro} resumen={resumen} resumenDolares={resumenDolares}
+          onGuardar={onGuardarCapital} onActualizar={onActualizarCapital} onEliminar={onEliminarCapital}
+          onGuardarCambio={onGuardarCambioCapital} onActualizarCambio={onActualizarCambioCapital} onEliminarCambio={onEliminarCambioCapital} onConsultarAporte={onConsultarAporte}
+        />
       )}
       {subTab.startsWith('Hormi') && (
         <PanelFinanzasHormi locacion={subTab} pedidos={pedidos} esquejes={esquejes} gastos={gastos} presupuestos={presupuestos} setPresupuestos={setPresupuestos} aportes={aportes} setAportes={setAportes} gastosFijos={gastosFijos} setGastosFijos={setGastosFijos} totalCuentas={totalGeneral} miembro={miembro} pedidoPagos={pedidoPagos} esquejePagos={esquejePagos} cotizacionesDolar={cotizacionesDolar} />
@@ -3908,7 +4320,7 @@ function TabFinanzas({ pedidos, esquejes, insumos, miembro, gastos, presupuestos
                     {duplicadosDescartados.map(d => (
                       <div key={d.clave} className="fila-descartado" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, fontSize: 11, color: 'var(--text-secondary)' }}>
                         <span style={{ minWidth: 0, overflowWrap: 'anywhere' }}>
-                          {describirDescartado(d.clave, { gastos, pedidos, esquejes, insumos, pedidoPagos, esquejePagos, insumoPagos, capitalMovimientos }, { pesos: formatPesos, dolares: formatDolares, fechaISO: formatFechaISOSinAnio })}
+                          {describirDescartado(d.clave, { gastos, pedidos, esquejes, insumos, pedidoPagos, esquejePagos, insumoPagos, capitalMovimientos, capitalCambios }, { pesos: formatPesos, dolares: formatDolares, fechaISO: formatFechaISOSinAnio })}
                           {d.descartado_por ? ` · lo marcó ${d.descartado_por}` : ''}
                         </span>
                         <button onClick={() => volverARevisar(d.clave)} disabled={!!descartando} style={{ ...btnLinkStyle('var(--green-dark)'), fontSize: 11, whiteSpace: 'nowrap', flexShrink: 0 }}>Volver a revisar</button>
@@ -3982,7 +4394,7 @@ function TabFinanzas({ pedidos, esquejes, insumos, miembro, gastos, presupuestos
               </button>
             )}
             <DisclosureMovimientosCuenta
-              movimientos={movimientosDeCuenta(r.nombre, { pedidoPagos, pedidos, esquejePagos, esquejes, insumoPagos, insumos, gastos, dolaresMovimientos, cuentasValidaciones, capitalMovimientos, esDolar: false })}
+              movimientos={movimientosDeCuenta(r.nombre, { pedidoPagos, pedidos, esquejePagos, esquejes, insumoPagos, insumos, gastos, dolaresMovimientos, cuentasValidaciones, capitalMovimientos, capitalCambios, esDolar: false })}
               formatMonto={formatPesos} onRevisar={revisar} onEditarValidacion={corregirValidacion}
             />
           </div>
@@ -3999,7 +4411,7 @@ function TabFinanzas({ pedidos, esquejes, insumos, miembro, gastos, presupuestos
           <TarjetaCuentaDolar
             key={r.nombre}
             r={r}
-            movimientos={movimientosDeCuenta(r.nombre, { pedidoPagos, pedidos, esquejePagos, esquejes, insumoPagos, insumos, gastos, dolaresMovimientos, cuentasValidaciones, capitalMovimientos, esDolar: true })}
+            movimientos={movimientosDeCuenta(r.nombre, { pedidoPagos, pedidos, esquejePagos, esquejes, insumoPagos, insumos, gastos, dolaresMovimientos, cuentasValidaciones, capitalMovimientos, capitalCambios, esDolar: true })}
             onValidarSaldo={actualizarSaldoCuenta}
             onEditarValidacion={corregirValidacion}
             onAgregarMovimiento={agregarMovimientoDolares}
@@ -5362,8 +5774,8 @@ function TabCultivo() {
 
   useEffect(() => {
     Promise.all([
-      supabase.from('riegos').select('*').order('created_at', { ascending: false }),
-      supabase.from('ciclos').select('*').order('created_at', { ascending: false }),
+      traerTodo(o => supabase.from('riegos').select('*', o).order('created_at', { ascending: false }).order('id')),
+      traerTodo(o => supabase.from('ciclos').select('*', o).order('created_at', { ascending: false }).order('id')),
     ]).then(([riegosRes, ciclosRes]) => {
       if (riegosRes.data) {
         setRiegosVege(riegosRes.data.filter(r => r.etapa === 'vegetativo'))
@@ -6032,6 +6444,7 @@ export default function App() {
   const [tareas, setTareas] = useState([])
   const [tareasTipos, setTareasTipos] = useState([])
   const [capitalMovimientos, setCapitalMovimientos] = useState([])
+  const [capitalCambios, setCapitalCambios] = useState([])
   const [duplicadosDescartados, setDuplicadosDescartados] = useState([])
   const [mostrarModalTareas, setMostrarModalTareas] = useState(false)
   const [cargando, setCargando] = useState(true)
@@ -6064,35 +6477,36 @@ export default function App() {
     async function cargarDatos() {
       setCargando(true)
       setErrorCarga(false)
-      const [pedidosRes, stockRes, esquejesRes, stockEsquejesRes, insumosRes, insumoPagosRes, gastosRes, presupuestosRes, aportesRes, gastosFijosRes, pedidoPagosRes, esquejePagosRes, cuentasRes, dolaresMovimientosRes, cuentasValidacionesRes, cotizacionesDolarRes, sociosRes, geneticasCosechaRes, geneticasEsquejesRes, insumosStockRes, insumosStockMovimientosRes, tareasRes, tareasTiposRes, capitalRes, descartadosRes] = await Promise.all([
-        supabase.from('pedidos').select('*').order('created_at', { ascending: false }),
-        supabase.from('stock').select('*'),
-        supabase.from('esquejes').select('*').order('created_at', { ascending: false }),
-        supabase.from('stock_esquejes').select('*'),
-        supabase.from('insumos').select('*').order('created_at', { ascending: false }),
-        supabase.from('insumo_pagos').select('*').order('created_at', { ascending: false }),
-        supabase.from('gastos').select('*').order('created_at', { ascending: false }),
-        supabase.from('presupuestos').select('*').order('created_at', { ascending: false }),
-        supabase.from('presupuesto_aportes').select('*').order('created_at', { ascending: false }),
-        supabase.from('gastos_fijos').select('*').order('created_at', { ascending: false }),
-        supabase.from('pedido_pagos').select('*').order('created_at', { ascending: false }),
-        supabase.from('esqueje_pagos').select('*').order('created_at', { ascending: false }),
-        supabase.from('cuentas').select('*'),
-        supabase.from('dolares_movimientos').select('*').order('fecha', { ascending: false }),
-        supabase.from('cuentas_validaciones').select('*').order('created_at', { ascending: false }),
-        supabase.from('cotizaciones_dolar').select('*').order('fecha', { ascending: false }),
-        supabase.from('socios').select('*').order('nombre', { ascending: true }),
-        supabase.from('geneticas_cosecha').select('nombre').order('nombre', { ascending: true }),
-        supabase.from('geneticas_esquejes').select('nombre').order('nombre', { ascending: true }),
-        supabase.from('insumos_stock').select('*').order('categoria', { ascending: true }).order('nombre', { ascending: true }),
-        supabase.from('insumos_stock_movimientos').select('*').order('fecha', { ascending: false }),
-        supabase.from('tareas').select('*').order('created_at', { ascending: true }),
-        supabase.from('tareas_tipos').select('nombre').order('nombre', { ascending: true }),
-        supabase.from('capital_movimientos').select('*').order('fecha', { ascending: false }),
-        supabase.from('duplicados_descartados').select('*').order('created_at', { ascending: false }),
+      const [pedidosRes, stockRes, esquejesRes, stockEsquejesRes, insumosRes, insumoPagosRes, gastosRes, presupuestosRes, aportesRes, gastosFijosRes, pedidoPagosRes, esquejePagosRes, cuentasRes, dolaresMovimientosRes, cuentasValidacionesRes, cotizacionesDolarRes, sociosRes, geneticasCosechaRes, geneticasEsquejesRes, insumosStockRes, insumosStockMovimientosRes, tareasRes, tareasTiposRes, capitalRes, capitalCambiosRes, descartadosRes] = await Promise.all([
+        traerTodo(o => supabase.from('pedidos').select('*', o).order('created_at', { ascending: false }).order('id')),
+        traerTodo(o => supabase.from('stock').select('*', o).order('genetica'), 'genetica'),
+        traerTodo(o => supabase.from('esquejes').select('*', o).order('created_at', { ascending: false }).order('id')),
+        traerTodo(o => supabase.from('stock_esquejes').select('*', o).order('genetica'), 'genetica'),
+        traerTodo(o => supabase.from('insumos').select('*', o).order('created_at', { ascending: false }).order('id')),
+        traerTodo(o => supabase.from('insumo_pagos').select('*', o).order('created_at', { ascending: false }).order('id')),
+        traerTodo(o => supabase.from('gastos').select('*', o).order('created_at', { ascending: false }).order('id')),
+        traerTodo(o => supabase.from('presupuestos').select('*', o).order('created_at', { ascending: false }).order('id')),
+        traerTodo(o => supabase.from('presupuesto_aportes').select('*', o).order('created_at', { ascending: false }).order('id')),
+        traerTodo(o => supabase.from('gastos_fijos').select('*', o).order('created_at', { ascending: false }).order('id')),
+        traerTodo(o => supabase.from('pedido_pagos').select('*', o).order('created_at', { ascending: false }).order('id')),
+        traerTodo(o => supabase.from('esqueje_pagos').select('*', o).order('created_at', { ascending: false }).order('id')),
+        traerTodo(o => supabase.from('cuentas').select('*', o).order('id')),
+        traerTodo(o => supabase.from('dolares_movimientos').select('*', o).order('fecha', { ascending: false }).order('id')),
+        traerTodo(o => supabase.from('cuentas_validaciones').select('*', o).order('created_at', { ascending: false }).order('id')),
+        traerTodo(o => supabase.from('cotizaciones_dolar').select('*', o).order('fecha', { ascending: false }), 'fecha'),
+        traerTodo(o => supabase.from('socios').select('*', o).order('nombre', { ascending: true }).order('id')),
+        traerTodo(o => supabase.from('geneticas_cosecha').select('nombre', o).order('nombre', { ascending: true }), 'nombre'),
+        traerTodo(o => supabase.from('geneticas_esquejes').select('nombre', o).order('nombre', { ascending: true }), 'nombre'),
+        traerTodo(o => supabase.from('insumos_stock').select('*', o).order('categoria', { ascending: true }).order('nombre', { ascending: true }).order('id')),
+        traerTodo(o => supabase.from('insumos_stock_movimientos').select('*', o).order('fecha', { ascending: false }).order('id')),
+        traerTodo(o => supabase.from('tareas').select('*', o).order('created_at', { ascending: true }).order('id')),
+        traerTodo(o => supabase.from('tareas_tipos').select('nombre', o).order('nombre', { ascending: true }), 'nombre'),
+        traerTodo(o => supabase.from('capital_movimientos').select('*', o).order('fecha', { ascending: false }).order('id')),
+        traerTodo(o => supabase.from('capital_cambios').select('*', o).order('fecha', { ascending: false }).order('id')),
+        traerTodo(o => supabase.from('duplicados_descartados').select('*', o).order('created_at', { ascending: false }).order('id')),
       ])
       if (cancelado) return
-      const conError = [pedidosRes, stockRes, esquejesRes, stockEsquejesRes, insumosRes, insumoPagosRes, gastosRes, presupuestosRes, aportesRes, gastosFijosRes, pedidoPagosRes, esquejePagosRes, cuentasRes, dolaresMovimientosRes, cuentasValidacionesRes, cotizacionesDolarRes, sociosRes, geneticasCosechaRes, geneticasEsquejesRes, insumosStockRes, insumosStockMovimientosRes, tareasRes, tareasTiposRes, capitalRes, descartadosRes].filter(r => r.error)
+      const conError = [pedidosRes, stockRes, esquejesRes, stockEsquejesRes, insumosRes, insumoPagosRes, gastosRes, presupuestosRes, aportesRes, gastosFijosRes, pedidoPagosRes, esquejePagosRes, cuentasRes, dolaresMovimientosRes, cuentasValidacionesRes, cotizacionesDolarRes, sociosRes, geneticasCosechaRes, geneticasEsquejesRes, insumosStockRes, insumosStockMovimientosRes, tareasRes, tareasTiposRes, capitalRes, capitalCambiosRes, descartadosRes].filter(r => r.error)
       if (conError.length > 0) {
         console.error('Error al cargar datos', conError.map(r => r.error))
         setErrorCarga(true)
@@ -6133,6 +6547,7 @@ export default function App() {
       setTareas(tareasRes.data || [])
       setTareasTipos((tareasTiposRes.data || []).map(t => t.nombre))
       setCapitalMovimientos(capitalRes.data || [])
+      setCapitalCambios(capitalCambiosRes.data || [])
       setDuplicadosDescartados(descartadosRes.data || [])
       setCargando(false)
     }
@@ -6159,8 +6574,10 @@ export default function App() {
     const capitalCuenta = capitalMovimientos.filter(c => (c.moneda || 'ARS') === 'ARS' && c.cuenta === nombre && esDesdeCorteISO(c.fecha, info.fecha_corte))
     const aportesCapital = capitalCuenta.filter(c => c.tipo === 'aporte').reduce((s, c) => s + (Number(c.monto) || 0), 0)
     const devolucionesCapital = capitalCuenta.filter(c => c.tipo === 'devolucion').reduce((s, c) => s + (Number(c.monto) || 0), 0)
+    // Cambio a pesos de un aporte en dólares: los pesos recibidos entran a esta cuenta.
+    const cambiosRecibidos = capitalCambios.filter(c => c.cuenta_destino === nombre && esDesdeCorteISO(c.fecha, info.fecha_corte)).reduce((s, c) => s + (Number(c.monto_ars) || 0), 0)
     const egresos = egresosGastos + devolucionesCapital
-    const ingresos = ingresosPedidos + ingresosEsquejes + ingresosInsumos + aportesCapital
+    const ingresos = ingresosPedidos + ingresosEsquejes + ingresosInsumos + aportesCapital + cambiosRecibidos
     const saldo = (info.saldo_inicial || 0) + ingresos - egresos
     const estimados =
       pedidoPagos.filter(pg => pg.cuenta === nombre && pg.cuenta_estimada).length +
@@ -6168,7 +6585,7 @@ export default function App() {
       insumoPagos.filter(pg => pg.cuenta === nombre && pg.cuenta_estimada).length +
       gastos.filter(g => g.cuenta === nombre && g.cuenta_estimada).length
     return { nombre, info, ingresos, egresos, saldo, estimados }
-  }), [pedidoPagos, esquejePagos, insumoPagos, gastos, cuentas, capitalMovimientos])
+  }), [pedidoPagos, esquejePagos, insumoPagos, gastos, cuentas, capitalMovimientos, capitalCambios])
 
   const resumenDolares = useMemo(() => CUENTAS_DOLARES.map(nombre => {
     const info = cuentas.find(c => c.nombre === nombre) || { nombre, saldo_inicial: 0, fecha_corte: FECHA_CORTE_DEFAULT, validado: false }
@@ -6177,11 +6594,13 @@ export default function App() {
     const capitalCuenta = capitalMovimientos.filter(c => c.moneda === 'USD' && c.cuenta === nombre && esDesdeCorteISO(c.fecha, info.fecha_corte))
     const ingresos = movimientosContados.filter(m => m.tipo === 'ingreso').reduce((s, m) => s + (m.monto || 0), 0)
       + capitalCuenta.filter(c => c.tipo === 'aporte').reduce((s, c) => s + (Number(c.monto) || 0), 0)
+    // Los dólares que se cambiaron a pesos salen de esta cuenta (la otra pata suma en la de pesos).
     const egresos = movimientosContados.filter(m => m.tipo === 'egreso').reduce((s, m) => s + (m.monto || 0), 0)
       + capitalCuenta.filter(c => c.tipo === 'devolucion').reduce((s, c) => s + (Number(c.monto) || 0), 0)
+      + capitalCambios.filter(c => c.cuenta_origen === nombre && esDesdeCorteISO(c.fecha, info.fecha_corte)).reduce((s, c) => s + (Number(c.monto_usd) || 0), 0)
     const saldo = (info.saldo_inicial || 0) + ingresos - egresos
     return { nombre, info, ingresos, egresos, saldo, movimientos }
-  }), [cuentas, dolaresMovimientos, capitalMovimientos])
+  }), [cuentas, dolaresMovimientos, capitalMovimientos, capitalCambios])
 
   // Corte más viejo entre las cuentas configuradas: lo anterior a esto es plata migrada del
   // historial que nunca va a tener cuenta, así que el agente no la reclama.
@@ -6200,9 +6619,9 @@ export default function App() {
     resumen: resumenCuentas, resumenDolares, corteMinimo: corteMinimoFinanzas,
     cuentasConocidas: CUENTAS, cuentasDolaresConocidas: CUENTAS_DOLARES,
     cuentaEfectivo: CUENTA_EFECTIVO, cuentaEfectivoDolares: CUENTA_EFECTIVO_DOLARES, cuentaHormiguero: CUENTA_HORMIGUERO,
-    cuentasValidaciones, cotizacionesDolar, capitalMovimientos, duplicadosDescartados: clavesDescartadas,
+    cuentasValidaciones, cotizacionesDolar, capitalMovimientos, capitalCambios, duplicadosDescartados: clavesDescartadas,
   }, { pesos: formatPesos, dolares: formatDolares, fechaISO: formatFechaISOSinAnio }),
-  [cuentas, dolaresMovimientos, gastos, presupuestos, aportes, pedidoPagos, esquejePagos, insumoPagos, pedidos, esquejes, insumos, resumenCuentas, resumenDolares, corteMinimoFinanzas, cuentasValidaciones, cotizacionesDolar, capitalMovimientos, clavesDescartadas])
+  [cuentas, dolaresMovimientos, gastos, presupuestos, aportes, pedidoPagos, esquejePagos, insumoPagos, pedidos, esquejes, insumos, resumenCuentas, resumenDolares, corteMinimoFinanzas, cuentasValidaciones, cotizacionesDolar, capitalMovimientos, capitalCambios, clavesDescartadas])
 
   // Llama al mismo RPC que corre el cron diario — botón manual para no depender 100% de que el
   // trigger de fondo funcione en silencio.
@@ -6517,6 +6936,42 @@ export default function App() {
     return { ok: true }
   }, [])
 
+  // Cambios a pesos de un aporte en dólares (capital_cambios). El tope (no cambiar más de lo
+  // aportado) lo pone el trigger capital_cambios_validar; mensajeErrorCapital lo pasa a criollo.
+  const guardarCambioCapital = useCallback(async cambio => {
+    const { data, error } = await supabase.from('capital_cambios').insert({ ...cambio, creado_por: miembro || null }).select().single()
+    if (error || !data) { console.error('Error al guardar cambio a pesos', error); return { ok: false, error, msg: mensajeErrorCapital(error) } }
+    setCapitalCambios(prev => [data, ...prev])
+    return { ok: true, data }
+  }, [miembro])
+
+  const actualizarCambioCapital = useCallback(async (id, cambios) => {
+    const { data, error } = await supabase.from('capital_cambios').update(cambios).eq('id', id).select().single()
+    if (error || !data) { console.error('Error al actualizar cambio a pesos', error); return { ok: false, error, msg: mensajeErrorCapital(error) } }
+    setCapitalCambios(prev => prev.map(c => c.id === id ? data : c))
+    return { ok: true, data }
+  }, [])
+
+  const eliminarCambioCapital = useCallback(async id => {
+    const { data, error } = await supabase.from('capital_cambios').delete().eq('id', id).select()
+    if (error) { console.error('Error al eliminar cambio a pesos', error); return { ok: false, error, msg: mensajeErrorCapital(error) } }
+    setCapitalCambios(prev => prev.filter(c => c.id !== id))
+    return { ok: true, yaNoEstaba: !data || data.length === 0 }
+  }, [])
+
+  // El aporte y sus cambios tal como están en la base, no en esta pantalla (otro puede haber
+  // cargado un cambio mientras tanto). De paso pone al día lo que se ve de ese aporte.
+  const consultarAporteEnBase = useCallback(async aporteId => {
+    const [aporteRes, cambiosRes] = await Promise.all([
+      supabase.from('capital_movimientos').select('*').eq('id', aporteId).maybeSingle(),
+      traerTodo(o => supabase.from('capital_cambios').select('*', o).eq('aporte_id', aporteId).order('id')),
+    ])
+    if (aporteRes.error || cambiosRes.error) return { ok: false }
+    if (aporteRes.data) setCapitalMovimientos(prev => prev.map(c => c.id === aporteRes.data.id ? aporteRes.data : c))
+    setCapitalCambios(prev => [...cambiosRes.data, ...prev.filter(c => Number(c.aporte_id) !== Number(aporteId))])
+    return { ok: true, aporte: aporteRes.data, cambios: cambiosRes.data }
+  }, [])
+
   // ── "No es duplicado" en Registros a revisar ──
   const descartarDuplicado = useCallback(async clave => {
     const { data, error } = await supabase.from('duplicados_descartados').insert({ clave, descartado_por: miembro || null }).select().single()
@@ -6691,7 +7146,7 @@ export default function App() {
         />
       )}
       {tab === 'gastos' && <TabGastos target={objetivoRevision} miembro={miembro} gastos={gastos} presupuestos={presupuestos} onGuardarGasto={guardarGasto} onActualizarGasto={actualizarGasto} onEliminarGasto={eliminarGasto} />}
-      {tab === 'finanzas' && <TabFinanzas onRevisar={irARevisar} pedidos={pedidos} esquejes={esquejes} insumos={insumos} miembro={miembro} gastos={gastos} presupuestos={presupuestos} setPresupuestos={setPresupuestos} aportes={aportes} setAportes={setAportes} gastosFijos={gastosFijos} setGastosFijos={setGastosFijos} pedidoPagos={pedidoPagos} esquejePagos={esquejePagos} insumoPagos={insumoPagos} cuentas={cuentas} setCuentas={setCuentas} dolaresMovimientos={dolaresMovimientos} setDolaresMovimientos={setDolaresMovimientos} cuentasValidaciones={cuentasValidaciones} setCuentasValidaciones={setCuentasValidaciones} cotizacionesDolar={cotizacionesDolar} onActualizarCotizacion={actualizarCotizacionDolar} resumen={resumenCuentas} resumenDolares={resumenDolares} hallazgosFinanzas={hallazgosFinanzas} capitalMovimientos={capitalMovimientos} onGuardarCapital={guardarCapital} onActualizarCapital={actualizarCapital} onEliminarCapital={eliminarCapital} duplicadosDescartados={duplicadosDescartados} onDescartarDuplicado={descartarDuplicado} onRestaurarDuplicado={restaurarDuplicado} />}
+      {tab === 'finanzas' && <TabFinanzas onRevisar={irARevisar} pedidos={pedidos} esquejes={esquejes} insumos={insumos} miembro={miembro} gastos={gastos} presupuestos={presupuestos} setPresupuestos={setPresupuestos} aportes={aportes} setAportes={setAportes} gastosFijos={gastosFijos} setGastosFijos={setGastosFijos} pedidoPagos={pedidoPagos} esquejePagos={esquejePagos} insumoPagos={insumoPagos} cuentas={cuentas} setCuentas={setCuentas} dolaresMovimientos={dolaresMovimientos} setDolaresMovimientos={setDolaresMovimientos} cuentasValidaciones={cuentasValidaciones} setCuentasValidaciones={setCuentasValidaciones} cotizacionesDolar={cotizacionesDolar} onActualizarCotizacion={actualizarCotizacionDolar} resumen={resumenCuentas} resumenDolares={resumenDolares} hallazgosFinanzas={hallazgosFinanzas} capitalMovimientos={capitalMovimientos} onGuardarCapital={guardarCapital} onActualizarCapital={actualizarCapital} onEliminarCapital={eliminarCapital} capitalCambios={capitalCambios} onGuardarCambioCapital={guardarCambioCapital} onActualizarCambioCapital={actualizarCambioCapital} onEliminarCambioCapital={eliminarCambioCapital} onConsultarAporte={consultarAporteEnBase} duplicadosDescartados={duplicadosDescartados} onDescartarDuplicado={descartarDuplicado} onRestaurarDuplicado={restaurarDuplicado} />}
       {tab === 'cultivo' && <TabCultivo />}
       {tab === 'stock' && (
         <TabStock

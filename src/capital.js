@@ -79,6 +79,27 @@ export function resumenAporte(aporte, movimientos, hoyISO) {
   }
 }
 
+// Cambios a pesos de un aporte en dólares (tabla capital_cambios), el más viejo primero: cuánto
+// se cambió, a qué cotización promedio y cuánto queda sin cambiar. La base no deja que la suma
+// pase lo aportado (trigger capital_cambios_validar); esto es lo que muestra la pantalla.
+export function resumenCambios(aporte, cambios) {
+  const propios = (cambios || []).filter(c => Number(c.aporte_id) === Number(aporte.id))
+    .sort((a, b) => String(a.fecha).localeCompare(String(b.fecha)) || new Date(a.created_at) - new Date(b.created_at))
+  const usd = propios.reduce((s, c) => s + (Number(c.monto_usd) || 0), 0)
+  const ars = propios.reduce((s, c) => s + (Number(c.monto_ars) || 0), 0)
+  return { cambios: propios, usd, ars, cotizacion: usd > 0 ? ars / usd : null, sinCambiar: Math.max(0, (Number(aporte.monto) || 0) - usd) }
+}
+
+// Una cotización a más de 15% del blue de ese día casi seguro es un error de tipeo (un cero de
+// más o de menos). Solo avisa: puede haber cambios reales a otro precio.
+// En "Registros a revisar" se reclama solo lo rarísimo (más de 50%): lo que queda entre 15% y 50%
+// ya se avisó al cargarlo y puede ser un cambio real a otro precio.
+export const DESVIO_COTIZACION = 0.15
+export const DESVIO_COTIZACION_RARISIMA = 0.5
+export function cotizacionLejosDelBlue(cotizacion, blue, desvio = DESVIO_COTIZACION) {
+  return Number(blue) > 0 && Number(cotizacion) > 0 && Math.abs(cotizacion - blue) / blue > desvio
+}
+
 // Por inversor y moneda del aporte (nunca se mezclan pesos con dólares). Una devolución sin
 // aporte (cargada antes de que existiera el vínculo) se descuenta del inversor por nombre y
 // moneda, como se hacía antes.

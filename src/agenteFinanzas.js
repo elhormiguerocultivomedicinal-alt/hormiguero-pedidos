@@ -15,7 +15,8 @@
 // Un hallazgo de posible duplicado trae además `descartar` (clave de duplicados_descartados):
 // con eso la pantalla ofrece "No es duplicado" y, una vez marcado, no vuelve a aparecer.
 
-import { gastosParecidos, ventasParecidas, capitalParecidos, devolucionPareceGasto, claveDuplicado } from './duplicados.js'
+import { gastosParecidos, ventasParecidas, capitalParecidos, cambiosParecidos, devolucionPareceGasto, claveDuplicado } from './duplicados.js'
+import { resumenAporte, cotizacionParaFechaISO, cotizacionLejosDelBlue, DESVIO_COTIZACION_RARISIMA } from './capital.js'
 
 function parseFechaDP(str) {
   if (!str) return null
@@ -254,7 +255,7 @@ function chequearDuplicadosParecidos({ gastos, pedidos, esquejes, insumos, capit
       hallazgos.push({
         severidad: 'atencion', responsable: b.creado_por || 'Sin autor registrado', titulo: 'Posible capital duplicado',
         mensaje: `${que} de ${formatear(b.monto)} parece cargado dos veces: el ${fmt.fechaISO(a.fecha)}${cargadoPor(a.creado_por)} y el ${fmt.fechaISO(b.fecha)}${cargadoPor(b.creado_por)}. Si son dos movimientos distintos, marcá "No es duplicado"; si es el mismo, borrá uno desde Finanzas → Capital.`,
-        objetivo: null, descartar: clave,
+        objetivo: OBJETIVO_CAPITAL, descartar: clave,
       })
     })
 
@@ -276,7 +277,7 @@ function chequearDuplicadosParecidos({ gastos, pedidos, esquejes, insumos, capit
 
 // Texto corto para la lista de "descartados" (los que alguien marcó "No es duplicado"),
 // armado desde los registros que hay en pantalla — la clave guardada solo tiene ids.
-export function describirDescartado(clave, { gastos, pedidos, esquejes, insumos, pedidoPagos, esquejePagos, insumoPagos, capitalMovimientos }, fmt) {
+export function describirDescartado(clave, { gastos, pedidos, esquejes, insumos, pedidoPagos, esquejePagos, insumoPagos, capitalMovimientos, capitalCambios }, fmt) {
   const [tabla, idsStr] = String(clave).split(':')
   const ids = (idsStr || '').split(',').map(Number)
   const buscar = lista => ids.map(id => (lista || []).find(x => Number(x.id) === id)).filter(Boolean)
@@ -296,6 +297,11 @@ export function describirDescartado(clave, { gastos, pedidos, esquejes, insumos,
   if (tabla === 'capital_movimientos') {
     const cs = buscar(capitalMovimientos)
     return cs.length ? `${cs[0].tipo === 'aporte' ? 'Aporte de' : 'Devolución a'} ${cs[0].inversor} de ${(cs[0].moneda === 'USD' ? fmt.dolares : fmt.pesos)(cs[0].monto)}` : `Capital: ${ningunoYa}`
+  }
+  if (tabla === 'capital_cambios') {
+    const cs = buscar(capitalCambios)
+    const aporte = cs.length ? (capitalMovimientos || []).find(a => Number(a.id) === Number(cs[0].aporte_id)) : null
+    return cs.length ? `Cambio a pesos de ${fmt.dolares(cs[0].monto_usd)}${aporte ? ` del aporte de ${aporte.inversor}` : ''} (${cs.map(c => fmt.fechaISO(c.fecha)).join(' y ')})` : `Cambio a pesos: ${ningunoYa}`
   }
   if (tabla === 'gasto-capital') {
     const g = (gastos || []).find(x => Number(x.id) === ids[0])
@@ -379,7 +385,7 @@ function chequearSaldosNegativos({ resumen, resumenDolares, cuentaEfectivo, cuen
   resumen.filter(r => r.saldo < 0).forEach(r => {
     hallazgos.push({
       severidad: 'error', responsable: resolverResponsableCuenta(r.nombre, r.info, { cuentaEfectivo, cuentaEfectivoDolares, cuentaHormiguero }), titulo: 'Saldo en rojo',
-      mensaje: `La cuenta "${r.nombre}" quedó en rojo: le faltan ${fmt.pesos(Math.abs(r.saldo))}. Desde el ${fmt.fechaISO(r.info.fecha_corte)} entraron ${fmt.pesos(r.ingresos)} y salieron ${fmt.pesos(r.egresos)}, arrancando con ${fmt.pesos(r.info.saldo_inicial || 0)} — no alcanza. Puede faltar cargar un cobro o un aporte de capital (Finanzas → Capital), o hay un gasto que en realidad se pagó de otra cuenta.`,
+      mensaje: `La cuenta "${r.nombre}" quedó en rojo: le faltan ${fmt.pesos(Math.abs(r.saldo))}. Desde el ${fmt.fechaISO(r.info.fecha_corte)} entraron ${fmt.pesos(r.ingresos)} y salieron ${fmt.pesos(r.egresos)}, arrancando con ${fmt.pesos(r.info.saldo_inicial || 0)} — no alcanza. Puede faltar cargar un cobro, un aporte o un cambio de dólares a pesos (Finanzas → Capital), o hay un gasto que en realidad se pagó de otra cuenta.`,
       objetivo: null,
     })
   })
@@ -478,7 +484,7 @@ function chequearCuentasHuerfanas({ pedidoPagos, esquejePagos, insumoPagos, gast
     hallazgos.push({
       severidad: 'error', responsable: c.creado_por || 'Sin autor registrado', titulo: 'Cuenta desconocida',
       mensaje: `${c.tipo === 'aporte' ? 'El aporte de' : 'La devolución a'} ${c.inversor} de ${(c.moneda === 'USD' ? fmt.dolares : fmt.pesos)(c.monto)} está cargado a "${c.cuenta}", que no es una cuenta en ${c.moneda === 'USD' ? 'dólares' : 'pesos'} configurada — no suma en ningún saldo. Corregilo desde Finanzas → Capital.`,
-      objetivo: null,
+      objetivo: OBJETIVO_CAPITAL,
     })
   })
   return hallazgos
@@ -492,6 +498,100 @@ function chequearAportesHuerfanos({ aportes, presupuestos }, fmt) {
     mensaje: `Ampliación de presupuesto de ${fmt.pesos(a.monto)} (${fmt.fechaISO(a.fecha)}) apunta a un presupuesto que ya no existe (id ${a.presupuesto_id}).`,
     objetivo: null,
   }))
+}
+
+// ── 14) Capital: plata a devolver y cambios a pesos ──
+// Mismo criterio que la tarjeta de cada aporte (resumenAporte, src/capital.js): lo que la pantalla
+// muestra como "Vencido" es lo que acá se reclama. Responsable: quien cargó el aporte / el cambio.
+const OBJETIVO_CAPITAL = { tab: 'finanzas', subTab: 'capital' }
+const DIAS_AVISO_VENCIMIENTO = 7
+function hoyLocalISO() {
+  const d = new Date()
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+}
+function chequearCapital({ capitalMovimientos, capitalCambios, cotizacionesDolar, cuentasConocidas, cuentasDolaresConocidas, duplicadosDescartados }, fmt) {
+  const hallazgos = []
+  const movimientos = capitalMovimientos || [], cambios = capitalCambios || []
+  const hoy = hoyLocalISO()
+  const cotHoy = cotizacionesDolar?.[0]
+  const alBlueDeHoy = (monto, moneda) => (moneda === 'USD' && cotHoy ? ` (≈ ${fmt.pesos(monto * Number(cotHoy.promedio))} al blue de hoy)` : '')
+
+  movimientos.filter(a => a.tipo === 'aporte' && a.a_devolver).forEach(a => {
+    const formatear = a.moneda === 'USD' ? fmt.dolares : fmt.pesos
+    const responsable = a.creado_por || 'Sin autor registrado'
+    const cual = `El aporte de ${a.inversor} (${formatear(a.monto)} del ${fmt.fechaISO(a.fecha)})`
+    if (!a.fecha_devolucion) {
+      hallazgos.push({
+        severidad: 'atencion', responsable, titulo: 'Aporte a devolver sin fecha',
+        mensaje: `${cual} está marcado "hay que devolverlo" pero no tiene fecha de devolución, así que la app no puede avisar cuándo vence. Cargala desde Finanzas → Capital (Editar).`,
+        objetivo: OBJETIVO_CAPITAL,
+      })
+      return
+    }
+    const r = resumenAporte(a, movimientos, hoy)
+    if (r.estado === 'vencido') {
+      hallazgos.push({
+        severidad: 'error', responsable, titulo: 'Devolución vencida',
+        mensaje: `${cual} había que devolverlo el ${fmt.fechaISO(a.fecha_devolucion)} y todavía faltan ${formatear(r.pendiente)}${alBlueDeHoy(r.pendiente, a.moneda)}. Si ya se le devolvió, cargá la devolución; si se pactó otra fecha, cambiala; si se cerró por otro monto, usá "Dar por devuelto".`,
+        objetivo: OBJETIVO_CAPITAL,
+      })
+    } else if (r.estado === 'activo' && r.diasParaVencer !== null && r.diasParaVencer <= DIAS_AVISO_VENCIMIENTO) {
+      const cuando = r.diasParaVencer === 0 ? 'hoy' : `en ${r.diasParaVencer} ${r.diasParaVencer === 1 ? 'día' : 'días'} (${fmt.fechaISO(a.fecha_devolucion)})`
+      hallazgos.push({
+        severidad: 'atencion', responsable, titulo: 'Devolución por vencer',
+        mensaje: `${cual} vence ${cuando}: hay que devolverle ${formatear(r.pendiente)}${alBlueDeHoy(r.pendiente, a.moneda)}.`,
+        objetivo: OBJETIVO_CAPITAL,
+      })
+    }
+  })
+
+  const aporteDe = id => movimientos.find(m => m.tipo === 'aporte' && Number(m.id) === Number(id))
+  const delAporte = c => { const a = aporteDe(c.aporte_id); return a ? ` del aporte de ${a.inversor}` : '' }
+  const queCambio = c => `${fmt.dolares(c.monto_usd)} → ${fmt.pesos(c.monto_ars)}`
+  cambios.forEach(c => {
+    const responsable = c.creado_por || 'Sin autor registrado'
+    const malas = [
+      !cuentasDolaresConocidas.includes(c.cuenta_origen) && `sale de "${c.cuenta_origen}", que no es una cuenta en dólares configurada`,
+      !cuentasConocidas.includes(c.cuenta_destino) && `entra a "${c.cuenta_destino}", que no es una cuenta en pesos configurada`,
+    ].filter(Boolean)
+    if (malas.length) {
+      hallazgos.push({
+        severidad: 'error', responsable, titulo: 'Cuenta desconocida',
+        mensaje: `El cambio a pesos${delAporte(c)} del ${fmt.fechaISO(c.fecha)} (${queCambio(c)}) ${malas.join(' y ')} — esa parte no mueve ningún saldo. Corregilo desde Finanzas → Capital.`,
+        objetivo: OBJETIVO_CAPITAL,
+      })
+    }
+    const blue = cotizacionParaFechaISO(c.fecha, cotizacionesDolar)
+    const cotizacion = Number(c.monto_ars) / Number(c.monto_usd)
+    if (blue && cotizacionLejosDelBlue(cotizacion, Number(blue.promedio), DESVIO_COTIZACION_RARISIMA)) {
+      hallazgos.push({
+        severidad: 'atencion', responsable, titulo: 'Cotización rara en un cambio',
+        mensaje: `El cambio a pesos${delAporte(c)} del ${fmt.fechaISO(c.fecha)} (${queCambio(c)}) quedó a ${fmt.pesos(cotizacion)} por dólar, muy lejos del blue de ese día (${fmt.pesos(blue.promedio)}). ¿Se comió o se le sumó un cero? Revisá los pesos recibidos.`,
+        objetivo: OBJETIVO_CAPITAL,
+      })
+    }
+  })
+
+  // Cada cambio se compara solo con el siguiente del mismo aporte y monto (en orden de fecha): si
+  // A ≈ C, el B del medio se parece a los dos, así que no se pierde ninguno, y N cambios iguales dan
+  // N-1 avisos en vez de N×(N-1)/2 (con 1.100 iguales, todos contra todos colgaba la pantalla).
+  const grupos = new Map()
+  cambios.forEach(c => { const k = `${c.aporte_id}|${Math.round(Number(c.monto_usd) || 0)}`; grupos.set(k, (grupos.get(k) || []).concat(c)) })
+  const consecutivos = []
+  grupos.forEach(g => {
+    g.sort((x, y) => String(x.fecha).localeCompare(String(y.fecha)) || new Date(x.created_at || 0) - new Date(y.created_at || 0))
+    for (let i = 1; i < g.length; i++) if (cambiosParecidos(g[i - 1], g[i])) consecutivos.push([g[i - 1], g[i]])
+  })
+  consecutivos.forEach(([a, b]) => {
+    const clave = claveDuplicado('capital_cambios', [a.id, b.id])
+    if (duplicadosDescartados?.has(clave)) return
+    hallazgos.push({
+      severidad: 'atencion', responsable: b.creado_por || 'Sin autor registrado', titulo: 'Posible cambio duplicado',
+      mensaje: `El cambio a pesos de ${fmt.dolares(b.monto_usd)}${delAporte(b)} parece cargado dos veces: el ${fmt.fechaISO(a.fecha)} (→ ${fmt.pesos(a.monto_ars)})${cargadoPor(a.creado_por)} y el ${fmt.fechaISO(b.fecha)} (→ ${fmt.pesos(b.monto_ars)})${cargadoPor(b.creado_por)}. Si fueron dos cambios distintos, marcá "No es duplicado"; si es el mismo, borrá uno desde Finanzas → Capital.`,
+      objetivo: OBJETIVO_CAPITAL, descartar: clave,
+    })
+  })
+  return hallazgos
 }
 
 // ── 13) Cotización del dólar blue desactualizada (afecta los presupuestos en USD) ──
@@ -515,7 +615,7 @@ function chequearCotizacionDolar({ cotizacionesDolar }, fmt) {
 //   pedidoPagos, esquejePagos, insumoPagos, pedidos, esquejes, insumos,
 //   resumen, resumenDolares, cuentasConocidas, cuentasDolaresConocidas,
 //   cuentaEfectivo, cuentaEfectivoDolares, cuentaHormiguero, corteMinimo, cuentasValidaciones,
-//   cotizacionesDolar, capitalMovimientos, duplicadosDescartados (Set de claves) }
+//   cotizacionesDolar, capitalMovimientos, capitalCambios, duplicadosDescartados (Set de claves) }
 // fmt: { pesos, dolares, fechaISO } — formateadores ya existentes en App.jsx,
 // se inyectan para no duplicar esa lógica acá (fechaISO se pasa sin año).
 export function evaluarFinanzas(datos, fmt) {
@@ -533,6 +633,7 @@ export function evaluarFinanzas(datos, fmt) {
     ...chequearCuentasHuerfanas(datos, fmt),
     ...chequearAportesHuerfanos(datos, fmt),
     ...chequearCotizacionDolar(datos, fmt),
+    ...chequearCapital(datos, fmt),
   ]
   const orden = { error: 0, atencion: 1 }
   return hallazgos.sort((a, b) => orden[a.severidad] - orden[b.severidad])
